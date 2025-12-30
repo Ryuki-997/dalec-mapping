@@ -1,21 +1,23 @@
 package main
 
 import (
+	"fmt"
 	"os"
+
+	"dalec-mapping/parser"
 )
 
 func main() {
-	// open dockerfile
-	f, err := os.Open("Dockerfile")
+	// Parse Dockerfile
+	dockerfileInfo, err := parser.ParseDockerfile("Dockerfile")
 	if err != nil {
-		panic(err)
+		fmt.Printf("Error parsing Dockerfile: %v\n", err)
+		os.Exit(1)
 	}
-	defer f.Close()
 
-	// write spec file
-	specFile, err := os.Create("test.yml")
-	if err != nil {
-		panic(err)
-	}
-	defer specFile.Close()
+	// Print parsed information
+	parser.PrintDockerfileInfo(dockerfileInfo)
+
+	// TODO: Transform to Dalec spec
+	// TODO: Write to test.yml
 }
