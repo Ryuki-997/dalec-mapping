@@ -3,6 +3,7 @@ package transformer
 import (
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"dalec-mapping/parser"
@@ -27,65 +28,83 @@ type RepoMetadata struct {
 
 // TransformToDalec converts parsed Dockerfile info to Dalec spec format
 // repoMeta can be nil if no repository metadata is available
-func TransformToDalec(info *parser.DockerfileInfo, repoMeta *RepoMetadata) DalecSpec {
+func TransformToDalec(repoInfo *RepoMetadata, previousSpec PreviousDalecSpec, dockerInfo *parser.DockerfileInfo) DalecSpec {
+	rebuild(repoInfo, previousSpec)
+
 	spec := make(DalecSpec)
 
 	// Add syntax header (special comment format)
 	spec["# syntax"] = "ghcr.io/azure/dalec/frontend:latest"
 
 	// Initialize args section
-	spec["args"] = populateArgs(info, repoMeta)
+	spec["args"] = populateArgs(repoInfo, dockerInfo)
 
-	packageName := derivePackageName(info)
-	if repoMeta != nil && repoMeta.RepoName != "" {
-		packageName = strings.ToLower(repoMeta.RepoName)
+	packageName := derivePackageName(dockerInfo)
+	if repoInfo != nil && repoInfo.RepoName != "" {
+		packageName = strings.ToLower(repoInfo.RepoName)
 	}
 	spec["name"] = packageName
-	populateMetadata(spec, info, repoMeta)
+	populateMetadata(spec, dockerInfo, repoInfo)
 
 	// Build extensions section
 	spec["x-build-extensions"] = buildExtensions(packageName)
 
 	// Transform Dockerfile content to Dalec sections
-	spec["sources"] = extractSources(info, repoMeta)
-	spec["dependencies"] = extractDependencies(info)
-	spec["targets"] = extractTargets(info)
-	spec["build"] = extractBuildSteps(info)
-	spec["artifacts"] = extractArtifacts(info)
-	spec["image"] = extractImageConfig(info)
+	spec["sources"] = extractSources(dockerInfo, repoInfo)
+	spec["dependencies"] = extractDependencies(dockerInfo)
+	spec["targets"] = extractTargets(dockerInfo)
+	spec["build"] = extractBuildSteps(dockerInfo)
+	spec["artifacts"] = extractArtifacts(dockerInfo)
+	spec["image"] = extractImageConfig(dockerInfo)
 	spec["tests"] = []map[string]interface{}{} // Empty placeholder
 
 	return spec
 }
 
-func populateArgs(info *parser.DockerfileInfo, repoMeta *RepoMetadata) map[any]interface{} {
-	if info == nil {
-		return map[any]interface{}{
-			"REVISION":   1,
-			"VERSION":    0.1,
+func rebuild(repoInfo *RepoMetadata, previousSpec PreviousDalecSpec) bool {
+	if previousSpec.Commit == repoInfo.Commit {
+		prevRevision, err := strconv.Atoi(previousSpec.Revision)
+		if err != nil {
+			prevRevision = 0
+			fmt.Printf("⚠️  Warning: invalid previous revision '%s', resetting to 1\n", previousSpec.Revision)
+			return false
+		}
+
+		previousSpec.Revision = fmt.Sprintf("%d", prevRevision+1)
+		return false
+	}
+
+	return true
+}
+
+func populateArgs(repoMeta *RepoMetadata, dockerInfo *parser.DockerfileInfo) map[string]interface{} {
+	if dockerInfo == nil {
+		return map[string]interface{}{
+			"REVISION":   "1",
+			"VERSION":    "0.1",
 			"COMMIT":     "",
 			"TARGETARCH": "",
 			"TARGETOS":   "",
 		}
 	}
 
-	args := make(map[any]interface{})
-	args["REVISION"] = getArgValueOrDefault(info, "REVISION", 1)
-	args["VERSION"] = getArgValueOrDefault(info, "VERSION", 0.1)
+	args := make(map[string]interface{})
+	args["REVISION"] = getArgValueOrDefault(dockerInfo, "REVISION", "1")
+	args["VERSION"] = getArgValueOrDefault(dockerInfo, "VERSION", "0.1")
 
 	// Use commit from repo metadata if available
 	commitValue := ""
 	if repoMeta != nil && repoMeta.Commit != "" {
 		commitValue = repoMeta.Commit
 	}
-	args["COMMIT"] = getArgValueOrDefault(info, "COMMIT", commitValue)
-	args["TARGETARCH"] = getArgValueOrDefault(info, "TARGETARCH", "")
-	args["TARGETOS"] = getArgValueOrDefault(info, "TARGETOS", "")
+	args["COMMIT"] = getArgValueOrDefault(dockerInfo, "COMMIT", commitValue)
+	args["TARGETARCH"] = getArgValueOrDefault(dockerInfo, "TARGETARCH", "")
+	args["TARGETOS"] = getArgValueOrDefault(dockerInfo, "TARGETOS", "")
 
 	return args
 }
 
-func populateMetadata(spec DalecSpec, info *parser.DockerfileInfo, repoMeta *RepoMetadata) {
+func populateMetadata(spec DalecSpec, dockerInfo *parser.DockerfileInfo, repoMeta *RepoMetadata) {
 
 	// Standard metadata fields - use repo metadata if available
 	spec["packager"] = "Azure Container Upstream"
@@ -581,9 +600,4 @@ func Get(spec DalecSpec, path string) (interface{}, error) {
 	}
 
 	return current, nil
-}
-
-// TODO: Implement YAML reading function
-func ReadYAMLFile(path string) (map[string]interface{}, error) {
-	return map[string]interface{}{}, nil
 }

@@ -3,10 +3,38 @@ package transformer
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+type PreviousDalecSpec struct {
+	// Comparison Fields
+	Commit string
+
+	// Updatable Fields
+	Revision string
+}
+
+// ReadYAML reads a DalecSpec file and unmarshal updated values
+func ReadYAML(path string) (PreviousDalecSpec, error) {
+	data := PreviousDalecSpec{}
+
+	// TODO: populate fields from previous spec file.
+	// Read file content
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return data, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	// Unmarshal YAML content
+	if err := yaml.Unmarshal(content, &data); err != nil {
+		return data, fmt.Errorf("failed to unmarshal YAML: %w", err)
+	}
+
+	return data, nil
+}
 
 // WriteYAML converts DalecSpec to formatted YAML
 func WriteYAML(spec DalecSpec) (string, error) {
@@ -20,7 +48,7 @@ func WriteYAML(spec DalecSpec) (string, error) {
 		// Create a copy without the syntax line for yaml encoding
 		specCopy := make(DalecSpec)
 		for k, v := range spec {
-			if k != "# syntax" {
+			if k == "# syntax" {
 				specCopy[k] = v
 			}
 		}

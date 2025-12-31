@@ -64,7 +64,7 @@ func main() {
 		}
 	}
 
-	dalecSpec := transformer.TransformToDalec(dockerfileInfo, repoMeta)
+	dalecSpec := transformer.TransformToDalec(repoMeta, previousYAMLInfo, dockerfileInfo)
 
 	// Write to output file
 	yamlContent, err := transformer.WriteYAML(dalecSpec)
@@ -190,17 +190,17 @@ func fetchDockerfileInfo(dockerfilePath string, verbose bool) (*parser.Dockerfil
 	return dockerfileInfo, nil
 }
 
-func fetchPreviousYAMLInfo(outputPath string) (map[string]interface{}, error) {
+func fetchPreviousYAMLInfo(outputPath string) (transformer.PreviousDalecSpec, error) {
 	fmt.Println("=== READING PREVIOUS YAML FILE ===")
 
-	yamlInfo, err := transformer.ReadYAMLFile(outputPath)
+	yamlInfo, err := transformer.ReadYAML(outputPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			fmt.Println("⚠️  No previous YAML file found, proceeding without it.")
-			return nil, nil
+			return transformer.PreviousDalecSpec{}, nil
 		}
 		fmt.Printf("❌ Error reading previous YAML file: %v\n", err)
-		return nil, err
+		return transformer.PreviousDalecSpec{}, err
 	}
 
 	fmt.Println("✅ Successfully read previous YAML file.")
