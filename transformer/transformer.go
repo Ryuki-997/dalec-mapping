@@ -34,18 +34,7 @@ func TransformToDalec(info *parser.DockerfileInfo, repoMeta *RepoMetadata) Dalec
 	spec["# syntax"] = "ghcr.io/azure/dalec/frontend:latest"
 
 	// Initialize args section
-	args := make(map[string]interface{})
-	args["REVISION"] = getArgValueOrDefault(info.Args, "REVISION", 1)
-	args["VERSION"] = getArgValueOrDefault(info.Args, "VERSION", 0.1)
-
-	// Use commit from repo metadata if available
-	commitValue := ""
-	if repoMeta != nil && repoMeta.Commit != "" {
-		commitValue = repoMeta.Commit
-	}
-	args["COMMIT"] = getArgValueOrDefault(info.Args, "COMMIT", commitValue)
-	args["TARGETARCH"] = getArgValueOrDefault(info.Args, "TARGETARCH", "")
-	args["TARGETOS"] = getArgValueOrDefault(info.Args, "TARGETOS", "")
+	args := populateArgs(info, repoMeta)
 	spec["args"] = args
 
 	// Derive package name from Dockerfile stages or repo
@@ -509,11 +498,16 @@ func findBuilderStageName(info *parser.DockerfileInfo) string {
 	return "builder"
 }
 
-func getArgValueOrDefault(args map[string]string, key string, defaultValue interface{}) string {
-	if val, exists := args[key]; exists && val != "" {
+func getArgValueOrDefault(info *parser.DockerfileInfo, key string, defaultValue any) any {
+	if info == nil {
+		return fmt.Sprintf("%v", defaultValue)
+	}
+
+	if val, exists := info.Args[key]; exists && val != "" {
 		return val
 	}
-	return fmt.Sprintf("%v", defaultValue)
+
+	return defaultValue
 }
 
 // Path-based helper functions for nested map manipulation
@@ -560,4 +554,36 @@ func Get(spec DalecSpec, path string) (interface{}, error) {
 	}
 
 	return current, nil
+}
+
+func populateArgs(info *parser.DockerfileInfo, repoMeta *RepoMetadata) map[any]interface{} {
+	if info == nil {
+		return map[any]interface{}{
+			"REVISION":   1,
+			"VERSION":    0.1,
+			"COMMIT":     "",
+			"TARGETARCH": "",
+			"TARGETOS":   "",
+		}
+	}
+
+	args := make(map[any]interface{})
+	args["REVISION"] = getArgValueOrDefault(info, "REVISION", 1)
+	args["VERSION"] = getArgValueOrDefault(info, "VERSION", 0.1)
+
+	// Use commit from repo metadata if available
+	commitValue := ""
+	if repoMeta != nil && repoMeta.Commit != "" {
+		commitValue = repoMeta.Commit
+	}
+	args["COMMIT"] = getArgValueOrDefault(info, "COMMIT", commitValue)
+	args["TARGETARCH"] = getArgValueOrDefault(info, "TARGETARCH", "")
+	args["TARGETOS"] = getArgValueOrDefault(info, "TARGETOS", "")
+
+	return args
+}
+
+// TODO: Implement YAML reading function
+func ReadYAMLFile(path string) (map[string]interface{}, error) {
+	return map[string]interface{}{}, nil
 }

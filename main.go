@@ -10,58 +10,43 @@ import (
 	"dalec-mapping/transformer"
 )
 
+type cliOptions struct {
+	repoPath       *string
+	dockerfilePath *string
+	outputPath     *string
+	verbose        *bool
+}
+
 func main() {
-	// Define CLI flags
-	repoPath := flag.String("repo", "", "GitHub repository (e.g., owner/repo or https://github.com/owner/repo)")
-	dockerfilePath := flag.String("dockerfile", "Dockerfile", "Path to Dockerfile")
-	outputPath := flag.String("output", "test.yml", "Output YAML file path")
-	verbose := flag.Bool("v", false, "Verbose output")
 
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "Converts Dockerfile to Dalec specification with GitHub metadata.\n\n")
-		fmt.Fprintf(os.Stderr, "Options:\n")
-		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "\nExample:\n")
-		fmt.Fprintf(os.Stderr, "  %s -repo Ryuki-997/HelloWorld\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s -repo https://github.com/owner/repo -dockerfile ./Dockerfile -output spec.yml\n", os.Args[0])
-	}
-
-	flag.Parse()
-
-	// Validate required argument
-	if *repoPath == "" {
-		fmt.Fprintf(os.Stderr, "Error: -repo flag is required\n\n")
-		flag.Usage()
-		os.Exit(1)
-	}
+	cliOptions := defineFlags()
 
 	fmt.Println("🚀 Dalec Spec Generator")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-	// Fetch GitHub repository information
-	fmt.Println("=== FETCHING GITHUB METADATA ===")
-	repoInfo, err := github.FetchRepoInfo(*repoPath)
+	// Fetch GitHub repository info
+	repoInfo, err := fetchGitHubRepoInfo(*cliOptions.repoPath)
 	if err != nil {
 		fmt.Printf("❌ Error fetching repository info: %v\n", err)
 		os.Exit(1)
-	} else {
-		github.PrintRepoInfo(repoInfo)
 	}
 
-	// Parse Dockerfile
-	fmt.Println("=== PARSING DOCKERFILE ===")
-	dockerfileInfo, err := parser.ParseDockerfile(*dockerfilePath)
+	// Parse Dockerfile if path provided
+	dockerfileInfo, err := fetchDockerfileInfo(*cliOptions.dockerfilePath, *cliOptions.verbose)
 	if err != nil {
 		fmt.Printf("❌ Error parsing Dockerfile: %v\n", err)
 		os.Exit(1)
 	}
 
-	if *verbose {
-		parser.PrintDockerfileInfo(dockerfileInfo)
-	} else {
-		fmt.Printf("✅ Parsed %d build stages\n\n", len(dockerfileInfo.Stages))
+	// Read previous YAML file if exists
+	previousYAMLInfo, err := fetchPreviousYAMLInfo(*cliOptions.outputPath)
+	if err != nil {
+		fmt.Printf("❌ Error reading previous YAML info: %v\n", err)
+		os.Exit(1)
 	}
+
+	// TODO:
+	fmt.Printf("%v\n", previousYAMLInfo)
 
 	// Transform to Dalec spec with repository metadata
 	fmt.Println("=== TRANSFORMING TO DALEC SPEC ===")
@@ -88,14 +73,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	err = os.WriteFile(*outputPath, []byte(yamlContent), 0644)
+	err = os.WriteFile(*cliOptions.outputPath, []byte(yamlContent), 0644)
 	if err != nil {
-		fmt.Printf("❌ Error writing %s: %v\n", *outputPath, err)
+		fmt.Printf("❌ Error writing %s: %v\n", *cliOptions.outputPath, err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("✅ Successfully generated %s\n\n", *outputPath)
-
+	fmt.Printf("✅ Successfully generated %s\n\n", *cliOptions.outputPath)
 	fmt.Println("📝 Automatically populated fields:")
 	if repoInfo.GitURL != "" {
 		fmt.Printf("  ✓ Source URL: %s\n", repoInfo.GitURL)
@@ -131,4 +115,94 @@ func main() {
 			fmt.Printf("  • %s\n", field)
 		}
 	}
+}
+
+func defineFlags() cliOptions {
+	// Define CLI flags
+	repoPath := flag.String("repo", "", "GitHub repository (e.g., owner/repo or https://github.com/owner/repo)")
+	dockerfilePath := flag.String("dockerfile", "Dockerfile", "Path to Dockerfile")
+	outputPath := flag.String("output", "test.yml", "Output YAML file path")
+	verbose := flag.Bool("v", false, "Verbose output")
+
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Converts Dockerfile to Dalec specification with GitHub metadata.\n\n")
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nExample:\n")
+		fmt.Fprintf(os.Stderr, "  %s -repo Ryuki-997/HelloWorld\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -repo https://github.com/owner/repo -dockerfile ./Dockerfile -output spec.yml\n", os.Args[0])
+	}
+
+	flag.Parse()
+
+	// Validate required argument
+	if *repoPath == "" {
+		fmt.Fprintf(os.Stderr, "Error: -repo flag is required\n\n")
+		flag.Usage()
+		os.Exit(1)
+	}
+
+	return cliOptions{
+		repoPath:       repoPath,
+		dockerfilePath: dockerfilePath,
+		outputPath:     outputPath,
+		verbose:        verbose,
+	}
+}
+
+func fetchGitHubRepoInfo(repoPath string) (*github.RepoInfo, error) {
+	// Fetch GitHub repository information
+	fmt.Println("=== FETCHING GITHUB METADATA ===")
+	repoInfo, err := github.FetchRepoInfo(repoPath)
+	if err != nil {
+		fmt.Printf("❌ Error fetching repository info: %v\n", err)
+		return nil, err
+	} else {
+		github.PrintRepoInfo(repoInfo)
+	}
+
+	return repoInfo, nil
+}
+
+func fetchDockerfileInfo(dockerfilePath string, verbose bool) (*parser.DockerfileInfo, error) {
+	fmt.Println("=== PARSING DOCKERFILE ===")
+
+	var dockerfileInfo *parser.DockerfileInfo
+
+	if dockerfilePath == "" {
+		fmt.Println("❌ No Dockerfile path provided.")
+		return nil, nil
+	}
+
+	dockerfileInfo, err := parser.ParseDockerfile(dockerfilePath)
+	if err != nil {
+		fmt.Printf("❌ Error parsing Dockerfile: %v\n", err)
+		os.Exit(1)
+	}
+
+	if verbose {
+		parser.PrintDockerfileInfo(dockerfileInfo)
+	} else {
+		fmt.Printf("✅ Parsed %d build stages\n\n", len(dockerfileInfo.Stages))
+	}
+
+	return dockerfileInfo, nil
+}
+
+func fetchPreviousYAMLInfo(outputPath string) (map[string]interface{}, error) {
+	fmt.Println("=== READING PREVIOUS YAML FILE ===")
+
+	yamlInfo, err := transformer.ReadYAMLFile(outputPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("⚠️  No previous YAML file found, proceeding without it.")
+			return nil, nil
+		}
+		fmt.Printf("❌ Error reading previous YAML file: %v\n", err)
+		return nil, err
+	}
+
+	fmt.Println("✅ Successfully read previous YAML file.")
+	return yamlInfo, nil
 }
