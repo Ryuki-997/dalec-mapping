@@ -48,7 +48,7 @@ func WriteYAML(spec DalecSpec) (string, error) {
 		// Create a copy without the syntax line for yaml encoding
 		specCopy := make(DalecSpec)
 		for k, v := range spec {
-			if k == "# syntax" {
+			if k != "# syntax" {
 				specCopy[k] = v
 			}
 		}

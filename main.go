@@ -35,18 +35,13 @@ func main() {
 	dockerfileInfo, err := fetchDockerfileInfo(*cliOptions.dockerfilePath, *cliOptions.verbose)
 	if err != nil {
 		fmt.Printf("❌ Error parsing Dockerfile: %v\n", err)
-		os.Exit(1)
 	}
 
 	// Read previous YAML file if exists
 	previousYAMLInfo, err := fetchPreviousYAMLInfo(*cliOptions.outputPath)
 	if err != nil {
 		fmt.Printf("❌ Error reading previous YAML info: %v\n", err)
-		os.Exit(1)
 	}
-
-	// TODO:
-	fmt.Printf("%v\n", previousYAMLInfo)
 
 	// Transform to Dalec spec with repository metadata
 	fmt.Println("=== TRANSFORMING TO DALEC SPEC ===")
@@ -80,41 +75,6 @@ func main() {
 	}
 
 	fmt.Printf("✅ Successfully generated %s\n\n", *cliOptions.outputPath)
-	fmt.Println("📝 Automatically populated fields:")
-	if repoInfo.GitURL != "" {
-		fmt.Printf("  ✓ Source URL: %s\n", repoInfo.GitURL)
-	}
-	if repoInfo.LatestCommit != "" {
-		fmt.Printf("  ✓ Commit: %s\n", repoInfo.LatestCommit)
-	}
-	if repoInfo.Website != "" {
-		fmt.Printf("  ✓ Website: %s\n", repoInfo.Website)
-	}
-	if repoInfo.Description != "" {
-		fmt.Printf("  ✓ Description: %s\n", repoInfo.Description)
-	}
-	if repoInfo.License != "" {
-		fmt.Printf("  ✓ License: %s\n", repoInfo.License)
-	}
-
-	// Show what still needs manual input
-	needsManual := []string{}
-	if repoInfo.GitURL == "" {
-		needsManual = append(needsManual, "source URL")
-	}
-	if repoInfo.Description == "" {
-		needsManual = append(needsManual, "description")
-	}
-	if repoInfo.License == "" {
-		needsManual = append(needsManual, "license")
-	}
-
-	if len(needsManual) > 0 {
-		fmt.Println("\n⚠️  Fields requiring manual input:")
-		for _, field := range needsManual {
-			fmt.Printf("  • %s\n", field)
-		}
-	}
 }
 
 func defineFlags() cliOptions {
