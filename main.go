@@ -13,6 +13,7 @@ import (
 type cliOptions struct {
 	repoPath       *string
 	dockerfilePath *string
+	specFilePath   *string
 	outputPath     *string
 	verbose        *bool
 }
@@ -38,7 +39,7 @@ func main() {
 	}
 
 	// Read previous YAML file if exists
-	previousYAMLInfo, err := fetchPreviousYAMLInfo(*cliOptions.outputPath)
+	previousYAMLInfo, err := fetchPreviousYAMLInfo(*cliOptions.specFilePath)
 	if err != nil {
 		fmt.Printf("❌ Error reading previous YAML info: %v\n", err)
 	}
@@ -80,8 +81,9 @@ func main() {
 func defineFlags() cliOptions {
 	// Define CLI flags
 	repoPath := flag.String("repo", "", "GitHub repository (e.g., owner/repo or https://github.com/owner/repo)")
-	dockerfilePath := flag.String("dockerfile", "Dockerfile", "Path to Dockerfile")
-	outputPath := flag.String("output", "test.yml", "Output YAML file path")
+	dockerfilePath := flag.String("dockerfile", "", "Path to Dockerfile")
+	specFilePath := flag.String("spec", "", "Path to previous Dalec spec YAML file")
+	outputPath := flag.String("output", "output.yml", "Output YAML file path")
 	verbose := flag.Bool("v", false, "Verbose output")
 
 	flag.Usage = func() {
@@ -106,6 +108,7 @@ func defineFlags() cliOptions {
 	return cliOptions{
 		repoPath:       repoPath,
 		dockerfilePath: dockerfilePath,
+		specFilePath:   specFilePath,
 		outputPath:     outputPath,
 		verbose:        verbose,
 	}
@@ -131,7 +134,7 @@ func fetchDockerfileInfo(dockerfilePath string, verbose bool) (*parser.Dockerfil
 	var dockerfileInfo *parser.DockerfileInfo
 
 	if dockerfilePath == "" {
-		fmt.Println("❌ No Dockerfile path provided.")
+		fmt.Println("⚠️  No Dockerfile path provided.")
 		return nil, nil
 	}
 
@@ -150,10 +153,15 @@ func fetchDockerfileInfo(dockerfilePath string, verbose bool) (*parser.Dockerfil
 	return dockerfileInfo, nil
 }
 
-func fetchPreviousYAMLInfo(outputPath string) (transformer.PreviousDalecSpec, error) {
+func fetchPreviousYAMLInfo(filepath string) (transformer.PreviousDalecSpec, error) {
 	fmt.Println("=== READING PREVIOUS YAML FILE ===")
 
-	yamlInfo, err := transformer.ReadYAML(outputPath)
+	if filepath == "" {
+		fmt.Println("⚠️  No previous YAML path provided to read previous spec.")
+		return transformer.PreviousDalecSpec{}, nil
+	}
+
+	yamlInfo, err := transformer.ReadYAML(filepath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			fmt.Println("⚠️  No previous YAML file found, proceeding without it.")
