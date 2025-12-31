@@ -34,15 +34,58 @@ func TransformToDalec(info *parser.DockerfileInfo, repoMeta *RepoMetadata) Dalec
 	spec["# syntax"] = "ghcr.io/azure/dalec/frontend:latest"
 
 	// Initialize args section
-	args := populateArgs(info, repoMeta)
-	spec["args"] = args
+	spec["args"] = populateArgs(info, repoMeta)
 
-	// Derive package name from Dockerfile stages or repo
 	packageName := derivePackageName(info)
 	if repoMeta != nil && repoMeta.RepoName != "" {
 		packageName = strings.ToLower(repoMeta.RepoName)
 	}
 	spec["name"] = packageName
+	populateMetadata(spec, info, repoMeta)
+
+	// Build extensions section
+	spec["x-build-extensions"] = buildExtensions(packageName)
+
+	// Transform Dockerfile content to Dalec sections
+	spec["sources"] = extractSources(info, repoMeta)
+	spec["dependencies"] = extractDependencies(info)
+	spec["targets"] = extractTargets(info)
+	spec["build"] = extractBuildSteps(info)
+	spec["artifacts"] = extractArtifacts(info)
+	spec["image"] = extractImageConfig(info)
+	spec["tests"] = []map[string]interface{}{} // Empty placeholder
+
+	return spec
+}
+
+func populateArgs(info *parser.DockerfileInfo, repoMeta *RepoMetadata) map[any]interface{} {
+	if info == nil {
+		return map[any]interface{}{
+			"REVISION":   1,
+			"VERSION":    0.1,
+			"COMMIT":     "",
+			"TARGETARCH": "",
+			"TARGETOS":   "",
+		}
+	}
+
+	args := make(map[any]interface{})
+	args["REVISION"] = getArgValueOrDefault(info, "REVISION", 1)
+	args["VERSION"] = getArgValueOrDefault(info, "VERSION", 0.1)
+
+	// Use commit from repo metadata if available
+	commitValue := ""
+	if repoMeta != nil && repoMeta.Commit != "" {
+		commitValue = repoMeta.Commit
+	}
+	args["COMMIT"] = getArgValueOrDefault(info, "COMMIT", commitValue)
+	args["TARGETARCH"] = getArgValueOrDefault(info, "TARGETARCH", "")
+	args["TARGETOS"] = getArgValueOrDefault(info, "TARGETOS", "")
+
+	return args
+}
+
+func populateMetadata(spec DalecSpec, info *parser.DockerfileInfo, repoMeta *RepoMetadata) {
 
 	// Standard metadata fields - use repo metadata if available
 	spec["packager"] = "Azure Container Upstream"
@@ -68,46 +111,9 @@ func TransformToDalec(info *parser.DockerfileInfo, repoMeta *RepoMetadata) Dalec
 
 	spec["version"] = "${VERSION}"
 	spec["revision"] = "${REVISION}"
-
-	// Build extensions section
-	spec["x-build-extensions"] = buildExtensions(packageName)
-
-	// Transform Dockerfile content to Dalec sections
-	spec["sources"] = extractSources(info, repoMeta)
-	spec["dependencies"] = extractDependencies(info)
-	spec["targets"] = extractTargets(info)
-	spec["sources"] = extractSources(info, repoMeta)
-	spec["dependencies"] = extractDependencies(info)
-	spec["targets"] = extractTargets(info)
-	spec["build"] = extractBuildSteps(info)
-	spec["artifacts"] = extractArtifacts(info)
-	spec["image"] = extractImageConfig(info)
-	spec["tests"] = []map[string]interface{}{} // Empty placeholder
-
-	return spec
 }
 
-// buildExtensions creates the x-build-extensions section
-func buildExtensions(packageName string) map[string]interface{} {
-	ext := make(map[string]interface{})
-	ext["image-name"] = strings.ToLower(packageName)
-	ext["repository"] = "azure"
-	ext["build-targets"] = []string{
-		"azlinux3/rpm",
-		"azlinux3/container",
-		"windowscross/container",
-	}
-
-	// Per-target configurations
-	perTarget := make(map[string]interface{})
-	perTarget["windowscross"] = map[string]interface{}{
-		"platforms": []string{"windows/amd64"},
-	}
-	ext["per-target"] = perTarget
-
-	return ext
-}
-
+// TODO: Understand docker stages for package naming
 // derivePackageName extracts a package name from Dockerfile info
 func derivePackageName(info *parser.DockerfileInfo) string {
 	if len(info.Stages) == 0 {
@@ -144,6 +150,27 @@ func derivePackageName(info *parser.DockerfileInfo) string {
 	}
 
 	return "package"
+}
+
+// buildExtensions creates the x-build-extensions section
+func buildExtensions(packageName string) map[string]interface{} {
+	ext := make(map[string]interface{})
+	ext["image-name"] = strings.ToLower(packageName)
+	ext["repository"] = "azure"
+	ext["build-targets"] = []string{
+		"azlinux3/rpm",
+		"azlinux3/container",
+		"windowscross/container",
+	}
+
+	// Per-target configurations
+	perTarget := make(map[string]interface{})
+	perTarget["windowscross"] = map[string]interface{}{
+		"platforms": []string{"windows/amd64"},
+	}
+	ext["per-target"] = perTarget
+
+	return ext
 }
 
 // extractSources creates source definitions from Dockerfile
@@ -554,33 +581,6 @@ func Get(spec DalecSpec, path string) (interface{}, error) {
 	}
 
 	return current, nil
-}
-
-func populateArgs(info *parser.DockerfileInfo, repoMeta *RepoMetadata) map[any]interface{} {
-	if info == nil {
-		return map[any]interface{}{
-			"REVISION":   1,
-			"VERSION":    0.1,
-			"COMMIT":     "",
-			"TARGETARCH": "",
-			"TARGETOS":   "",
-		}
-	}
-
-	args := make(map[any]interface{})
-	args["REVISION"] = getArgValueOrDefault(info, "REVISION", 1)
-	args["VERSION"] = getArgValueOrDefault(info, "VERSION", 0.1)
-
-	// Use commit from repo metadata if available
-	commitValue := ""
-	if repoMeta != nil && repoMeta.Commit != "" {
-		commitValue = repoMeta.Commit
-	}
-	args["COMMIT"] = getArgValueOrDefault(info, "COMMIT", commitValue)
-	args["TARGETARCH"] = getArgValueOrDefault(info, "TARGETARCH", "")
-	args["TARGETOS"] = getArgValueOrDefault(info, "TARGETOS", "")
-
-	return args
 }
 
 // TODO: Implement YAML reading function
