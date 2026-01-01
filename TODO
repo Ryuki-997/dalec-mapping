@@ -1,8 +1,4 @@
-Concept: 
-3. Formatter onto spec files
-
-TODO: 
-1. Validate usability 
-2. Optional Dockerfile, through pure github API 
-3. Fix README.MD
-4. Test other public repo
+TODO:
+1. parse build tools without dockerfile 
+2. commit hash not matching release hash (tags)
+3. 3rd test with ksehgal/fix-publish-poc (if cns repo available, test as well)
