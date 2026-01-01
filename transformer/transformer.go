@@ -64,8 +64,7 @@ func TransformToDalec(repoInfo *RepoMetadata, previousSpec PreviousDalecSpec, do
 }
 
 func rebuild(repoInfo *RepoMetadata, previousSpec PreviousDalecSpec) bool {
-	var previousSpecPtr *PreviousDalecSpec = &previousSpec
-	if previousSpecPtr == nil {
+	if previousSpec.Commit == "" {
 		return false
 	}
 
