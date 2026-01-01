@@ -44,24 +44,31 @@ func TransformToDalec(repoInfo *RepoMetadata, previousSpec PreviousDalecSpec, do
 		packageName = strings.ToLower(repoInfo.RepoName)
 	}
 	spec["name"] = packageName
-	populateMetadata(spec, dockerInfo, repoInfo)
+	populateMetadata(spec, repoInfo)
 
 	// Build extensions section
 	spec["x-build-extensions"] = buildExtensions(packageName)
 
 	// Transform Dockerfile content to Dalec sections
-	spec["sources"] = extractSources(dockerInfo, repoInfo)
-	spec["dependencies"] = extractDependencies(dockerInfo)
-	spec["targets"] = extractTargets(dockerInfo)
-	spec["build"] = extractBuildSteps(dockerInfo)
-	spec["artifacts"] = extractArtifacts(dockerInfo)
-	spec["image"] = extractImageConfig(dockerInfo)
+	if dockerInfo != nil {
+		spec["sources"] = extractSources(dockerInfo, repoInfo)
+		spec["dependencies"] = extractDependencies(dockerInfo)
+		spec["targets"] = extractTargets(dockerInfo)
+		spec["build"] = extractBuildSteps(dockerInfo)
+		spec["artifacts"] = extractArtifacts(dockerInfo)
+		spec["image"] = extractImageConfig(dockerInfo)
+	}
 	spec["tests"] = []map[string]interface{}{} // Empty placeholder
 
 	return spec
 }
 
 func rebuild(repoInfo *RepoMetadata, previousSpec PreviousDalecSpec) bool {
+	var previousSpecPtr *PreviousDalecSpec = &previousSpec
+	if previousSpecPtr == nil {
+		return false
+	}
+
 	if previousSpec.Commit == repoInfo.Commit {
 		prevRevision, err := strconv.Atoi(previousSpec.Revision)
 		if err != nil {
@@ -104,7 +111,7 @@ func populateArgs(repoMeta *RepoMetadata, dockerInfo *parser.DockerfileInfo) map
 	return args
 }
 
-func populateMetadata(spec DalecSpec, dockerInfo *parser.DockerfileInfo, repoMeta *RepoMetadata) {
+func populateMetadata(spec DalecSpec, repoMeta *RepoMetadata) {
 
 	// Standard metadata fields - use repo metadata if available
 	spec["packager"] = "Azure Container Upstream"
@@ -135,7 +142,7 @@ func populateMetadata(spec DalecSpec, dockerInfo *parser.DockerfileInfo, repoMet
 // TODO: Understand docker stages for package naming
 // derivePackageName extracts a package name from Dockerfile info
 func derivePackageName(info *parser.DockerfileInfo) string {
-	if len(info.Stages) == 0 {
+	if info == nil || len(info.Stages) == 0 {
 		return "package"
 	}
 
