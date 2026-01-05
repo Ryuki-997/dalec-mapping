@@ -11,6 +11,7 @@ This project converts Dockerfiles to Dalec specification files by combining mult
 The system fetches and processes three distinct information packets:
 
 #### 1. GitHub Repository URL (Required)
+
 - **Input Method**: Positional command-line argument (not a flag)
 - **Format**: `owner/repo` or full GitHub URL
 - **Purpose**: Primary source of metadata including:
@@ -21,6 +22,7 @@ The system fetches and processes three distinct information packets:
   - Homepage/website
 
 #### 2. Dockerfile Path (Optional)
+
 - **Input Method**: `-dockerfile` flag
 - **Default**: `./Dockerfile` in current directory
 - **Purpose**: Extract build configuration and arguments:
@@ -36,12 +38,13 @@ The system fetches and processes three distinct information packets:
   - Handles multi-architecture builds (--platform flags)
 
 #### 3. Previous Dalec Spec File Path (Optional)
+
 - **Input Method**: `-spec` flag
-- **Purpose**: Verify previous generation was properly formatted & fill previously generated values unless specifically identified. 
-     - Repository updates (commit hash changes)
-     - Dockerfile modifications
-     - Manual spec adjustments
-     - Dependency updates
+- **Purpose**: Verify previous generation was properly formatted & fill previously generated values unless specifically identified.
+  - Repository updates (commit hash changes)
+  - Dockerfile modifications
+  - Manual spec adjustments
+  - Dependency updates
 - **Processing**:
   - Parses existing YAML spec file
   - Validates required fields are present
@@ -53,7 +56,7 @@ The system fetches and processes three distinct information packets:
 
 ### Processing Pipeline
 
-```
+```text
 ┌─────────────────┐
 │  CLI Arguments  │
 │  - repo (pos)   │
@@ -119,7 +122,7 @@ The system fetches and processes three distinct information packets:
 When information is unavailable, the system applies intelligent defaults:
 
 | Field | Default Value | Fallback Strategy |
-|-------|---------------|-------------------|
+| ----- | ------------- | ----------------- |
 | `description` | Empty string | User must manually fill if GitHub unavailable |
 | `license` | Empty string | User must manually fill if not in repo |
 | `commit` | "unknown" | Critical field - warn user to update |
@@ -132,7 +135,7 @@ When information is unavailable, the system applies intelligent defaults:
 
 To track evolution of generated specs over time:
 
-```
+```bash
 output/
 ├── latest.yml                    # Symlink to most recent
 ├── azure-cns-20250102-084da35.yml   # Timestamped + commit hash
@@ -143,6 +146,7 @@ output/
 ```
 
 **Benefits**:
+
 - Version history for audit trail
 - Easy rollback to previous specs
 - Comparison between generations
@@ -179,7 +183,9 @@ dalec-mapping Ryuki-997/HelloWorld \
 - `-v` - Verbose mode for detailed logging
 
 ## Future Roadmap
+
 ### 1. Spec Validation Tool
+
 ```bash
 # Validate spec file structure
 dalec-mapping validate spec.yml
@@ -189,13 +195,16 @@ dalec-mapping diff old-spec.yml new-spec.yml
 ```
 
 **Features**:
+
 - Schema validation against Dalec spec requirements
 - Field completeness checks
 - Semantic validation (e.g., valid commit hashes, reachable URLs)
 - Drift detection from upstream repository
 
 #### 2. CLI Commands
+
 ```bash
+
 # Update specific field
 dalec-mapping set spec.yml build.env.VERSION 2.0.0
 
@@ -210,7 +219,9 @@ dalec-mapping update spec.yml --patch changes.json
 ```
 
 #### 3. Programmatic API
+
 ```go
+
 import "github.com/dalec-mapping/api"
 
 // Load spec
@@ -231,12 +242,14 @@ err = spec.Save("spec.yml")
 - Validation at modification time
 
 ### 4. Multi-Repository Support
+
 - GitLab integration
 - Bitbucket support
 - Generic Git repository handling (self-hosted)
 - Monorepo support (multiple Dockerfiles)
 
 ### 5. Advanced Compliance Testing & Suggestions
+
 - Apply standard testing for compliance
 - Suggest dependencies based on Dockerfile analysis
 - Auto-detect test commands
