@@ -11,30 +11,27 @@ import (
 
 // RepoInfo contains metadata about a GitHub repository
 type RepoInfo struct {
-	Owner         string
-	Repo          string
-	FullName      string
-	Description   string
-	Website       string // Homepage URL
-	GitURL        string // Clone URL
-	License       string
-	LatestCommit  string
-	DefaultBranch string
+	Owner        string
+	Repo         string
+	Branch       string
+	GitURL       string
+	Description  string
+	License      string
+	LatestCommit string
 }
 
 // FetchRepoInfo fetches repository metadata from GitHub API
 func FetchRepoInfo(repoPath string) (*RepoInfo, error) {
-	owner, repo, err := parseRepoPath(repoPath)
+	owner, repo, branch, err := parseRepoPath(repoPath)
 	if err != nil {
 		return nil, err
 	}
 
 	info := &RepoInfo{
-		Owner:    owner,
-		Repo:     repo,
-		FullName: fmt.Sprintf("%s/%s", owner, repo),
-		Website:  fmt.Sprintf("https://github.com/%s/%s", owner, repo),
-		GitURL:   fmt.Sprintf("https://github.com/%s/%s", owner, repo),
+		Owner:  owner,
+		Repo:   repo,
+		Branch: branch,
+		GitURL: fmt.Sprintf("https://github.com/%s/%s", owner, repo),
 	}
 
 	// Fetch repository metadata
@@ -43,7 +40,7 @@ func FetchRepoInfo(repoPath string) (*RepoInfo, error) {
 	}
 
 	// Fetch latest commit
-	if err := fetchLatestCommit(info); err != nil {
+	if err := fetchReleaseMetadata(info); err != nil {
 		return nil, fmt.Errorf("failed to fetch latest commit: %w", err)
 	}
 
@@ -52,7 +49,7 @@ func FetchRepoInfo(repoPath string) (*RepoInfo, error) {
 
 // parseRepoPath extracts owner and repo from various formats
 // Supports: "owner/repo", "https://github.com/owner/repo", "github.com/owner/repo"
-func parseRepoPath(path string) (owner, repo string, err error) {
+func parseRepoPath(path string) (owner, repo, branch string, err error) {
 	// Remove trailing slash
 	path = strings.TrimSuffix(path, "/")
 
@@ -63,16 +60,22 @@ func parseRepoPath(path string) (owner, repo string, err error) {
 
 	// Split by /
 	parts := strings.Split(path, "/")
-	if len(parts) < 2 {
-		return "", "", fmt.Errorf("invalid repository path: %s (expected format: owner/repo)", path)
-	}
+	n := len(parts)
 
-	return parts[0], parts[1], nil
+	if n == 2 {
+		owner, repo = parts[0], parts[1]
+		return owner, repo, "main", nil
+	} else if n == 4 && parts[2] == "tree" {
+		owner, repo = parts[0], parts[1]
+		return owner, repo, parts[3], nil
+	} else {
+		return "", "", "", fmt.Errorf("invalid repository path: %s (expected format: owner/repo/tree/branch)", path)
+	}
 }
 
-// fetchRepoMetadata fetches repository information from GitHub API
+// Acquire default metadata
 func fetchRepoMetadata(info *RepoInfo) error {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s", info.Owner, info.Repo)
+	url := info.GitURL
 
 	resp, err := makeGitHubRequest(url)
 	if err != nil {
@@ -97,18 +100,15 @@ func fetchRepoMetadata(info *RepoInfo) error {
 	// Extract metadata
 	if desc, ok := data["description"].(string); ok {
 		info.Description = desc
-	}
-
-	if homepage, ok := data["homepage"].(string); ok && homepage != "" {
-		info.Website = homepage
-	}
-
-	if branch, ok := data["default_branch"].(string); ok {
-		info.DefaultBranch = branch
 	} else {
-		info.DefaultBranch = "main"
+		info.Description = fmt.Sprintf("This is the %s project.", info.Repo)
 	}
 
+	if url, ok := data["html_url"].(string); ok && url != "" {
+		info.GitURL = url
+	}
+
+	// TODO: Potentially unnecessary license extraction
 	if license, ok := data["license"].(map[string]interface{}); ok {
 		if spdxID, ok := license["spdx_id"].(string); ok && spdxID != "NOASSERTION" {
 			info.License = spdxID
@@ -118,10 +118,9 @@ func fetchRepoMetadata(info *RepoInfo) error {
 	return nil
 }
 
-// fetchLatestCommit fetches the latest commit SHA from the default branch
-func fetchLatestCommit(info *RepoInfo) error {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/commits/%s",
-		info.Owner, info.Repo, info.DefaultBranch)
+// Acquire release metadata
+func fetchReleaseMetadata(info *RepoInfo) error {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases", info.Owner, info.Repo)
 
 	resp, err := makeGitHubRequest(url)
 	if err != nil {
@@ -143,16 +142,29 @@ func fetchLatestCommit(info *RepoInfo) error {
 		return fmt.Errorf("failed to parse JSON: %w", err)
 	}
 
-	if sha, ok := data["sha"].(string); ok {
-		info.LatestCommit = sha
-	} else {
+	asset, ok := data["assets"].([]interface{})
+	if !ok || len(asset) == 0 {
+		return fmt.Errorf("no releases found for repository")
+	}
+
+	assetMap := asset[0].(map[string]interface{})
+	digest, ok := assetMap["digest"].(string)
+	if !ok {
 		return fmt.Errorf("commit SHA not found in response")
 	}
+
+	parts := strings.Split(digest, ":")
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid digest format")
+	}
+
+	_, sha := parts[0], parts[1]
+	info.LatestCommit = sha
 
 	return nil
 }
 
-// makeGitHubRequest creates an HTTP request with proper headers
+// Request data from GitHub API
 func makeGitHubRequest(url string) (*http.Response, error) {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
@@ -165,7 +177,6 @@ func makeGitHubRequest(url string) (*http.Response, error) {
 
 	// Add headers for GitHub API
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
-	req.Header.Set("User-Agent", "dalec-mapping-cli")
 
 	return client.Do(req)
 }
@@ -174,19 +185,12 @@ func makeGitHubRequest(url string) (*http.Response, error) {
 func PrintRepoInfo(info *RepoInfo) {
 	fmt.Println("📦 Repository Information")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Printf("  Repository: %s\n", info.FullName)
-	fmt.Printf("  Website: %s\n", info.Website)
+	fmt.Printf("  Owner: %s\n", info.Owner)
+	fmt.Printf("  Repo: %s\n", info.Repo)
+	fmt.Printf("  Default Branch: %s\n", info.Branch)
 	fmt.Printf("  Git URL: %s\n", info.GitURL)
-
-	if info.Description != "" {
-		fmt.Printf("  Description: %s\n", info.Description)
-	}
-
-	if info.License != "" {
-		fmt.Printf("  License: %s\n", info.License)
-	}
-
-	fmt.Printf("  Default Branch: %s\n", info.DefaultBranch)
+	fmt.Printf("  Description: %s\n", info.Description)
+	fmt.Printf("  License: %s\n", info.License)
 	fmt.Printf("  Latest Commit: %s\n", info.LatestCommit)
 	fmt.Println()
 }
