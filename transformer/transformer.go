@@ -73,7 +73,7 @@ func TransformToDalec(defaultSpec *DefaultSpec) DalecSpec {
 	spec["build"] = extractBuildSteps(defaultSpec)
 	spec["artifacts"] = extractArtifacts(defaultSpec)
 	spec["image"] = extractImageConfig(defaultSpec)
-	spec["tests"] = []map[string]interface{}{} // Empty placeholder
+	spec["tests"] = appendTests(defaultSpec)
 
 	return spec
 }
@@ -505,6 +505,14 @@ func createSymlinks(stage *parser.Stage) map[string]interface{} {
 	}
 
 	return post
+}
+
+func appendTests(defaultSpec *DefaultSpec) []map[string]interface{} {
+	tests := []map[string]interface{}{
+		TestCheckFiles(defaultSpec.Repo, 0755),
+	}
+
+	return tests
 }
 
 // Helper functions
