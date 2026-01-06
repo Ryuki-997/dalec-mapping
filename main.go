@@ -53,7 +53,6 @@ func main() {
 		repoMeta = &transformer.RepoMetadata{
 			GitURL:      repoInfo.GitURL,
 			Commit:      repoInfo.LatestCommit,
-			Website:     repoInfo.Website,
 			Description: repoInfo.Description,
 			License:     repoInfo.License,
 			RepoName:    repoInfo.Repo,

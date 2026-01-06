@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -16,6 +17,7 @@ type RepoInfo struct {
 	Branch       string
 	GitURL       string
 	Description  string
+	Version      float64
 	License      string
 	LatestCommit string
 }
@@ -120,7 +122,7 @@ func fetchRepoMetadata(info *RepoInfo) error {
 
 // Acquire release metadata
 func fetchReleaseMetadata(info *RepoInfo) error {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases", info.Owner, info.Repo)
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", info.Owner, info.Repo)
 
 	resp, err := makeGitHubRequest(url)
 	if err != nil {
@@ -141,6 +143,17 @@ func fetchReleaseMetadata(info *RepoInfo) error {
 	if err := json.Unmarshal(body, &data); err != nil {
 		return fmt.Errorf("failed to parse JSON: %w", err)
 	}
+
+	tag, ok := data["tag_name"].(string)
+	if !ok {
+		return fmt.Errorf("tag_name not found in response")
+	}
+	versionStr := strings.TrimPrefix(tag, "v")
+	versionFloat, err := strconv.ParseFloat(versionStr, 64)
+	if err != nil {
+		return fmt.Errorf("invalid version format: %w", err)
+	}
+	info.Version = versionFloat
 
 	asset, ok := data["assets"].([]interface{})
 	if !ok || len(asset) == 0 {
