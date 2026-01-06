@@ -209,7 +209,6 @@ func extractTargets(defaultSpec *DefaultSpec) map[string]interface{} {
 	targets := make(map[string]interface{})
 
 	// Add standard Azure Linux target with required dependencies
-	print("Build Target: %s\n", defaultSpec.BuildTargets)
 	for _, buildTarget := range defaultSpec.BuildTargets {
 		parts := strings.Split(string(buildTarget), "/")
 
@@ -237,7 +236,6 @@ func extractTargets(defaultSpec *DefaultSpec) map[string]interface{} {
 		case "windowscross":
 			fallthrough
 		default:
-			print("Build Target: %s\n", buildTarget)
 			target := make(map[string]interface{})
 			runtimeDeps := make(map[string]interface{})
 
@@ -373,33 +371,43 @@ func extractBuildCommands(defaultSpec *DefaultSpec) []map[string]interface{} {
 func extractArtifacts(defaultSpec *DefaultSpec) map[string]interface{} {
 	artifacts := make(map[string]interface{})
 	binaries := make(map[string]interface{})
+	license := make(map[string]interface{})
 
 	// Find binaries from COPY --from=builder in final stages
-	builderName := findBuilderStageName(defaultSpec)
+	// builderName := findBuilderStageName(defaultSpec)
 
-	for i := len(defaultSpec.Stages) - 1; i >= 0; i-- {
-		stage := defaultSpec.Stages[i]
-		// Skip builder stages, look at final stages
-		if isBuilderStage(stage) {
-			continue
-		}
+	// for i := len(defaultSpec.Stages) - 1; i >= 0; i-- {
+	// 	stage := defaultSpec.Stages[i]
+	// 	// Skip builder stages, look at final stages
+	// 	if isBuilderStage(stage) {
+	// 		continue
+	// 	}
 
-		for _, copy := range stage.Copies {
-			if copy.From != builderName && copy.From != "builder" {
-				continue
-			}
-			for _, src := range copy.Source {
-				// Check if it's a binary path
-				if strings.Contains(src, "/bin/") || strings.HasSuffix(src, ".exe") {
-					binaries[src] = map[string]interface{}{}
-				}
-			}
-		}
-	}
+	// 	for _, copy := range stage.Copies {
+	// 		if copy.From != builderName && copy.From != "builder" {
+	// 			continue
+	// 		}
+	// 		for _, src := range copy.Source {
+	// 			// Check if it's a binary path
+	// 			if strings.Contains(src, "/bin/") || strings.HasSuffix(src, ".exe") {
+	// 				binaries[src] = map[string]interface{}{}
+	// 			}
+	// 		}
+	// 	}
+	// }
 
-	if len(binaries) > 0 {
-		artifacts["binaries"] = binaries
-	}
+	// if len(binaries) > 0 {
+	// 	artifacts["binaries"] = binaries
+	// }
+
+	binaryPath := defaultSpec.Repo + "/bin/" + defaultSpec.Repo
+	binaries[binaryPath] = map[string]interface{}{}
+
+	licensePath := defaultSpec.Repo + "/LICENSE"
+	license[licensePath] = map[string]interface{}{}
+
+	artifacts["binaries"] = binaries
+	artifacts["licenses"] = license
 
 	// Add licenses placeholder
 	// artifacts["licenses"] = map[string]interface{}{
@@ -413,44 +421,54 @@ func extractArtifacts(defaultSpec *DefaultSpec) map[string]interface{} {
 func extractImageConfig(defaultSpec *DefaultSpec) map[string]interface{} {
 	image := make(map[string]interface{})
 
-	if len(defaultSpec.Stages) == 0 {
-		return image
+	// if len(defaultSpec.Stages) == 0 {
+	// 	return image
+	// }
+
+	// // Find the final Linux stage (skip Windows)
+	// var finalStage *parser.Stage
+	// for i := len(defaultSpec.Stages) - 1; i >= 0; i-- {
+	// 	stage := &defaultSpec.Stages[i]
+	// 	if stage.Name == "windows" || stage.Name == "hpc" {
+	// 		continue
+	// 	}
+
+	// 	if len(stage.Entrypoint) > 0 || len(stage.Copies) > 0 {
+	// 		finalStage = stage
+	// 		break
+	// 	}
+	// }
+
+	// if finalStage == nil {
+	// 	return image
+	// }
+
+	// // Extract entrypoint
+	// if len(finalStage.Entrypoint) > 0 {
+	// 	entrypoint := finalStage.Entrypoint[0]
+	// 	// If shell-wrapped, extract actual command
+	// 	if len(finalStage.Entrypoint) > 2 && finalStage.Entrypoint[0] == "/bin/sh" {
+	// 		entrypoint = finalStage.Entrypoint[2]
+	// 	}
+	// 	image["entrypoint"] = entrypoint
+	// }
+
+	// // Create symlinks for binaries if needed
+	// post := createSymlinks(finalStage)
+	// if len(post) > 0 {
+	// 	image["post"] = post
+	// }
+
+	entrypoint := fmt.Sprintf("/%s", defaultSpec.Repo)
+	post := make(map[string]interface{})
+	symlinks := make(map[string]interface{})
+	symlinks["/usr/bin/"+defaultSpec.Repo] = map[string]interface{}{
+		"path": entrypoint,
 	}
+	post["symlinks"] = symlinks
 
-	// Find the final Linux stage (skip Windows)
-	var finalStage *parser.Stage
-	for i := len(defaultSpec.Stages) - 1; i >= 0; i-- {
-		stage := &defaultSpec.Stages[i]
-		if stage.Name == "windows" || stage.Name == "hpc" {
-			continue
-		}
-
-		if len(stage.Entrypoint) > 0 || len(stage.Copies) > 0 {
-			finalStage = stage
-			break
-		}
-	}
-
-	if finalStage == nil {
-		return image
-	}
-
-	// Extract entrypoint
-	if len(finalStage.Entrypoint) > 0 {
-		entrypoint := finalStage.Entrypoint[0]
-		// If shell-wrapped, extract actual command
-		if len(finalStage.Entrypoint) > 2 && finalStage.Entrypoint[0] == "/bin/sh" {
-			entrypoint = finalStage.Entrypoint[2]
-		}
-		image["entrypoint"] = entrypoint
-	}
-
-	// Create symlinks for binaries if needed
-	post := createSymlinks(finalStage)
-	if len(post) > 0 {
-		image["post"] = post
-	}
-
+	image["entrypoint"] = entrypoint
+	image["post"] = post
 	return image
 }
 

@@ -1,4 +1,3 @@
 TODO:
-1. parse build tools without dockerfile 
-2. commit hash not matching release hash (tags)
-3. 3rd test with ksehgal/fix-publish-poc (if cns repo available, test as well)
+cli flag get set 
+test block 
