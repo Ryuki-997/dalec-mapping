@@ -225,6 +225,8 @@ func PrintRepoInfo(info *RepoInfo) {
 	fmt.Printf("  Default Branch: %s\n", info.Branch)
 	fmt.Printf("  Git URL: %s\n", info.GitURL)
 	fmt.Printf("  Description: %s\n", info.Description)
+	fmt.Printf("	Revision: %d\n", info.Revision)
+	fmt.Printf("  Version: %.2f\n", info.Version)
 	fmt.Printf("  License: %s\n", info.License)
 	fmt.Printf("  Latest Commit: %s\n", info.LatestCommit)
 	fmt.Println()
