@@ -38,12 +38,6 @@ func main() {
 		fmt.Printf("❌ Error parsing Dockerfile: %v\n", err)
 	}
 
-	// Read previous YAML file if exists
-	previousYAMLInfo, err := fetchPreviousYAMLInfo(*cliOptions.specFilePath)
-	if err != nil {
-		fmt.Printf("❌ Error reading previous YAML info: %v\n", err)
-	}
-
 	// Transform to Dalec spec with repository metadata
 	fmt.Println("=== TRANSFORMING TO DALEC SPEC ===")
 
@@ -59,7 +53,7 @@ func main() {
 		}
 	}
 
-	dalecSpec := transformer.TransformToDalec(repoMeta, previousYAMLInfo, dockerfileInfo)
+	dalecSpec := transformer.TransformToDalec(repoMeta, dockerfileInfo)
 
 	// Write to output file
 	yamlContent, err := transformer.WriteYAML(dalecSpec)

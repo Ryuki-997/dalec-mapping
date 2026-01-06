@@ -17,6 +17,7 @@ type RepoInfo struct {
 	Branch       string
 	GitURL       string
 	Description  string
+	Revision     int64
 	Version      float64
 	License      string
 	LatestCommit string
@@ -77,7 +78,7 @@ func parseRepoPath(path string) (owner, repo, branch string, err error) {
 
 // Acquire default metadata
 func fetchRepoMetadata(info *RepoInfo) error {
-	url := info.GitURL
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s", info.Owner, info.Repo)
 
 	resp, err := makeGitHubRequest(url)
 	if err != nil {
@@ -144,6 +145,20 @@ func fetchReleaseMetadata(info *RepoInfo) error {
 		return fmt.Errorf("failed to parse JSON: %w", err)
 	}
 
+	// Fetch revision from url
+	if releaseURL, ok := data["url"].(string); !ok || releaseURL == "" {
+		return fmt.Errorf("url not found in response")
+	}
+
+	parts := strings.Split(data["url"].(string), "/")
+	revisionStr := parts[len(parts)-1]
+	revisionInt, err := strconv.ParseInt(revisionStr, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid revision format: %w", err)
+	}
+	info.Revision = revisionInt
+
+	// Fetch version from tag_name
 	tag, ok := data["tag_name"].(string)
 	if !ok {
 		return fmt.Errorf("tag_name not found in response")
@@ -155,24 +170,31 @@ func fetchReleaseMetadata(info *RepoInfo) error {
 	}
 	info.Version = versionFloat
 
-	asset, ok := data["assets"].([]interface{})
-	if !ok || len(asset) == 0 {
-		return fmt.Errorf("no releases found for repository")
+	// Fetch the commit SHA for this release tag
+	commitURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/commits/%s", info.Owner, info.Repo, tag)
+	commitResp, err := makeGitHubRequest(commitURL)
+	if err != nil {
+		return fmt.Errorf("failed to fetch commit info: %w", err)
+	}
+	defer commitResp.Body.Close()
+
+	commitBody, err := io.ReadAll(commitResp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read commit response: %w", err)
 	}
 
-	assetMap := asset[0].(map[string]interface{})
-	digest, ok := assetMap["digest"].(string)
-	if !ok {
-		return fmt.Errorf("commit SHA not found in response")
+	if commitResp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GitHub API error fetching commit: %s - %s", commitResp.Status, string(commitBody))
 	}
 
-	parts := strings.Split(digest, ":")
-	if len(parts) != 2 {
-		return fmt.Errorf("invalid digest format")
+	var commitData map[string]interface{}
+	if err := json.Unmarshal(commitBody, &commitData); err != nil {
+		return fmt.Errorf("failed to parse commit JSON: %w", err)
 	}
 
-	_, sha := parts[0], parts[1]
-	info.LatestCommit = sha
+	if sha, ok := commitData["sha"].(string); ok {
+		info.LatestCommit = sha
+	}
 
 	return nil
 }

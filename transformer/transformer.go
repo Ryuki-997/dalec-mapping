@@ -3,7 +3,6 @@ package transformer
 import (
 	"fmt"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"dalec-mapping/parser"
@@ -28,9 +27,7 @@ type RepoMetadata struct {
 
 // TransformToDalec converts parsed Dockerfile info to Dalec spec format
 // repoMeta can be nil if no repository metadata is available
-func TransformToDalec(repoInfo *RepoMetadata, previousSpec PreviousDalecSpec, dockerInfo *parser.DockerfileInfo) DalecSpec {
-	rebuild(repoInfo, previousSpec)
-
+func TransformToDalec(repoInfo *RepoMetadata, dockerInfo *parser.DockerfileInfo) DalecSpec {
 	spec := make(DalecSpec)
 
 	// Add syntax header (special comment format)
@@ -61,26 +58,6 @@ func TransformToDalec(repoInfo *RepoMetadata, previousSpec PreviousDalecSpec, do
 	spec["tests"] = []map[string]interface{}{} // Empty placeholder
 
 	return spec
-}
-
-func rebuild(repoInfo *RepoMetadata, previousSpec PreviousDalecSpec) bool {
-	if previousSpec.Commit == "" {
-		return false
-	}
-
-	if previousSpec.Commit == repoInfo.Commit {
-		prevRevision, err := strconv.Atoi(previousSpec.Revision)
-		if err != nil {
-			prevRevision = 0
-			fmt.Printf("⚠️  Warning: invalid previous revision '%s', resetting to 1\n", previousSpec.Revision)
-			return false
-		}
-
-		previousSpec.Revision = fmt.Sprintf("%d", prevRevision+1)
-		return false
-	}
-
-	return true
 }
 
 func populateArgs(repoMeta *RepoMetadata, dockerInfo *parser.DockerfileInfo) map[string]interface{} {
