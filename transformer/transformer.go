@@ -2,6 +2,7 @@ package transformer
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -15,14 +16,14 @@ type DalecSpec map[string]interface{}
 type BuildTarget string
 
 const (
-	AzLinux3Rpm           BuildTarget = "azlinux3rpm"
-	AzLinux3Container     BuildTarget = "azlinux3container"
-	NobleDeb              BuildTarget = "nobledeb"
-	JammyDeb              BuildTarget = "jammydeb"
-	FocalDeb              BuildTarget = "focaldeb"
-	BionicDeb             BuildTarget = "bionicdeb"
-	BookwormDeb           BuildTarget = "bookwormdeb"
-	WindowsCrossContainer BuildTarget = "windowscrosscontainer"
+	AzLinux3Rpm           BuildTarget = "azlinux3/rpm"
+	AzLinux3Container     BuildTarget = "azlinux3/container"
+	NobleDeb              BuildTarget = "noble/deb"
+	JammyDeb              BuildTarget = "jammy/deb"
+	FocalDeb              BuildTarget = "focal/deb"
+	BionicDeb             BuildTarget = "bionic/deb"
+	BookwormDeb           BuildTarget = "bookworm/deb"
+	WindowsCrossContainer BuildTarget = "windowscross/container"
 )
 
 // TODO: Per-target platforms
@@ -32,7 +33,7 @@ type DefaultSpec struct {
 	github.RepoInfo
 	parser.DockerfileInfo
 
-	BuildTarget []BuildTarget
+	BuildTargets []BuildTarget
 }
 
 func InitDefaultSpec(repoInfo *github.RepoInfo, dockerfileInfo *parser.DockerfileInfo) *DefaultSpec {
@@ -41,6 +42,11 @@ func InitDefaultSpec(repoInfo *github.RepoInfo, dockerfileInfo *parser.Dockerfil
 
 	if dockerfileInfo != nil {
 		defaultSpec.DockerfileInfo = *dockerfileInfo
+	}
+
+	defaultSpec.BuildTargets = []BuildTarget{
+		AzLinux3Rpm,
+		AzLinux3Container,
 	}
 
 	return defaultSpec
@@ -58,7 +64,7 @@ func TransformToDalec(defaultSpec *DefaultSpec) DalecSpec {
 	populateMetadata(defaultSpec, spec)
 
 	// Build extensions section
-	spec["x-build-extensions"] = buildExtensions(defaultSpec.Repo)
+	spec["x-build-extensions"] = buildExtensions(defaultSpec)
 
 	// Transform Dockerfile content to Dalec sections
 	spec["sources"] = extractSources(defaultSpec)
@@ -75,9 +81,9 @@ func TransformToDalec(defaultSpec *DefaultSpec) DalecSpec {
 func populateArgs(defaultSpec *DefaultSpec) map[string]interface{} {
 
 	args := make(map[string]interface{})
-	args["REVISION"] = getArgValueOrDefault(defaultSpec, "REVISION", "1")
-	args["VERSION"] = getArgValueOrDefault(defaultSpec, "VERSION", "0.1")
-	args["COMMIT"] = getArgValueOrDefault(defaultSpec, "COMMIT", "")
+	args["Revision"] = defaultSpec.Revision
+	args["Version"] = defaultSpec.Version
+	args["Commit"] = defaultSpec.LatestCommit
 	args["TARGETARCH"] = getArgValueOrDefault(defaultSpec, "TARGETARCH", "")
 	args["TARGETOS"] = getArgValueOrDefault(defaultSpec, "TARGETOS", "")
 
@@ -86,14 +92,13 @@ func populateArgs(defaultSpec *DefaultSpec) map[string]interface{} {
 
 func populateMetadata(defaultSpec *DefaultSpec, spec DalecSpec) {
 
-	// Standard metadata fields - use repo metadata if available
+	spec["name"] = strings.ToLower(defaultSpec.Repo)
 	spec["packager"] = "Azure Container Upstream"
 	spec["vendor"] = "Microsoft Corporation"
 
 	// TODO: Verify license if necessary
 	spec["license"] = defaultSpec.License
 
-	spec["name"] = strings.ToLower(defaultSpec.Repo)
 	spec["website"] = defaultSpec.GitURL
 	spec["description"] = defaultSpec.Description
 	spec["version"] = "${VERSION}"
@@ -101,15 +106,13 @@ func populateMetadata(defaultSpec *DefaultSpec, spec DalecSpec) {
 }
 
 // buildExtensions creates the x-build-extensions section
-func buildExtensions(packageName string) map[string]interface{} {
+func buildExtensions(defaultSpec *DefaultSpec) map[string]interface{} {
 	ext := make(map[string]interface{})
-	ext["image-name"] = strings.ToLower(packageName)
+	ext["image-name"] = strings.ToLower(defaultSpec.Repo)
 	ext["repository"] = "azure"
 
 	// TODO: Set default build target(s)
-	ext["build-targets"] = []string{
-		"azlinux3/rpm",
-	}
+	ext["build-targets"] = defaultSpec.BuildTargets
 
 	// Per-target configurations
 	perTarget := make(map[string]interface{})
@@ -142,11 +145,9 @@ func extractSources(defaultSpec *DefaultSpec) map[string]interface{} {
 
 		source["git"] = git
 
-		// Check for language-specific generators
-		if hasGoModules(stage) {
-			source["generate"] = []map[string]interface{}{
-				{"gomod": map[string]interface{}{}},
-			}
+		// TODO: Check for language-specific generators
+		source["generate"] = []map[string]interface{}{
+			{"gomod": map[string]interface{}{}},
 		}
 
 		sources[sourceName] = source
@@ -160,6 +161,9 @@ func extractSources(defaultSpec *DefaultSpec) map[string]interface{} {
 		git["url"] = defaultSpec.GitURL
 		git["commit"] = "${COMMIT}"
 		source["git"] = git
+		source["generate"] = []map[string]interface{}{
+			{"gomod": map[string]interface{}{}},
+		}
 
 		sources[sourceName] = source
 	}
@@ -191,6 +195,10 @@ func extractDependencies(defaultSpec *DefaultSpec) map[string]interface{} {
 
 	if len(buildDeps) > 0 {
 		deps["build"] = buildDeps
+	} else {
+		deps["build"] = map[string]interface{}{
+			"msft-golang": map[string]interface{}{},
+		}
 	}
 
 	return deps
@@ -201,51 +209,70 @@ func extractTargets(defaultSpec *DefaultSpec) map[string]interface{} {
 	targets := make(map[string]interface{})
 
 	// Add standard Azure Linux target with required dependencies
-	for _, buildTarget := range defaultSpec.BuildTarget {
-		switch buildTarget {
-		case AzLinux3Rpm:
+	print("Build Target: %s\n", defaultSpec.BuildTargets)
+	for _, buildTarget := range defaultSpec.BuildTargets {
+		parts := strings.Split(string(buildTarget), "/")
+
+		if len(parts) != 2 {
+			fmt.Printf("❌ Invalid build target format: %s\n", buildTarget)
+			fmt.Printf("    Expected format: os/platform (e.g., azlinux3/rpm)\n")
+			os.Exit(1)
+		}
+
+		os, _ := parts[0], parts[1]
+
+		switch os {
+		case "azlinux3":
 			fallthrough
-		case AzLinux3Container:
+		case "noble":
 			fallthrough
-		case NobleDeb:
+		case "jammy":
 			fallthrough
-		case JammyDeb:
+		case "focal":
 			fallthrough
-		case FocalDeb:
+		case "bionic":
 			fallthrough
-		case BionicDeb:
+		case "bookworm":
 			fallthrough
-		case BookwormDeb:
-			fallthrough
-		case WindowsCrossContainer:
+		case "windowscross":
 			fallthrough
 		default:
+			print("Build Target: %s\n", buildTarget)
 			target := make(map[string]interface{})
 			runtimeDeps := make(map[string]interface{})
 
-			// Check if this is a Go binary (requires crypto dependencies)
-			hasGo := false
-			for _, stage := range defaultSpec.Stages {
-				if !hasGoModules(stage) {
-					continue
-				}
+			// // Check if this is a Go binary (requires crypto dependencies)
+			// hasGo := false
+			// for _, stage := range defaultSpec.Stages {
+			// 	if !hasGoModules(stage) {
+			// 		continue
+			// 	}
 
-				hasGo = true
-				break
-			}
+			// 	hasGo = true
+			// 	break
+			// }
 
-			if hasGo {
-				runtimeDeps["openssl-libs"] = map[string]interface{}{}
-				runtimeDeps["SymCrypt"] = map[string]interface{}{}
-				runtimeDeps["SymCrypt-OpenSSL"] = map[string]interface{}{}
-			}
+			// if hasGo {
+			// runtimeDeps["openssl-libs"] = map[string]interface{}{}
+			// runtimeDeps["SymCrypt"] = map[string]interface{}{}
+			// runtimeDeps["SymCrypt-OpenSSL"] = map[string]interface{}{}
+			// }
 
-			if len(runtimeDeps) > 0 {
-				target["dependencies"] = map[string]interface{}{
-					"runtime": runtimeDeps,
-				}
-				targets[string(buildTarget)] = target
+			// if len(runtimeDeps) > 0 {
+			// target["dependencies"] = map[string]interface{}{
+			// 	"runtime": runtimeDeps,
+			// }
+			// targets[string(buildTarget)] = target
+			// }
+
+			runtimeDeps["openssl-libs"] = map[string]interface{}{}
+			runtimeDeps["SymCrypt"] = map[string]interface{}{}
+			runtimeDeps["SymCrypt-OpenSSL"] = map[string]interface{}{}
+
+			target["dependencies"] = map[string]interface{}{
+				"runtime": runtimeDeps,
 			}
+			targets[string(buildTarget)] = target
 		}
 	}
 	return targets
@@ -260,31 +287,36 @@ func extractBuildSteps(defaultSpec *DefaultSpec) map[string]interface{} {
 	env["VERSION"] = "${VERSION}"
 
 	// Collect env vars from builder stages
-	for _, stage := range defaultSpec.Stages {
-		if !isBuilderStage(stage) {
-			continue
-		}
+	// for _, stage := range defaultSpec.Stages {
+	// 	if !isBuilderStage(stage) {
+	// 		continue
+	// 	}
 
-		for k, v := range stage.Env {
-			// Skip build args that are already in args section
-			if k != "OS" && k != "ARCH" && k != "VERSION" {
-				env[k] = v
-			}
-		}
+	// 	for k, v := range stage.Env {
+	// 		// Skip build args that are already in args section
+	// 		if k != "OS" && k != "ARCH" && k != "VERSION" {
+	// 			env[k] = v
+	// 		}
+	// 	}
 
-		// Add Go-specific env vars if it's a Go build
-		if !hasGoModules(stage) {
-			continue
-		}
+	// 	// Add Go-specific env vars if it's a Go build
+	// 	if !hasGoModules(stage) {
+	// 		continue
+	// 	}
 
-		env["GOPROXY"] = "direct"
-		env["GOEXPERIMENT"] = "systemcrypto"
-		env["CGO_ENABLED"] = "1"
-	}
+	// env["GOPROXY"] = "direct"
+	// env["GOEXPERIMENT"] = "systemcrypto"
+	// env["CGO_ENABLED"] = "1"
+	// }
 
-	if len(env) > 0 {
-		build["env"] = env
-	}
+	// if len(env) > 0 {
+	// 	build["env"] = env
+	// }
+
+	env["GOPROXY"] = "direct"
+	env["GOEXPERIMENT"] = "systemcrypto"
+	env["CGO_ENABLED"] = "1"
+	build["env"] = env
 
 	// Extract build steps
 	steps := extractBuildCommands(defaultSpec)
