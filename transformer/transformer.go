@@ -5,153 +5,99 @@ import (
 	"path/filepath"
 	"strings"
 
+	"dalec-mapping/github"
 	"dalec-mapping/parser"
 )
 
 // DalecSpec represents a Dalec specification using flexible maps for dynamic keys
-// Using map[string]interface{} allows us to handle:
-// 1. Dynamic keys (e.g., source names, dependency names)
-// 2. Nested structures without defining every possible field
-// 3. Easy YAML serialization
 type DalecSpec map[string]interface{}
 
-// RepoMetadata contains repository information (can be nil)
-type RepoMetadata struct {
-	GitURL      string
-	Commit      string
-	Website     string
-	Description string
-	License     string
-	RepoName    string
+type BuildTarget string
+
+const (
+	AzLinux3Rpm           BuildTarget = "azlinux3rpm"
+	AzLinux3Container     BuildTarget = "azlinux3container"
+	NobleDeb              BuildTarget = "nobledeb"
+	JammyDeb              BuildTarget = "jammydeb"
+	FocalDeb              BuildTarget = "focaldeb"
+	BionicDeb             BuildTarget = "bionicdeb"
+	BookwormDeb           BuildTarget = "bookwormdeb"
+	WindowsCrossContainer BuildTarget = "windowscrosscontainer"
+)
+
+// TODO: Per-target platforms
+
+// DefaultSpec combines GitHub repo info and parsed Dockerfile info
+type DefaultSpec struct {
+	github.RepoInfo
+	parser.DockerfileInfo
+
+	BuildTarget []BuildTarget
+}
+
+func InitDefaultSpec(repoInfo *github.RepoInfo, dockerfileInfo *parser.DockerfileInfo) *DefaultSpec {
+	defaultSpec := &DefaultSpec{}
+	defaultSpec.RepoInfo = *repoInfo
+
+	if dockerfileInfo != nil {
+		defaultSpec.DockerfileInfo = *dockerfileInfo
+	}
+
+	return defaultSpec
 }
 
 // TransformToDalec converts parsed Dockerfile info to Dalec spec format
-// repoMeta can be nil if no repository metadata is available
-func TransformToDalec(repoInfo *RepoMetadata, dockerInfo *parser.DockerfileInfo) DalecSpec {
+func TransformToDalec(defaultSpec *DefaultSpec) DalecSpec {
 	spec := make(DalecSpec)
 
 	// Add syntax header (special comment format)
 	spec["# syntax"] = "ghcr.io/azure/dalec/frontend:latest"
 
 	// Initialize args section
-	spec["args"] = populateArgs(repoInfo, dockerInfo)
-
-	packageName := derivePackageName(dockerInfo)
-	if repoInfo != nil && repoInfo.RepoName != "" {
-		packageName = strings.ToLower(repoInfo.RepoName)
-	}
-	spec["name"] = packageName
-	populateMetadata(spec, repoInfo)
+	spec["args"] = populateArgs(defaultSpec)
+	populateMetadata(defaultSpec, spec)
 
 	// Build extensions section
-	spec["x-build-extensions"] = buildExtensions(packageName)
+	spec["x-build-extensions"] = buildExtensions(defaultSpec.Repo)
 
 	// Transform Dockerfile content to Dalec sections
-	if dockerInfo != nil {
-		spec["sources"] = extractSources(dockerInfo, repoInfo)
-		spec["dependencies"] = extractDependencies(dockerInfo)
-		spec["targets"] = extractTargets(dockerInfo)
-		spec["build"] = extractBuildSteps(dockerInfo)
-		spec["artifacts"] = extractArtifacts(dockerInfo)
-		spec["image"] = extractImageConfig(dockerInfo)
-	}
+	spec["sources"] = extractSources(defaultSpec)
+	spec["dependencies"] = extractDependencies(defaultSpec)
+	spec["targets"] = extractTargets(defaultSpec)
+	spec["build"] = extractBuildSteps(defaultSpec)
+	spec["artifacts"] = extractArtifacts(defaultSpec)
+	spec["image"] = extractImageConfig(defaultSpec)
 	spec["tests"] = []map[string]interface{}{} // Empty placeholder
 
 	return spec
 }
 
-func populateArgs(repoMeta *RepoMetadata, dockerInfo *parser.DockerfileInfo) map[string]interface{} {
-	if dockerInfo == nil {
-		return map[string]interface{}{
-			"REVISION":   "1",
-			"VERSION":    "0.1",
-			"COMMIT":     "",
-			"TARGETARCH": "",
-			"TARGETOS":   "",
-		}
-	}
+func populateArgs(defaultSpec *DefaultSpec) map[string]interface{} {
 
 	args := make(map[string]interface{})
-	args["REVISION"] = getArgValueOrDefault(dockerInfo, "REVISION", "1")
-	args["VERSION"] = getArgValueOrDefault(dockerInfo, "VERSION", "0.1")
-
-	// Use commit from repo metadata if available
-	commitValue := ""
-	if repoMeta != nil && repoMeta.Commit != "" {
-		commitValue = repoMeta.Commit
-	}
-	args["COMMIT"] = getArgValueOrDefault(dockerInfo, "COMMIT", commitValue)
-	args["TARGETARCH"] = getArgValueOrDefault(dockerInfo, "TARGETARCH", "")
-	args["TARGETOS"] = getArgValueOrDefault(dockerInfo, "TARGETOS", "")
+	args["REVISION"] = getArgValueOrDefault(defaultSpec, "REVISION", "1")
+	args["VERSION"] = getArgValueOrDefault(defaultSpec, "VERSION", "0.1")
+	args["COMMIT"] = getArgValueOrDefault(defaultSpec, "COMMIT", "")
+	args["TARGETARCH"] = getArgValueOrDefault(defaultSpec, "TARGETARCH", "")
+	args["TARGETOS"] = getArgValueOrDefault(defaultSpec, "TARGETOS", "")
 
 	return args
 }
 
-func populateMetadata(spec DalecSpec, repoMeta *RepoMetadata) {
+func populateMetadata(defaultSpec *DefaultSpec, spec DalecSpec) {
 
 	// Standard metadata fields - use repo metadata if available
 	spec["packager"] = "Azure Container Upstream"
 	spec["vendor"] = "Microsoft Corporation"
 
-	if repoMeta != nil && repoMeta.License != "" {
-		spec["license"] = repoMeta.License
-	} else {
-		spec["license"] = "" // TODO: needs manual input
-	}
+	// TODO: Verify license if necessary
+	spec["license"] = defaultSpec.License
 
-	if repoMeta != nil && repoMeta.Website != "" {
-		spec["website"] = repoMeta.Website
-	} else {
-		spec["website"] = "" // TODO: needs manual input
-	}
-
-	if repoMeta != nil && repoMeta.Description != "" {
-		spec["description"] = repoMeta.Description
-	} else {
-		spec["description"] = "" // TODO: needs manual input
-	}
-
+	spec["name"] = strings.ToLower(defaultSpec.Repo)
+	spec["website"] = defaultSpec.GitURL
+	spec["description"] = defaultSpec.Description
 	spec["version"] = "${VERSION}"
 	spec["revision"] = "${REVISION}"
-}
-
-// TODO: Understand docker stages for package naming
-// derivePackageName extracts a package name from Dockerfile info
-func derivePackageName(info *parser.DockerfileInfo) string {
-	if info == nil || len(info.Stages) == 0 {
-		return "package"
-	}
-
-	// Look at final stage names
-	for i := len(info.Stages) - 1; i >= 0; i-- {
-		stage := info.Stages[i]
-		if stage.Name != "" && stage.Name != "builder" && stage.Name != "build" {
-			// Use stage name if it's a meaningful final stage
-			if stage.Name == "linux" || stage.Name == "windows" {
-				continue // Skip OS-specific stages
-			}
-			return strings.ToLower(stage.Name)
-		}
-	}
-
-	// Check for binary names in COPY instructions
-	for i := len(info.Stages) - 1; i >= 0; i-- {
-		for _, copy := range info.Stages[i].Copies {
-			if copy.From == "builder" {
-				for _, src := range copy.Source {
-					if strings.Contains(src, "/bin/") {
-						name := filepath.Base(src)
-						name = strings.TrimSuffix(name, ".exe")
-						if name != "" {
-							return strings.ToLower(name)
-						}
-					}
-				}
-			}
-		}
-	}
-
-	return "package"
 }
 
 // buildExtensions creates the x-build-extensions section
@@ -159,10 +105,10 @@ func buildExtensions(packageName string) map[string]interface{} {
 	ext := make(map[string]interface{})
 	ext["image-name"] = strings.ToLower(packageName)
 	ext["repository"] = "azure"
+
+	// TODO: Set default build target(s)
 	ext["build-targets"] = []string{
 		"azlinux3/rpm",
-		"azlinux3/container",
-		"windowscross/container",
 	}
 
 	// Per-target configurations
@@ -176,56 +122,42 @@ func buildExtensions(packageName string) map[string]interface{} {
 }
 
 // extractSources creates source definitions from Dockerfile
-func extractSources(info *parser.DockerfileInfo, repoMeta *RepoMetadata) map[string]interface{} {
+func extractSources(defaultSpec *DefaultSpec) map[string]interface{} {
 	sources := make(map[string]interface{})
+	sourceName := defaultSpec.Repo
 
-	// Determine source name from repo metadata or derive from Dockerfile
-	sourceName := "source"
-	if repoMeta != nil && repoMeta.RepoName != "" {
-		sourceName = repoMeta.RepoName
-	}
+	// TODO: Verify if sources need to be defined from actual builds in stages
 
 	// Find builder stages with actual builds
-	for _, stage := range info.Stages {
-		if isBuilderStage(stage) {
-			if sourceName == "source" {
-				sourceName = deriveSourceName(stage)
-			}
-
-			source := make(map[string]interface{})
-
-			// Git source - use repo metadata if available
-			git := make(map[string]interface{})
-			if repoMeta != nil && repoMeta.GitURL != "" {
-				git["url"] = repoMeta.GitURL
-			} else {
-				git["url"] = "" // TODO: needs manual input
-			}
-			git["commit"] = "${COMMIT}"
-			source["git"] = git
-
-			// Check for language-specific generators
-			if hasGoModules(stage) {
-				source["generate"] = []map[string]interface{}{
-					{"gomod": map[string]interface{}{}},
-				}
-			}
-
-			sources[sourceName] = source
-			break // Use first builder stage
+	for _, stage := range defaultSpec.Stages {
+		if !isBuilderStage(stage) {
+			continue
 		}
+
+		source := make(map[string]interface{})
+
+		git := make(map[string]interface{})
+		git["url"] = defaultSpec.GitURL
+		git["commit"] = "${COMMIT}"
+
+		source["git"] = git
+
+		// Check for language-specific generators
+		if hasGoModules(stage) {
+			source["generate"] = []map[string]interface{}{
+				{"gomod": map[string]interface{}{}},
+			}
+		}
+
+		sources[sourceName] = source
+		break // Use first builder stage
 	}
 
 	// Fallback if no builder found
 	if len(sources) == 0 {
 		source := make(map[string]interface{})
 		git := make(map[string]interface{})
-
-		if repoMeta != nil && repoMeta.GitURL != "" {
-			git["url"] = repoMeta.GitURL
-		} else {
-			git["url"] = ""
-		}
+		git["url"] = defaultSpec.GitURL
 		git["commit"] = "${COMMIT}"
 		source["git"] = git
 
@@ -236,14 +168,12 @@ func extractSources(info *parser.DockerfileInfo, repoMeta *RepoMetadata) map[str
 }
 
 // extractDependencies extracts build and runtime dependencies
-
-// extractDependencies extracts build and runtime dependencies
-func extractDependencies(info *parser.DockerfileInfo) map[string]interface{} {
+func extractDependencies(defaultSpec *DefaultSpec) map[string]interface{} {
 	deps := make(map[string]interface{})
 	buildDeps := make(map[string]interface{})
 
 	// Detect language/framework dependencies
-	for _, stage := range info.Stages {
+	for _, stage := range defaultSpec.Stages {
 		// Check for Go
 		if hasGoModules(stage) || stage.From == "go" || strings.Contains(stage.From, "golang") {
 			buildDeps["msft-golang"] = map[string]interface{}{}
@@ -267,40 +197,62 @@ func extractDependencies(info *parser.DockerfileInfo) map[string]interface{} {
 }
 
 // extractTargets creates target-specific configurations
-func extractTargets(info *parser.DockerfileInfo) map[string]interface{} {
+func extractTargets(defaultSpec *DefaultSpec) map[string]interface{} {
 	targets := make(map[string]interface{})
 
 	// Add standard Azure Linux target with required dependencies
-	azlinux3 := make(map[string]interface{})
-	runtimeDeps := make(map[string]interface{})
+	for _, buildTarget := range defaultSpec.BuildTarget {
+		switch buildTarget {
+		case AzLinux3Rpm:
+			fallthrough
+		case AzLinux3Container:
+			fallthrough
+		case NobleDeb:
+			fallthrough
+		case JammyDeb:
+			fallthrough
+		case FocalDeb:
+			fallthrough
+		case BionicDeb:
+			fallthrough
+		case BookwormDeb:
+			fallthrough
+		case WindowsCrossContainer:
+			fallthrough
+		default:
+			target := make(map[string]interface{})
+			runtimeDeps := make(map[string]interface{})
 
-	// Check if this is a Go binary (requires crypto dependencies)
-	hasGo := false
-	for _, stage := range info.Stages {
-		if hasGoModules(stage) {
-			hasGo = true
-			break
+			// Check if this is a Go binary (requires crypto dependencies)
+			hasGo := false
+			for _, stage := range defaultSpec.Stages {
+				if !hasGoModules(stage) {
+					continue
+				}
+
+				hasGo = true
+				break
+			}
+
+			if hasGo {
+				runtimeDeps["openssl-libs"] = map[string]interface{}{}
+				runtimeDeps["SymCrypt"] = map[string]interface{}{}
+				runtimeDeps["SymCrypt-OpenSSL"] = map[string]interface{}{}
+			}
+
+			if len(runtimeDeps) > 0 {
+				target["dependencies"] = map[string]interface{}{
+					"runtime": runtimeDeps,
+				}
+				targets[string(buildTarget)] = target
+			}
 		}
 	}
-
-	if hasGo {
-		runtimeDeps["openssl-libs"] = map[string]interface{}{}
-		runtimeDeps["SymCrypt"] = map[string]interface{}{}
-		runtimeDeps["SymCrypt-OpenSSL"] = map[string]interface{}{}
-	}
-
-	if len(runtimeDeps) > 0 {
-		azlinux3["dependencies"] = map[string]interface{}{
-			"runtime": runtimeDeps,
-		}
-		targets["azlinux3"] = azlinux3
-	}
-
 	return targets
 }
 
 // extractBuildSteps converts RUN commands to Dalec build steps
-func extractBuildSteps(info *parser.DockerfileInfo) map[string]interface{} {
+func extractBuildSteps(defaultSpec *DefaultSpec) map[string]interface{} {
 	build := make(map[string]interface{})
 
 	// Extract environment variables
@@ -308,22 +260,26 @@ func extractBuildSteps(info *parser.DockerfileInfo) map[string]interface{} {
 	env["VERSION"] = "${VERSION}"
 
 	// Collect env vars from builder stages
-	for _, stage := range info.Stages {
-		if isBuilderStage(stage) {
-			for k, v := range stage.Env {
-				// Skip build args that are already in args section
-				if k != "OS" && k != "ARCH" && k != "VERSION" {
-					env[k] = v
-				}
-			}
+	for _, stage := range defaultSpec.Stages {
+		if !isBuilderStage(stage) {
+			continue
+		}
 
-			// Add Go-specific env vars if it's a Go build
-			if hasGoModules(stage) {
-				env["GOPROXY"] = "direct"
-				env["GOEXPERIMENT"] = "systemcrypto"
-				env["CGO_ENABLED"] = "1"
+		for k, v := range stage.Env {
+			// Skip build args that are already in args section
+			if k != "OS" && k != "ARCH" && k != "VERSION" {
+				env[k] = v
 			}
 		}
+
+		// Add Go-specific env vars if it's a Go build
+		if !hasGoModules(stage) {
+			continue
+		}
+
+		env["GOPROXY"] = "direct"
+		env["GOEXPERIMENT"] = "systemcrypto"
+		env["CGO_ENABLED"] = "1"
 	}
 
 	if len(env) > 0 {
@@ -331,7 +287,7 @@ func extractBuildSteps(info *parser.DockerfileInfo) map[string]interface{} {
 	}
 
 	// Extract build steps
-	steps := extractBuildCommands(info)
+	steps := extractBuildCommands(defaultSpec)
 	if len(steps) > 0 {
 		build["steps"] = steps
 	}
@@ -340,64 +296,70 @@ func extractBuildSteps(info *parser.DockerfileInfo) map[string]interface{} {
 }
 
 // extractBuildCommands extracts build commands from builder stages
-func extractBuildCommands(info *parser.DockerfileInfo) []map[string]interface{} {
+func extractBuildCommands(defaultSpec *DefaultSpec) []map[string]interface{} {
 	var steps []map[string]interface{}
 
-	for _, stage := range info.Stages {
-		if isBuilderStage(stage) {
-			if len(stage.Runs) > 0 {
-				// Combine relevant build commands
-				var commands []string
-				for _, run := range stage.Runs {
-					// Filter out package installations (they go in dependencies)
-					if !strings.Contains(run, "apt-get") &&
-						!strings.Contains(run, "yum install") &&
-						!strings.Contains(run, "tdnf install") {
-						commands = append(commands, run)
-					}
-				}
+	for _, stage := range defaultSpec.Stages {
+		if !isBuilderStage(stage) {
+			continue
+		}
 
-				if len(commands) > 0 {
-					// Add workdir context if needed
-					cmd := strings.Join(commands, "\n")
-					if stage.Workdir != "" && !strings.Contains(cmd, "cd ") {
-						cmd = "cd " + stage.Workdir + "\n" + cmd
-					}
+		if len(stage.Runs) == 0 {
+			continue
+		}
 
-					steps = append(steps, map[string]interface{}{
-						"command": cmd,
-					})
-				}
+		// Combine relevant build commands
+		var commands []string
+		for _, run := range stage.Runs {
+			// Filter out package installations (they go in dependencies)
+			if !strings.Contains(run, "apt-get") &&
+				!strings.Contains(run, "yum install") &&
+				!strings.Contains(run, "tdnf install") {
+				commands = append(commands, run)
 			}
 		}
+
+		if len(commands) == 0 {
+			continue
+		}
+
+		// Add workdir context if needed
+		cmd := strings.Join(commands, "\n")
+		if stage.Workdir != "" && !strings.Contains(cmd, "cd ") {
+			cmd = "cd " + stage.Workdir + "\n" + cmd
+		}
+
+		steps = append(steps, map[string]interface{}{
+			"command": cmd,
+		})
 	}
 
 	return steps
 }
 
 // extractArtifacts identifies build artifacts
-func extractArtifacts(info *parser.DockerfileInfo) map[string]interface{} {
+func extractArtifacts(defaultSpec *DefaultSpec) map[string]interface{} {
 	artifacts := make(map[string]interface{})
 	binaries := make(map[string]interface{})
 
 	// Find binaries from COPY --from=builder in final stages
-	builderName := findBuilderStageName(info)
+	builderName := findBuilderStageName(defaultSpec)
 
-	for i := len(info.Stages) - 1; i >= 0; i-- {
-		stage := info.Stages[i]
-
+	for i := len(defaultSpec.Stages) - 1; i >= 0; i-- {
+		stage := defaultSpec.Stages[i]
 		// Skip builder stages, look at final stages
 		if isBuilderStage(stage) {
 			continue
 		}
 
 		for _, copy := range stage.Copies {
-			if copy.From == builderName || copy.From == "builder" {
-				for _, src := range copy.Source {
-					// Check if it's a binary path
-					if strings.Contains(src, "/bin/") || strings.HasSuffix(src, ".exe") {
-						binaries[src] = map[string]interface{}{}
-					}
+			if copy.From != builderName && copy.From != "builder" {
+				continue
+			}
+			for _, src := range copy.Source {
+				// Check if it's a binary path
+				if strings.Contains(src, "/bin/") || strings.HasSuffix(src, ".exe") {
+					binaries[src] = map[string]interface{}{}
 				}
 			}
 		}
@@ -416,22 +378,24 @@ func extractArtifacts(info *parser.DockerfileInfo) map[string]interface{} {
 }
 
 // extractImageConfig extracts final image configuration
-func extractImageConfig(info *parser.DockerfileInfo) map[string]interface{} {
+func extractImageConfig(defaultSpec *DefaultSpec) map[string]interface{} {
 	image := make(map[string]interface{})
 
-	if len(info.Stages) == 0 {
+	if len(defaultSpec.Stages) == 0 {
 		return image
 	}
 
 	// Find the final Linux stage (skip Windows)
 	var finalStage *parser.Stage
-	for i := len(info.Stages) - 1; i >= 0; i-- {
-		stage := &info.Stages[i]
-		if stage.Name != "windows" && stage.Name != "hpc" {
-			if len(stage.Entrypoint) > 0 || len(stage.Copies) > 0 {
-				finalStage = stage
-				break
-			}
+	for i := len(defaultSpec.Stages) - 1; i >= 0; i-- {
+		stage := &defaultSpec.Stages[i]
+		if stage.Name == "windows" || stage.Name == "hpc" {
+			continue
+		}
+
+		if len(stage.Entrypoint) > 0 || len(stage.Copies) > 0 {
+			finalStage = stage
+			break
 		}
 	}
 
@@ -464,20 +428,24 @@ func createSymlinks(stage *parser.Stage) map[string]interface{} {
 	symlinks := make(map[string]interface{})
 
 	for _, copy := range stage.Copies {
-		if copy.From == "builder" || strings.Contains(copy.From, "build") {
-			for _, src := range copy.Source {
-				if strings.Contains(src, "/bin/") && strings.Contains(copy.Dest, "/usr/local/bin/") {
-					// Create symlink from standard location to actual location
-					binaryName := filepath.Base(src)
-					destPath := filepath.Join(copy.Dest, binaryName)
-					if !strings.HasSuffix(copy.Dest, binaryName) {
-						destPath = copy.Dest
-					}
+		if copy.From != "builder" && !strings.Contains(copy.From, "build") {
+			continue
+		}
 
-					symlinks["/usr/bin/"+binaryName] = map[string]interface{}{
-						"path": destPath,
-					}
-				}
+		for _, src := range copy.Source {
+			if !strings.Contains(src, "/bin/") || !strings.Contains(copy.Dest, "/usr/local/bin/") {
+				continue
+			}
+
+			// Create symlink from standard location to actual location
+			binaryName := filepath.Base(src)
+			destPath := filepath.Join(copy.Dest, binaryName)
+			if !strings.HasSuffix(copy.Dest, binaryName) {
+				destPath = copy.Dest
+			}
+
+			symlinks["/usr/bin/"+binaryName] = map[string]interface{}{
+				"path": destPath,
 			}
 		}
 	}
@@ -516,23 +484,25 @@ func deriveSourceName(stage parser.Stage) string {
 	return "source"
 }
 
-func findBuilderStageName(info *parser.DockerfileInfo) string {
-	for _, stage := range info.Stages {
-		if isBuilderStage(stage) {
-			if stage.Name != "" {
-				return stage.Name
-			}
+func findBuilderStageName(defaultSpec *DefaultSpec) string {
+	for _, stage := range defaultSpec.Stages {
+		if !isBuilderStage(stage) {
+			continue
+		}
+
+		if stage.Name != "" {
+			return stage.Name
 		}
 	}
 	return "builder"
 }
 
-func getArgValueOrDefault(info *parser.DockerfileInfo, key string, defaultValue any) any {
-	if info == nil {
+func getArgValueOrDefault(defaultSpec *DefaultSpec, key string, defaultValue any) any {
+	if defaultSpec == nil {
 		return fmt.Sprintf("%v", defaultValue)
 	}
 
-	if val, exists := info.Args[key]; exists && val != "" {
+	if val, exists := defaultSpec.Args[key]; exists && val != "" {
 		return val
 	}
 

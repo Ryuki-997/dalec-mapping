@@ -41,19 +41,8 @@ func main() {
 	// Transform to Dalec spec with repository metadata
 	fmt.Println("=== TRANSFORMING TO DALEC SPEC ===")
 
-	// Convert RepoInfo to RepoMetadata for transformer
-	var repoMeta *transformer.RepoMetadata
-	if repoInfo != nil {
-		repoMeta = &transformer.RepoMetadata{
-			GitURL:      repoInfo.GitURL,
-			Commit:      repoInfo.LatestCommit,
-			Description: repoInfo.Description,
-			License:     repoInfo.License,
-			RepoName:    repoInfo.Repo,
-		}
-	}
-
-	dalecSpec := transformer.TransformToDalec(repoMeta, dockerfileInfo)
+	defaultSpec := transformer.InitDefaultSpec(repoInfo, dockerfileInfo)
+	dalecSpec := transformer.TransformToDalec(defaultSpec)
 
 	// Write to output file
 	yamlContent, err := transformer.WriteYAML(dalecSpec)
