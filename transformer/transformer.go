@@ -61,8 +61,9 @@ func InitDefaultSpec(repoInfo *github.RepoInfo, dockerfileInfo *parser.Dockerfil
 	}
 
 	defaultSpec.BuildTargets = []BuildTarget{
-		AzLinux3Rpm,
-		AzLinux3Container,
+		AzLinux3Container, // Primary container image target
+		AzLinux3Rpm,       // RPM package target
+		NobleDeb,          // Ubuntu/Debian package target
 	}
 
 	// TODO: Read revision from previous YAML if version stays the same
