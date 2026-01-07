@@ -8,6 +8,8 @@ import (
 
 	"dalec-mapping/github"
 	"dalec-mapping/parser"
+
+	"gopkg.in/yaml.v3"
 )
 
 // DalecSpec represents a Dalec specification using flexible maps for dynamic keys
@@ -26,6 +28,19 @@ const (
 	WindowsCrossContainer BuildTarget = "windowscross/container"
 )
 
+// VersionString represents a version string that renders without quotes in YAML
+type VersionString string
+
+// MarshalYAML outputs the version string without quotes as a float-like value
+func (v VersionString) MarshalYAML() (interface{}, error) {
+	node := &yaml.Node{
+		Kind:  yaml.ScalarNode,
+		Tag:   "!!float",
+		Value: string(v),
+	}
+	return node, nil
+}
+
 // TODO: Per-target platforms
 
 // DefaultSpec combines GitHub repo info and parsed Dockerfile info
@@ -33,6 +48,7 @@ type DefaultSpec struct {
 	github.RepoInfo
 	parser.DockerfileInfo
 
+	Revision     int64
 	BuildTargets []BuildTarget
 }
 
@@ -48,6 +64,9 @@ func InitDefaultSpec(repoInfo *github.RepoInfo, dockerfileInfo *parser.Dockerfil
 		AzLinux3Rpm,
 		AzLinux3Container,
 	}
+
+	// TODO: Read revision from previous YAML if version stays the same
+	defaultSpec.Revision = 1
 
 	return defaultSpec
 }
@@ -81,7 +100,7 @@ func TransformToDalec(defaultSpec *DefaultSpec) DalecSpec {
 func populateArgs(defaultSpec *DefaultSpec) map[string]interface{} {
 	args := make(map[string]interface{})
 	args["Revision"] = defaultSpec.Revision
-	args["Version"] = defaultSpec.Version
+	args["Version"] = VersionString(defaultSpec.Version)
 	args["Commit"] = defaultSpec.LatestCommit
 
 	if val, ok := defaultSpec.Args["TARGETARCH"]; ok {

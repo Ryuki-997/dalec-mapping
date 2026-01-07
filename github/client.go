@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -25,8 +24,7 @@ type RepoInfo struct {
 	Branch       string
 	GitURL       string
 	Description  string
-	Revision     int64
-	Version      float64
+	Version      string
 	License      string
 	LatestCommit string
 	Generator    SourceGenerator
@@ -163,25 +161,13 @@ func fetchReleaseMetadata(info *RepoInfo) error {
 		return fmt.Errorf("url not found in response")
 	}
 
-	parts := strings.Split(data["url"].(string), "/")
-	revisionStr := parts[len(parts)-1]
-	revisionInt, err := strconv.ParseInt(revisionStr, 10, 64)
-	if err != nil {
-		return fmt.Errorf("invalid revision format: %w", err)
-	}
-	info.Revision = revisionInt
-
 	// Fetch version from tag_name
 	tag, ok := data["tag_name"].(string)
 	if !ok {
 		return fmt.Errorf("tag_name not found in response")
 	}
 	versionStr := strings.TrimPrefix(tag, "v")
-	versionFloat, err := strconv.ParseFloat(versionStr, 64)
-	if err != nil {
-		return fmt.Errorf("invalid version format: %w", err)
-	}
-	info.Version = versionFloat
+	info.Version = versionStr
 
 	// Fetch the commit SHA for this release tag
 	commitURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/commits/%s", info.Owner, info.Repo, tag)
@@ -288,8 +274,7 @@ func PrintRepoInfo(info *RepoInfo) {
 	fmt.Printf("  Default Branch: %s\n", info.Branch)
 	fmt.Printf("  Git URL: %s\n", info.GitURL)
 	fmt.Printf("  Description: %s\n", info.Description)
-	fmt.Printf("	Revision: %d\n", info.Revision)
-	fmt.Printf("  Version: %.2f\n", info.Version)
+	fmt.Printf("  Version: %s\n", info.Version)
 	fmt.Printf("  License: %s\n", info.License)
 	fmt.Printf("  Latest Commit: %s\n", info.LatestCommit)
 	fmt.Printf("  Source Generator: %s\n", info.Generator)
