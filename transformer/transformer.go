@@ -144,7 +144,7 @@ func extractSources(defaultSpec *DefaultSpec) map[string]interface{} {
 
 		// TODO: Check for language-specific generators
 		source["generate"] = []map[string]interface{}{
-			{"gomod": map[string]interface{}{}},
+			{string(defaultSpec.Generator): map[string]interface{}{}},
 		}
 
 		sources[sourceName] = source

@@ -10,6 +10,14 @@ import (
 	"time"
 )
 
+type SourceGenerator string
+
+const (
+	GoModGenerator     SourceGenerator = "gomod"
+	CargoHomeGenerator SourceGenerator = "cargohome"
+	PipGenerator       SourceGenerator = "pip"
+)
+
 // RepoInfo contains metadata about a GitHub repository
 type RepoInfo struct {
 	Owner        string
@@ -21,6 +29,7 @@ type RepoInfo struct {
 	Version      float64
 	License      string
 	LatestCommit string
+	Generator    SourceGenerator
 }
 
 // FetchRepoInfo fetches repository metadata from GitHub API
@@ -45,6 +54,11 @@ func FetchRepoInfo(repoPath string) (*RepoInfo, error) {
 	// Fetch latest commit
 	if err := fetchReleaseMetadata(info); err != nil {
 		return nil, fmt.Errorf("failed to fetch latest commit: %w", err)
+	}
+
+	// Fetch source generator
+	if err := fetchSourceGenerator(info); err != nil {
+		return nil, fmt.Errorf("failed to fetch source generator: %w", err)
 	}
 
 	return info, nil
@@ -196,6 +210,56 @@ func fetchReleaseMetadata(info *RepoInfo) error {
 	}
 
 	return nil
+}
+
+func fetchSourceGenerator(info *RepoInfo) error {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents", info.Owner, info.Repo)
+
+	// Verified files susceptible for upstream generators
+	goFile := map[string]bool{"go.mod": true, "main.go": true}
+	cargoFile := map[string]bool{"Cargo.toml": true, "Cargo.lock": true}
+	pipFile := map[string]bool{"requirements.txt": true, "setup.py": true, "Pipfile": true}
+
+	resp, err := makeGitHubRequest(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GitHub API error: %s - %s", resp.Status, string(body))
+	}
+
+	var data []map[string]interface{}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return fmt.Errorf("failed to parse JSON: %w", err)
+	}
+
+	for _, item := range data {
+		if name, ok := item["path"].(string); ok {
+			if goFile[name] {
+				info.Generator = GoModGenerator
+				return nil
+			} else if cargoFile[name] {
+				info.Generator = CargoHomeGenerator
+				return nil
+			} else if pipFile[name] {
+				info.Generator = PipGenerator
+				return nil
+			}
+		}
+	}
+
+	if info.Generator == "" {
+		return fmt.Errorf("❌  No recognized source generator files found; Supported: Go (go.mod), Rust (Cargo.toml), Python (requirements.txt, setup.py, Pipfile)")
+	}
+
+	return fmt.Errorf("❌ Unexpected error in determining source generator")
 }
 
 // Request data from GitHub API
