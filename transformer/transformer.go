@@ -79,7 +79,6 @@ func TransformToDalec(defaultSpec *DefaultSpec) DalecSpec {
 }
 
 func populateArgs(defaultSpec *DefaultSpec) map[string]interface{} {
-
 	args := make(map[string]interface{})
 	args["Revision"] = defaultSpec.Revision
 	args["Version"] = defaultSpec.Version
@@ -553,18 +552,6 @@ func findBuilderStageName(defaultSpec *DefaultSpec) string {
 		}
 	}
 	return "builder"
-}
-
-func getArgValueOrDefault(defaultSpec *DefaultSpec, key string, defaultValue any) any {
-	if defaultSpec == nil {
-		return fmt.Sprintf("%v", defaultValue)
-	}
-
-	if val, exists := defaultSpec.Args[key]; exists && val != "" {
-		return val
-	}
-
-	return defaultValue
 }
 
 // Path-based helper functions for nested map manipulation

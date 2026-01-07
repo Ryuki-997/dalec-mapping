@@ -292,5 +292,6 @@ func PrintRepoInfo(info *RepoInfo) {
 	fmt.Printf("  Version: %.2f\n", info.Version)
 	fmt.Printf("  License: %s\n", info.License)
 	fmt.Printf("  Latest Commit: %s\n", info.LatestCommit)
+	fmt.Printf("  Source Generator: %s\n", info.Generator)
 	fmt.Println()
 }
