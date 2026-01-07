@@ -84,8 +84,14 @@ func populateArgs(defaultSpec *DefaultSpec) map[string]interface{} {
 	args["Revision"] = defaultSpec.Revision
 	args["Version"] = defaultSpec.Version
 	args["Commit"] = defaultSpec.LatestCommit
-	args["TARGETARCH"] = getArgValueOrDefault(defaultSpec, "TARGETARCH", "")
-	args["TARGETOS"] = getArgValueOrDefault(defaultSpec, "TARGETOS", "")
+
+	if val, ok := defaultSpec.Args["TARGETARCH"]; ok {
+		args["TARGETARCH"] = val
+	}
+
+	if val, ok := defaultSpec.Args["TARGETOS"]; ok {
+		args["TARGETOS"] = val
+	}
 
 	return args
 }
