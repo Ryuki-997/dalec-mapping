@@ -111,7 +111,6 @@ func fetchRepoMetadata(info *RepoInfo) error {
 		info.GitURL = url
 	}
 
-	// TODO: Potentially unnecessary license extraction
 	if license, ok := data["license"].(map[string]interface{}); ok {
 		if spdxID, ok := license["spdx_id"].(string); ok && spdxID != "NOASSERTION" {
 			info.License = spdxID

@@ -95,10 +95,7 @@ func populateMetadata(defaultSpec *DefaultSpec, spec DalecSpec) {
 	spec["name"] = strings.ToLower(defaultSpec.Repo)
 	spec["packager"] = "Azure Container Upstream"
 	spec["vendor"] = "Microsoft Corporation"
-
-	// TODO: Verify license if necessary
 	spec["license"] = defaultSpec.License
-
 	spec["website"] = defaultSpec.GitURL
 	spec["description"] = defaultSpec.Description
 	spec["version"] = "${VERSION}"
@@ -410,9 +407,6 @@ func extractArtifacts(defaultSpec *DefaultSpec) map[string]interface{} {
 	artifacts["licenses"] = license
 
 	// Add licenses placeholder
-	// artifacts["licenses"] = map[string]interface{}{
-	// 	"# TODO: Add LICENSE file path": map[string]interface{}{},
-	// }
 
 	return artifacts
 }

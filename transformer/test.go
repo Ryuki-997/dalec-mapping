@@ -7,7 +7,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// OctalPermission is a custom type for outputting octal permissions in YAML
 type Permission uint32
 
 // MarshalYAML outputs the permission as an octal literal without quotes
