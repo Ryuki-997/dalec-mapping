@@ -10,18 +10,16 @@ import (
 )
 
 type PreviousDalecSpec struct {
-	// Comparison Fields
-	Commit string
-
-	// Updatable Fields
-	Revision string
+	Args struct {
+		Version  VersionString `yaml:"Version"`
+		Revision int           `yaml:"Revision"`
+	} `yaml:"args"`
 }
 
 // ReadYAML reads a DalecSpec file and unmarshal updated values
 func ReadYAML(path string) (PreviousDalecSpec, error) {
 	data := PreviousDalecSpec{}
 
-	// TODO: populate fields from previous spec file.
 	// Read file content
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -32,6 +30,8 @@ func ReadYAML(path string) (PreviousDalecSpec, error) {
 	if err := yaml.Unmarshal(content, &data); err != nil {
 		return data, fmt.Errorf("failed to unmarshal YAML: %w", err)
 	}
+
+	fmt.Printf("%v, %v\n", data.Args.Version, data.Args.Revision)
 
 	return data, nil
 }

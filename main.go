@@ -38,10 +38,17 @@ func main() {
 		fmt.Printf("❌ Error parsing Dockerfile: %v\n", err)
 	}
 
+	// Parse previous YAML spec if path provided
+	previousDalecSpecInfo, err := fetchPreviousYAMLInfo(*cliOptions.specFilePath)
+	if err != nil {
+		fmt.Printf("❌ Error reading previous YAML spec: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Transform to Dalec spec with repository metadata
 	fmt.Println("=== TRANSFORMING TO DALEC SPEC ===")
 
-	defaultSpec := transformer.InitDefaultSpec(repoInfo, dockerfileInfo)
+	defaultSpec := transformer.InitDefaultSpec(repoInfo, dockerfileInfo, previousDalecSpecInfo)
 	dalecSpec := transformer.TransformToDalec(defaultSpec)
 
 	// Write to output file
@@ -64,7 +71,7 @@ func defineFlags() cliOptions {
 	// Define CLI flags
 	repoPath := flag.String("repo", "", "GitHub repository (e.g., owner/repo or https://github.com/owner/repo)")
 	dockerfilePath := flag.String("dockerfile", "", "Path to Dockerfile")
-	specFilePath := flag.String("spec", "", "Path to previous Dalec spec YAML file")
+	specFilePath := flag.String("spec", "output.yml", "Path to previous Dalec spec YAML file")
 	outputPath := flag.String("output", "output.yml", "Output YAML file path")
 	verbose := flag.Bool("v", false, "Verbose output")
 

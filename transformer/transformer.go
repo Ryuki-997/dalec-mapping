@@ -33,10 +33,11 @@ type VersionString string
 
 // MarshalYAML outputs the version string without quotes as a float-like value
 func (v VersionString) MarshalYAML() (interface{}, error) {
+	ymlVersion := strings.TrimPrefix(string(v), "v")
 	node := &yaml.Node{
 		Kind:  yaml.ScalarNode,
 		Tag:   "!!float",
-		Value: string(v),
+		Value: ymlVersion,
 	}
 	return node, nil
 }
@@ -48,11 +49,11 @@ type DefaultSpec struct {
 	github.RepoInfo
 	parser.DockerfileInfo
 
-	Revision     int64
+	Revision     int
 	BuildTargets []BuildTarget
 }
 
-func InitDefaultSpec(repoInfo *github.RepoInfo, dockerfileInfo *parser.DockerfileInfo) *DefaultSpec {
+func InitDefaultSpec(repoInfo *github.RepoInfo, dockerfileInfo *parser.DockerfileInfo, previousDalecSpecInfo PreviousDalecSpec) *DefaultSpec {
 	defaultSpec := &DefaultSpec{}
 	defaultSpec.RepoInfo = *repoInfo
 
@@ -60,14 +61,18 @@ func InitDefaultSpec(repoInfo *github.RepoInfo, dockerfileInfo *parser.Dockerfil
 		defaultSpec.DockerfileInfo = *dockerfileInfo
 	}
 
+	currentVersion := strings.TrimPrefix(string(repoInfo.Version), "v")
+	if VersionString(currentVersion) != previousDalecSpecInfo.Args.Version {
+		defaultSpec.Revision = 1
+	} else {
+		defaultSpec.Revision = previousDalecSpecInfo.Args.Revision + 1
+	}
+
 	defaultSpec.BuildTargets = []BuildTarget{
 		AzLinux3Container, // Primary container image target
 		AzLinux3Rpm,       // RPM package target
 		NobleDeb,          // Ubuntu/Debian package target
 	}
-
-	// TODO: Read revision from previous YAML if version stays the same
-	defaultSpec.Revision = 1
 
 	return defaultSpec
 }
