@@ -105,9 +105,9 @@ func TransformToDalec(defaultSpec *DefaultSpec) DalecSpec {
 
 func populateArgs(defaultSpec *DefaultSpec) map[string]interface{} {
 	args := make(map[string]interface{})
-	args["Revision"] = defaultSpec.Revision
-	args["Version"] = VersionString(defaultSpec.Version)
-	args["Commit"] = defaultSpec.LatestCommit
+	args["REVISION"] = defaultSpec.Revision
+	args["VERSION"] = VersionString(defaultSpec.Version)
+	args["COMMIT"] = defaultSpec.LatestCommit
 
 	if val, ok := defaultSpec.Args["TARGETARCH"]; ok {
 		args["TARGETARCH"] = val
