@@ -37,6 +37,8 @@ func FetchRepoInfo(repoPath string) (*RepoInfo, error) {
 		return nil, err
 	}
 
+	fmt.Printf("Parsed - Owner: %s, Repo: %s, Branch: %s\n", owner, repo, branch)
+
 	info := &RepoInfo{
 		Owner:  owner,
 		Repo:   repo,
@@ -63,7 +65,11 @@ func FetchRepoInfo(repoPath string) (*RepoInfo, error) {
 }
 
 // parseRepoPath extracts owner and repo from various formats
-// Supports: "owner/repo", "https://github.com/owner/repo", "github.com/owner/repo"
+// Supports:
+// - "owner/repo"
+// - "https://github.com/owner/repo"
+// - "github.com/owner/repo/tree/branch"
+// - "github.com/owner/repo/tree/branch/subdirectory/path"
 func parseRepoPath(path string) (owner, repo, branch string, err error) {
 	// Remove trailing slash
 	path = strings.TrimSuffix(path, "/")
@@ -74,18 +80,25 @@ func parseRepoPath(path string) (owner, repo, branch string, err error) {
 	path = strings.TrimPrefix(path, "github.com/")
 
 	// Split by /
-	parts := strings.Split(path, "/")
+	parts := strings.SplitN(path, "/", 4)
 	n := len(parts)
 
-	if n == 2 {
-		owner, repo = parts[0], parts[1]
-		return owner, repo, "main", nil
-	} else if n == 4 && parts[2] == "tree" {
-		owner, repo = parts[0], parts[1]
-		return owner, repo, parts[3], nil
-	} else {
-		return "", "", "", fmt.Errorf("invalid repository path: %s (expected format: owner/repo/tree/branch)", path)
+	if n < 2 {
+		return "", "", "", fmt.Errorf("invalid repository path: %s (expected format: owner/repo)", path)
 	}
+
+	owner, repo = parts[0], parts[1]
+
+	// Check if there's a branch specification
+	if n >= 4 && parts[2] == "tree" {
+		branch = parts[3]
+	} else if n == 2 {
+		branch = "main"
+	} else {
+		return "", "", "", fmt.Errorf("invalid repository path: %s (expected format: owner/repo or owner/repo/tree/branch)", path)
+	}
+
+	return owner, repo, branch, nil
 }
 
 // Acquire default metadata

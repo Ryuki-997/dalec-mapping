@@ -41,6 +41,8 @@ func InitDefaultSpec(repoInfo *github.RepoInfo, dockerfileInfo *parser.Dockerfil
 	defaultSpec := &DefaultSpec{}
 	defaultSpec.RepoInfo = *repoInfo
 
+	fmt.Printf("------------- Default Spec Generator: ------------- %s\n", defaultSpec.Generator)
+
 	if dockerfileInfo != nil {
 		defaultSpec.DockerfileInfo = *dockerfileInfo
 	}
@@ -144,27 +146,27 @@ func extractSources(defaultSpec *DefaultSpec) map[string]interface{} {
 	// TODO: Verify if sources need to be defined from actual builds in stages
 
 	// Find builder stages with actual builds
-	for _, stage := range defaultSpec.Stages {
-		if !isBuilderStage(stage) {
-			continue
-		}
+	// for _, stage := range defaultSpec.Stages {
+	// 	if !isBuilderStage(stage) {
+	// 		continue
+	// 	}
 
-		source := make(map[string]interface{})
+	// 	source := make(map[string]interface{})
 
-		git := make(map[string]interface{})
-		git["url"] = defaultSpec.GitURL
-		git["commit"] = "${COMMIT}"
+	// 	git := make(map[string]interface{})
+	// 	git["url"] = defaultSpec.GitURL
+	// 	git["commit"] = "${COMMIT}"
 
-		source["git"] = git
+	// 	source["git"] = git
 
-		// TODO: Check for language-specific generators
-		source["generate"] = []map[string]interface{}{
-			{string(defaultSpec.Generator): map[string]interface{}{}},
-		}
+	// 	// TODO: Check for language-specific generators
+	// 	source["generate"] = []map[string]interface{}{
+	// 		{string(defaultSpec.Generator): map[string]interface{}{}},
+	// 	}
 
-		sources[sourceName] = source
-		break // Use first builder stage
-	}
+	// 	sources[sourceName] = source
+	// 	break // Use first builder stage
+	// }
 
 	// Fallback if no builder found
 	if len(sources) == 0 {
@@ -174,7 +176,7 @@ func extractSources(defaultSpec *DefaultSpec) map[string]interface{} {
 		git["commit"] = "${COMMIT}"
 		source["git"] = git
 		source["generate"] = []map[string]interface{}{
-			{"gomod": map[string]interface{}{}},
+			{string(defaultSpec.Generator): map[string]interface{}{}},
 		}
 
 		sources[sourceName] = source

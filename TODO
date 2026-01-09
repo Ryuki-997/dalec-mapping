@@ -1,8 +1,10 @@
 TODO:
-cli flag get set 
-test block 
 
-revision 
+fix:
+license (other type from LICENSE)
+hash
+
+feat: 
 get dockerfile from github as well 
 enable docerkfile integration
-agent skill
+enable agent skill
