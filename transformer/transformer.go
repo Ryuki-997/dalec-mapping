@@ -339,9 +339,14 @@ func extractBuildSteps(defaultSpec *DefaultSpec) map[string]interface{} {
 
 	// Extract build steps
 	steps := extractBuildCommands(defaultSpec)
-	if len(steps) > 0 {
-		build["steps"] = steps
+	if len(steps) == 0 {
+		buildCommand := fmt.Sprintf("cd %s\ngo build -o bin/%s ./main.go", defaultSpec.Repo, defaultSpec.Repo)
+		steps = []map[string]interface{}{
+			{"command": buildCommand},
+		}
 	}
+
+	build["steps"] = steps
 
 	return build
 }
@@ -428,7 +433,9 @@ func extractArtifacts(defaultSpec *DefaultSpec) map[string]interface{} {
 	license[licensePath] = map[string]interface{}{}
 
 	artifacts["binaries"] = binaries
-	artifacts["licenses"] = license
+
+	// TODO: Add license artifact if necessary
+	// artifacts["licenses"] = license
 
 	// Add licenses placeholder
 

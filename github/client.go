@@ -123,6 +123,7 @@ func fetchRepoMetadata(info *RepoInfo) error {
 		info.GitURL = url
 	}
 
+	info.License = "foo-license"
 	if license, ok := data["license"].(map[string]interface{}); ok {
 		if spdxID, ok := license["spdx_id"].(string); ok && spdxID != "NOASSERTION" {
 			info.License = spdxID
