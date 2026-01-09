@@ -8,8 +8,6 @@ import (
 
 	"dalec-mapping/github"
 	"dalec-mapping/parser"
-
-	"gopkg.in/yaml.v3"
 )
 
 // DalecSpec represents a Dalec specification using flexible maps for dynamic keys
@@ -27,20 +25,6 @@ const (
 	BookwormDeb           BuildTarget = "bookworm/deb"
 	WindowsCrossContainer BuildTarget = "windowscross/container"
 )
-
-// VersionString represents a version string that renders without quotes in YAML
-type VersionString string
-
-// MarshalYAML outputs the version string without quotes as a float-like value
-func (v VersionString) MarshalYAML() (interface{}, error) {
-	ymlVersion := strings.TrimPrefix(string(v), "v")
-	node := &yaml.Node{
-		Kind:  yaml.ScalarNode,
-		Tag:   "!!float",
-		Value: ymlVersion,
-	}
-	return node, nil
-}
 
 // TODO: Per-target platforms
 
@@ -61,8 +45,9 @@ func InitDefaultSpec(repoInfo *github.RepoInfo, dockerfileInfo *parser.Dockerfil
 		defaultSpec.DockerfileInfo = *dockerfileInfo
 	}
 
-	currentVersion := strings.TrimPrefix(string(repoInfo.Version), "v")
-	if VersionString(currentVersion) != previousDalecSpecInfo.Args.Version {
+	fmt.Printf("Repo Version: %s, Previous Version: %s\n", repoInfo.Version, previousDalecSpecInfo.Args.Version)
+
+	if repoInfo.Version != previousDalecSpecInfo.Args.Version {
 		defaultSpec.Revision = 1
 	} else {
 		defaultSpec.Revision = previousDalecSpecInfo.Args.Revision + 1
@@ -106,7 +91,7 @@ func TransformToDalec(defaultSpec *DefaultSpec) DalecSpec {
 func populateArgs(defaultSpec *DefaultSpec) map[string]interface{} {
 	args := make(map[string]interface{})
 	args["REVISION"] = defaultSpec.Revision
-	args["VERSION"] = VersionString(defaultSpec.Version)
+	args["VERSION"] = defaultSpec.Version
 	args["COMMIT"] = defaultSpec.LatestCommit
 
 	if val, ok := defaultSpec.Args["TARGETARCH"]; ok {
@@ -235,6 +220,9 @@ func extractDependencies(defaultSpec *DefaultSpec) map[string]interface{} {
 func extractTargets(defaultSpec *DefaultSpec) map[string]interface{} {
 	targets := make(map[string]interface{})
 
+	// Track unique OS targets (deduplicate by OS, not by full build target)
+	osTargets := make(map[string]bool)
+
 	// Add standard Azure Linux target with required dependencies
 	for _, buildTarget := range defaultSpec.BuildTargets {
 		parts := strings.Split(string(buildTarget), "/")
@@ -246,6 +234,12 @@ func extractTargets(defaultSpec *DefaultSpec) map[string]interface{} {
 		}
 
 		os, _ := parts[0], parts[1]
+
+		// Only add each OS target once (not per package format)
+		if osTargets[os] {
+			continue
+		}
+		osTargets[os] = true
 
 		switch os {
 		case "azlinux3":
@@ -287,7 +281,7 @@ func extractTargets(defaultSpec *DefaultSpec) map[string]interface{} {
 			// target["dependencies"] = map[string]interface{}{
 			// 	"runtime": runtimeDeps,
 			// }
-			// targets[string(buildTarget)] = target
+			// targets[os] = target
 			// }
 
 			runtimeDeps["openssl-libs"] = map[string]interface{}{}
@@ -297,7 +291,7 @@ func extractTargets(defaultSpec *DefaultSpec) map[string]interface{} {
 			target["dependencies"] = map[string]interface{}{
 				"runtime": runtimeDeps,
 			}
-			targets[string(buildTarget)] = target
+			targets[os] = target
 		}
 	}
 	return targets

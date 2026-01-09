@@ -11,8 +11,8 @@ import (
 
 type PreviousDalecSpec struct {
 	Args struct {
-		Version  VersionString `yaml:"Version"`
-		Revision int           `yaml:"Revision"`
+		Version  string `yaml:"VERSION"`
+		Revision int    `yaml:"REVISION"`
 	} `yaml:"args"`
 }
 
@@ -31,69 +31,77 @@ func ReadYAML(path string) (PreviousDalecSpec, error) {
 		return data, fmt.Errorf("failed to unmarshal YAML: %w", err)
 	}
 
-	fmt.Printf("%v, %v\n", data.Args.Version, data.Args.Revision)
+	fmt.Printf("Version: %v, Revision: %v\n", data.Args.Version, data.Args.Revision)
 
 	return data, nil
 }
 
 // WriteYAML converts DalecSpec to formatted YAML
 func WriteYAML(spec DalecSpec) (string, error) {
-	// Create buffer for output
 	var buf bytes.Buffer
 
 	// Handle syntax header specially (needs to be first, with special format)
 	if syntax, ok := spec["# syntax"]; ok {
-		buf.WriteString(fmt.Sprintf("# syntax=%v\n\n", syntax))
-
-		// Create a copy without the syntax line for yaml encoding
-		specCopy := make(DalecSpec)
-		for k, v := range spec {
-			if k != "# syntax" {
-				specCopy[k] = v
-			}
-		}
-		spec = specCopy
+		buf.WriteString(fmt.Sprintf("# syntax=%v\n", syntax))
 	}
 
-	// Create YAML encoder with proper indentation
+	// Define the order of top-level fields to match tmp.yml
+	fieldOrder := []string{
+		"args",
+		"name",
+		"packager",
+		"vendor",
+		"license",
+		"website",
+		"description",
+		"version",
+		"revision",
+		"x-build-extensions",
+		"sources",
+		"dependencies",
+		"targets",
+		"build",
+		"artifacts",
+		"image",
+		"tests",
+	}
+
+	rootNode := &yaml.Node{
+		Kind: yaml.MappingNode,
+	}
+
+	for _, key := range fieldOrder {
+		value, ok := spec[key]
+		if !ok {
+			fmt.Printf("Key %s not found, skipping\n", key)
+			continue
+		}
+
+		keyNode := &yaml.Node{
+			Kind:  yaml.ScalarNode,
+			Value: key,
+		}
+
+		var valueNode yaml.Node
+		if err := valueNode.Encode(value); err != nil {
+			return "", fmt.Errorf("failed to encode field %s: %w", key, err)
+		}
+
+		rootNode.Content = append(rootNode.Content, keyNode, &valueNode)
+	}
+
 	encoder := yaml.NewEncoder(&buf)
 	encoder.SetIndent(2)
-
-	// Encode the spec
-	if err := encoder.Encode(spec); err != nil {
+	if err := encoder.Encode(rootNode); err != nil {
 		return "", fmt.Errorf("failed to encode YAML: %w", err)
 	}
-
 	encoder.Close()
 
-	// Post-process YAML to match Dalec format conventions
 	result := buf.String()
-	result = formatDalecYAML(result)
+
+	result = strings.TrimPrefix(result, "---\n")
 
 	return result, nil
-}
-
-// formatDalecYAML applies Dalec-specific formatting
-func formatDalecYAML(yamlStr string) string {
-	lines := strings.Split(yamlStr, "\n")
-	var formatted []string
-
-	for i, line := range lines {
-		// Add blank line before major sections
-		if i > 0 && !strings.HasPrefix(line, " ") && line != "" {
-			trimmedLine := strings.TrimSpace(line)
-			if trimmedLine != "" && !strings.HasPrefix(lines[i-1], " ") {
-				// Check if previous line was not empty and not indented
-				if i > 0 && strings.TrimSpace(lines[i-1]) != "" {
-					formatted = append(formatted, "")
-				}
-			}
-		}
-
-		formatted = append(formatted, line)
-	}
-
-	return strings.Join(formatted, "\n")
 }
 
 // MarshalYAML provides custom YAML marshaling for DalecSpec
