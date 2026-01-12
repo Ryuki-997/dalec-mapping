@@ -8,3 +8,12 @@ feat:
 get dockerfile from github as well 
 enable docerkfile integration
 enable agent skill
+
+cli: (optional)
+tag specfic
+dockerfile path
+bootstrap changelog
+template (build from latest)
+
+phase 3: 
+patch during build-time (check from upstream)

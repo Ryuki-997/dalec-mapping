@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"os"
 
-	"dalec-mapping/cli"
-	"dalec-mapping/github"
-	"dalec-mapping/parser"
-	"dalec-mapping/transformer"
+	"dalec/cli"
+	"dalec/github"
+	"dalec/parser"
+	"dalec/transformer"
 )
 
 func main() {

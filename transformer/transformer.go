@@ -6,25 +6,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	"dalec-mapping/github"
-	"dalec-mapping/parser"
+	"dalec/cli"
+	"dalec/github"
+	"dalec/parser"
 )
 
 // DalecSpec represents a Dalec specification using flexible maps for dynamic keys
 type DalecSpec map[string]interface{}
-
-type BuildTarget string
-
-const (
-	AzLinux3Rpm           BuildTarget = "azlinux3/rpm"
-	AzLinux3Container     BuildTarget = "azlinux3/container"
-	NobleDeb              BuildTarget = "noble/deb"
-	JammyDeb              BuildTarget = "jammy/deb"
-	FocalDeb              BuildTarget = "focal/deb"
-	BionicDeb             BuildTarget = "bionic/deb"
-	BookwormDeb           BuildTarget = "bookworm/deb"
-	WindowsCrossContainer BuildTarget = "windowscross/container"
-)
 
 // TODO: Per-target platforms
 
@@ -34,7 +22,7 @@ type DefaultSpec struct {
 	parser.DockerfileInfo
 
 	Revision     int
-	BuildTargets []BuildTarget
+	BuildTargets []cli.BuildTarget
 }
 
 func InitDefaultSpec(repoInfo *github.RepoInfo, dockerfileInfo *parser.DockerfileInfo, previousDalecSpecInfo PreviousDalecSpec) *DefaultSpec {
@@ -55,10 +43,10 @@ func InitDefaultSpec(repoInfo *github.RepoInfo, dockerfileInfo *parser.Dockerfil
 		defaultSpec.Revision = previousDalecSpecInfo.Args.Revision + 1
 	}
 
-	defaultSpec.BuildTargets = []BuildTarget{
-		AzLinux3Container, // Primary container image target
-		AzLinux3Rpm,       // RPM package target
-		NobleDeb,          // Ubuntu/Debian package target
+	defaultSpec.BuildTargets = []cli.BuildTarget{
+		cli.AzLinux3Container, // Primary container image target
+		cli.AzLinux3Rpm,       // RPM package target
+		cli.NobleDeb,          // Ubuntu/Debian package target
 	}
 
 	return defaultSpec

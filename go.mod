@@ -1,4 +1,4 @@
-module dalec-mapping
+module dalec
 
 go 1.25.5
 

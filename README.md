@@ -1,14 +1,15 @@
 # Dalec Spec Generator
 
-Converts Dockerfiles to Dalec specifications with automatic GitHub metadata integration.
+Converts Dockerfiles to Dalec specifications with automatic GitHub metadata integration, plus utilities to get and set spec values.
 
 ## Features
 
 ✅ **Parse Dockerfiles** using Docker Buildkit frontend
 ✅ **Fetch GitHub metadata** automatically (commit, description, license)  
 ✅ **Generate Dalec specs** with proper formatting
+✅ **Get/Set spec values** using dot notation for nested fields
 ✅ **Flexible map-based IR** - solves all nested structure issues
-✅ **CLI interface** for easy integration
+✅ **Subcommand CLI** for easy integration
 
 ## Installation
 
@@ -16,18 +17,40 @@ Converts Dockerfiles to Dalec specifications with automatic GitHub metadata inte
 go build -o dalec-gen main.go
 ```
 
-## Usage
+## Quick Start
 
-### Basic Usage
+### Generate a Spec
 
 ```bash
-./dalec-gen -repo Ryuki-997/HelloWorld
+./dalec-gen generate -repo owner/repo
 ```
 
-### All Options
+### Get a Value
 
 ```bash
-./dalec-gen [options]
+./dalec-gen get -field version
+```
+
+### Set a Value
+
+```bash
+./dalec-gen set -field license -value MIT
+```
+
+## Commands
+
+The tool provides three main commands:
+
+- **`generate`** - Generate a new Dalec spec from a GitHub repository
+- **`get`** - Retrieve a field value from an existing spec file
+- **`set`** - Set a field value in an existing spec file
+
+Run `dalec-gen help` or `dalec-gen <command> -h` for detailed usage.
+
+### Generate Command
+
+```bash
+dalec-gen generate [options]
 
 Options:
   -repo string
@@ -35,19 +58,81 @@ Options:
         Examples: owner/repo, https://github.com/owner/repo
         
   -dockerfile string
-        Path to Dockerfile (default: "Dockerfile")
+        Path to Dockerfile (optional)
+        
+  -spec string
+        Path to previous Dalec spec YAML file (default: "output.yml")
         
   -output string
-        Output YAML file path (default: "test.yml")
+        Output YAML file path (default: "output.yml")
         
   -v    Verbose output (shows detailed parsing info)
 ```
 
-### Examples
+### Get Command
 
 ```bash
-# Basic conversion
-./dalec-gen -repo microsoft/azure-cns
+dalec-gen get [options]
+
+Options:
+  -spec string
+        Path to Dalec spec YAML file (default: "output.yml")
+        
+  -field string
+        Field path to retrieve (required)
+        Use dot notation for nested fields (e.g., build.env.VERSION)
+```
+
+### Set Command
+
+```bash
+dalec-gen set [options]
+
+Options:
+  -spec string
+        Path to Dalec spec YAML file (default: "output.yml")
+        
+  -field string
+        Field path to set (required)
+        
+  -value string
+        Value to set (required)
+        
+  -output string
+        Output file path (default: overwrites input spec)
+```
+
+## Examples
+
+```bash
+# Generate a spec from GitHub
+./dalec-gen generate -repo microsoft/azure-cns
+
+# Generate with Dockerfile parsing
+./dalec-gen generate -repo owner/repo -dockerfile ./Dockerfile -output spec.yml
+
+# Generate from specific branch
+./dalec-gen generate -repo https://github.com/owner/repo/tree/develop
+
+# Get field values
+./dalec-gen get -field name
+./dalec-gen get -field version
+./dalec-gen get -field build.env.CGO_ENABLED
+
+# Set field values
+./dalec-gen set -field version -value v2.0.0
+./dalec-gen set -field license -value Apache-2.0
+./dalec-gen set -field build.env.VERSION -value v2.0.0
+
+# Workflow: generate, check, and update
+./dalec-gen generate -repo owner/repo
+./dalec-gen get -field version
+./dalec-gen set -field version -value v2.1.0
+```
+
+## Documentation
+
+For comprehensive command reference and examples, see [COMMANDS.md](COMMANDS.md).
 
 # Custom Dockerfile and output
 ./dalec-gen -repo owner/repo -dockerfile ./custom.Dockerfile -output spec.yml
