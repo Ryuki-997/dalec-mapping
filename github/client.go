@@ -105,24 +105,9 @@ func parseRepoPath(path string) (owner, repo, branch string, err error) {
 func fetchRepoMetadata(info *RepoInfo) error {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s", info.Owner, info.Repo)
 
-	resp, err := makeGitHubRequest(url)
+	data, err := makeGitHubMapRequest(url)
 	if err != nil {
 		return err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GitHub API error: %s - %s", resp.Status, string(body))
-	}
-
-	var data map[string]interface{}
-	if err := json.Unmarshal(body, &data); err != nil {
-		return fmt.Errorf("failed to parse JSON: %w", err)
 	}
 
 	// Extract metadata
@@ -150,24 +135,9 @@ func fetchRepoMetadata(info *RepoInfo) error {
 func fetchReleaseMetadata(info *RepoInfo) error {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", info.Owner, info.Repo)
 
-	resp, err := makeGitHubRequest(url)
+	data, err := makeGitHubMapRequest(url)
 	if err != nil {
 		return err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GitHub API error: %s - %s", resp.Status, string(body))
-	}
-
-	var data map[string]interface{}
-	if err := json.Unmarshal(body, &data); err != nil {
-		return fmt.Errorf("failed to parse JSON: %w", err)
 	}
 
 	// Fetch revision from url
@@ -183,28 +153,13 @@ func fetchReleaseMetadata(info *RepoInfo) error {
 	info.Version = tag
 
 	// Fetch the commit SHA for this release tag
-	commitURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/commits/%s", info.Owner, info.Repo, tag)
-	commitResp, err := makeGitHubRequest(commitURL)
+	url = fmt.Sprintf("https://api.github.com/repos/%s/%s/commits/%s", info.Owner, info.Repo, tag)
+	data, err = makeGitHubMapRequest(url)
 	if err != nil {
-		return fmt.Errorf("failed to fetch commit info: %w", err)
-	}
-	defer commitResp.Body.Close()
-
-	commitBody, err := io.ReadAll(commitResp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read commit response: %w", err)
+		return err
 	}
 
-	if commitResp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GitHub API error fetching commit: %s - %s", commitResp.Status, string(commitBody))
-	}
-
-	var commitData map[string]interface{}
-	if err := json.Unmarshal(commitBody, &commitData); err != nil {
-		return fmt.Errorf("failed to parse commit JSON: %w", err)
-	}
-
-	if sha, ok := commitData["sha"].(string); ok {
+	if sha, ok := data["sha"].(string); ok {
 		info.LatestCommit = sha
 	}
 
@@ -219,38 +174,31 @@ func fetchSourceGenerator(info *RepoInfo) error {
 	cargoFile := map[string]bool{"Cargo.toml": true, "Cargo.lock": true}
 	pipFile := map[string]bool{"requirements.txt": true, "setup.py": true, "Pipfile": true}
 
-	resp, err := makeGitHubRequest(url)
+	data, err := makeGitHubArrayRequest(url)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GitHub API error: %s - %s", resp.Status, string(body))
-	}
-
-	var data []map[string]interface{}
-	if err := json.Unmarshal(body, &data); err != nil {
-		return fmt.Errorf("failed to parse JSON: %w", err)
-	}
 
 	for _, item := range data {
-		if name, ok := item["path"].(string); ok {
-			if goFile[name] {
-				info.Generator = GoModGenerator
-				return nil
-			} else if cargoFile[name] {
-				info.Generator = CargoHomeGenerator
-				return nil
-			} else if pipFile[name] {
-				info.Generator = PipGenerator
-				return nil
-			}
+		itemMap, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		name, ok := itemMap["name"].(string)
+		if !ok {
+			continue
+		}
+
+		if goFile[name] {
+			info.Generator = GoModGenerator
+			return nil
+		} else if cargoFile[name] {
+			info.Generator = CargoHomeGenerator
+			return nil
+		} else if pipFile[name] {
+			info.Generator = PipGenerator
+			return nil
 		}
 	}
 
@@ -261,8 +209,29 @@ func fetchSourceGenerator(info *RepoInfo) error {
 	return fmt.Errorf("❌ Unexpected error in determining source generator")
 }
 
-// Request data from GitHub API
-func makeGitHubRequest(url string) (*http.Response, error) {
+// FetchTagInfo fetches commit SHA for a specific tag
+func FetchTagInfo(info *RepoInfo, tag string) error {
+	// Try fetching tag as a release first
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/ref/tags/%s", info.Owner, info.Repo, tag)
+
+	data, err := makeGitHubMapRequest(url)
+	if err != nil {
+		return err
+	}
+
+	// Extract SHA from object
+	if object, ok := data["object"].(map[string]interface{}); ok {
+		if sha, ok := object["sha"].(string); ok {
+			info.LatestCommit = sha
+			info.Version = tag
+			return nil
+		}
+	}
+
+	return fmt.Errorf("failed to extract commit SHA from tag")
+}
+
+func makeGitHubMapRequest(url string) (map[string]interface{}, error) {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 	}
@@ -275,7 +244,63 @@ func makeGitHubRequest(url string) (*http.Response, error) {
 	// Add headers for GitHub API
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	return client.Do(req)
+	resp, err := client.Do(req)
+
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitHub API error fetching tag: %s - %s", resp.Status, string(body))
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return nil, fmt.Errorf("failed to parse JSON: %w", err)
+	}
+
+	return data, nil
+}
+
+func makeGitHubArrayRequest(url string) ([]interface{}, error) {
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitHub API error: %s - %s", resp.Status, string(body))
+	}
+
+	var data []interface{}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return nil, fmt.Errorf("failed to parse JSON: %w", err)
+	}
+
+	return data, nil
 }
 
 // PrintRepoInfo displays repository information

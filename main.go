@@ -1,120 +1,112 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"os"
 
+	"dalec-mapping/cli"
 	"dalec-mapping/github"
 	"dalec-mapping/parser"
 	"dalec-mapping/transformer"
 )
 
-type cliOptions struct {
-	repoPath       *string
-	dockerfilePath *string
-	specFilePath   *string
-	outputPath     *string
-	verbose        *bool
-}
-
 func main() {
-
-	cliOptions := defineFlags()
+	cliOptions := cli.DefineFlags()
 
 	fmt.Println("🚀 Dalec Spec Generator")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 	// Fetch GitHub repository info
-	repoInfo, err := fetchGitHubRepoInfo(*cliOptions.repoPath)
+	repoInfo, err := fetchGitHubRepoInfo(cliOptions.RepoPath, cliOptions.Tag)
 	if err != nil {
 		fmt.Printf("❌ Error fetching repository info: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Parse Dockerfile if path provided
-	dockerfileInfo, err := fetchDockerfileInfo(*cliOptions.dockerfilePath, *cliOptions.verbose)
-	if err != nil {
-		fmt.Printf("❌ Error parsing Dockerfile: %v\n", err)
-	}
+	// Apply field overrides from CLI
+	applyFieldOverrides(repoInfo, cliOptions)
 
-	// Parse previous YAML spec if path provided
-	previousDalecSpecInfo, err := fetchPreviousYAMLInfo(*cliOptions.specFilePath)
+	// Parse Dockerfile if path provided
+	dockerfileInfo, previousDalecSpecInfo, err := parseOptionalFileInfo(cliOptions.DockerfilePath, cliOptions.SpecFilePath, cliOptions.Verbose)
 	if err != nil {
-		fmt.Printf("❌ Error reading previous YAML spec: %v\n", err)
-		os.Exit(1)
+		fmt.Printf("❌ Error parsing optional files: %v\n", err)
 	}
 
 	// Transform to Dalec spec with repository metadata
 	fmt.Println("=== TRANSFORMING TO DALEC SPEC ===")
 
 	defaultSpec := transformer.InitDefaultSpec(repoInfo, dockerfileInfo, previousDalecSpecInfo)
+
+	// TODO: maybe add or override targets (currently override)
+	// if len(cliOptions.Targets) > 0 {
+	// 	defaultSpec.BuildTargets = make([]transformer.BuildTarget, len(cliOptions.Targets))
+	// 	for i, t := range cliOptions.Targets {
+	// 		defaultSpec.BuildTargets[i] = transformer.BuildTarget(t)
+	// 	}
+	// }
+
 	dalecSpec := transformer.TransformToDalec(defaultSpec)
 
 	// Write to output file
-	yamlContent, err := transformer.WriteYAML(dalecSpec)
+	fmt.Println("=== WRITING OUTPUT YAML FILE ===")
+
+	err = writeOutput(dalecSpec, cliOptions)
 	if err != nil {
-		fmt.Printf("❌ Error generating YAML: %v\n", err)
+		fmt.Printf("❌ Error writing output YAML file: %v\n", err)
 		os.Exit(1)
 	}
 
-	err = os.WriteFile(*cliOptions.outputPath, []byte(yamlContent), 0644)
-	if err != nil {
-		fmt.Printf("❌ Error writing %s: %v\n", *cliOptions.outputPath, err)
-		os.Exit(1)
-	}
-
-	fmt.Printf("✅ Successfully generated %s\n\n", *cliOptions.outputPath)
+	fmt.Printf("✅ Successfully generated %s\n\n", cliOptions.OutputPath)
 }
 
-func defineFlags() cliOptions {
-	// Define CLI flags
-	repoPath := flag.String("repo", "", "GitHub repository (e.g., owner/repo or https://github.com/owner/repo)")
-	dockerfilePath := flag.String("dockerfile", "", "Path to Dockerfile")
-	specFilePath := flag.String("spec", "output.yml", "Path to previous Dalec spec YAML file")
-	outputPath := flag.String("output", "output.yml", "Output YAML file path")
-	verbose := flag.Bool("v", false, "Verbose output")
-
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "Converts Dockerfile to Dalec specification with GitHub metadata.\n\n")
-		fmt.Fprintf(os.Stderr, "Options:\n")
-		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "\nExample:\n")
-		fmt.Fprintf(os.Stderr, "  %s -repo Ryuki-997/HelloWorld\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s -repo https://github.com/owner/repo -dockerfile ./Dockerfile -output spec.yml\n", os.Args[0])
+func applyFieldOverrides(repoInfo *github.RepoInfo, opts cli.CLIOptions) {
+	if opts.Name != "" {
+		repoInfo.Repo = opts.Name
 	}
-
-	flag.Parse()
-
-	// Validate required argument
-	if *repoPath == "" {
-		fmt.Fprintf(os.Stderr, "Error: -repo flag is required\n\n")
-		flag.Usage()
-		os.Exit(1)
+	if opts.Description != "" {
+		repoInfo.Description = opts.Description
 	}
-
-	return cliOptions{
-		repoPath:       repoPath,
-		dockerfilePath: dockerfilePath,
-		specFilePath:   specFilePath,
-		outputPath:     outputPath,
-		verbose:        verbose,
+	if opts.License != "" {
+		repoInfo.License = opts.License
 	}
 }
 
-func fetchGitHubRepoInfo(repoPath string) (*github.RepoInfo, error) {
+func fetchGitHubRepoInfo(repoPath, tag string) (*github.RepoInfo, error) {
 	// Fetch GitHub repository information
 	fmt.Println("=== FETCHING GITHUB METADATA ===")
 	repoInfo, err := github.FetchRepoInfo(repoPath)
 	if err != nil {
 		fmt.Printf("❌ Error fetching repository info: %v\n", err)
 		return nil, err
-	} else {
-		github.PrintRepoInfo(repoInfo)
 	}
 
+	// If tag is specified, fetch that tag's commit SHA
+	if tag != "" {
+		fmt.Printf("Fetching tag: %s\n", tag)
+		err = github.FetchTagInfo(repoInfo, tag)
+		if err != nil {
+			fmt.Printf("❌ Error fetching tag info: %v\n", err)
+			return nil, err
+		}
+	}
+
+	github.PrintRepoInfo(repoInfo)
+
 	return repoInfo, nil
+}
+
+func parseOptionalFileInfo(dockerfilePath, specFilePath string, verbose bool) (*parser.DockerfileInfo, transformer.PreviousDalecSpec, error) {
+	dockerfileInfo, err := fetchDockerfileInfo(dockerfilePath, verbose)
+	if err != nil {
+		return nil, transformer.PreviousDalecSpec{}, err
+	}
+
+	previousDalecSpecInfo, err := fetchPreviousYAMLInfo(specFilePath)
+	if err != nil {
+		return nil, transformer.PreviousDalecSpec{}, err
+	}
+
+	return dockerfileInfo, previousDalecSpecInfo, nil
 }
 
 func fetchDockerfileInfo(dockerfilePath string, verbose bool) (*parser.DockerfileInfo, error) {
@@ -162,4 +154,18 @@ func fetchPreviousYAMLInfo(filepath string) (transformer.PreviousDalecSpec, erro
 
 	fmt.Println("✅ Successfully read previous YAML file.")
 	return yamlInfo, nil
+}
+
+func writeOutput(dalecSpec transformer.DalecSpec, cliOptions cli.CLIOptions) error {
+	yamlContent, err := transformer.WriteYAML(dalecSpec)
+	if err != nil {
+		return fmt.Errorf("❌ Error generating YAML: %v\n", err)
+	}
+
+	err = os.WriteFile(cliOptions.OutputPath, []byte(yamlContent), 0644)
+	if err != nil {
+		return fmt.Errorf("❌ Error writing %s: %v\n", cliOptions.OutputPath, err)
+	}
+
+	return nil
 }
