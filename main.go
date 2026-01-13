@@ -37,6 +37,9 @@ func main() {
 
 	defaultSpec := transformer.InitDefaultSpec(repoInfo, dockerfileInfo, previousDalecSpecInfo)
 
+	fmt.Println("=== DOCKER FILE INFO ===")
+	transformer.PrintDockerfileInfo(defaultSpec)
+
 	// TODO: maybe add or override targets (currently override)
 	// if len(cliOptions.Targets) > 0 {
 	// 	defaultSpec.BuildTargets = make([]transformer.BuildTarget, len(cliOptions.Targets))

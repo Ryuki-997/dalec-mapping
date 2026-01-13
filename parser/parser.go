@@ -44,17 +44,26 @@ type DockerfileInfo struct {
 
 // Stage represents a build stage in a multi-stage Dockerfile
 type Stage struct {
-	Name       string            // Stage name from "AS <name>"
-	From       string            // Base image
-	Platform   string            // Platform from --platform flag
-	Args       map[string]string // ARG in this stage
-	Env        map[string]string // ENV variables
-	Workdir    string            // WORKDIR path
-	Runs       []string          // RUN commands
-	Copies     []CopyInstruction // COPY/ADD instructions
-	Entrypoint []string          // ENTRYPOINT
-	Cmd        []string          // CMD
-	Expose     []string          // EXPOSE ports
+	Instruction  string            // "FROM"
+	Name         string            // Stage name from "AS <name>"
+	From         string            // Base image
+	Platform     string            // Platform from --platform flag
+	Args         map[string]string // ARG in this stage
+	Env          map[string]string // ENV variables
+	Workdir      string            // WORKDIR path
+	Runs         []string          // RUN commands
+	Copies       []CopyInstruction // COPY/ADD instructions
+	Entrypoint   []string          // ENTRYPOINT
+	Cmd          []string          // CMD
+	Expose       []string          // EXPOSE ports
+	Instructions []RawInstruction  // Raw instructions for detailed parsing
+}
+
+// RawInstruction represents a raw Dockerfile instruction for source extraction
+type RawInstruction struct {
+	Type  string            // Instruction type (ADD, COPY, RUN, etc.)
+	Args  []string          // Instruction arguments
+	Flags map[string]string // Instruction flags (--from, --platform, etc.)
 }
 
 // CopyInstruction represents a COPY or ADD instruction
@@ -74,10 +83,7 @@ func ParseDockerfile(filepath string) (*DockerfileInfo, error) {
 	}
 	defer f.Close()
 
-	// ==========================================
-	// This is where buildkit does all the work!
-	// ==========================================
-	// It parses the entire Dockerfile and returns an AST
+	// Docker buildkit parses the entire Dockerfile and returns an AST
 	result, err := parser.Parse(f)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse Dockerfile: %w", err)
@@ -95,6 +101,36 @@ func ParseDockerfile(filepath string) (*DockerfileInfo, error) {
 	// Walk the AST - each child is a Dockerfile instruction
 	for _, node := range result.AST.Children {
 		instruction := strings.ToUpper(node.Value)
+
+		// Add raw instruction to current stage if it exists
+		if currentStage != nil {
+			rawInst := RawInstruction{
+				Type:  instruction,
+				Args:  []string{},
+				Flags: make(map[string]string),
+			}
+
+			// Collect arguments
+			for n := node.Next; n != nil; n = n.Next {
+				rawInst.Args = append(rawInst.Args, n.Value)
+			}
+
+			// Collect flags
+			if node.Flags == nil {
+				continue
+			}
+
+			for _, flag := range node.Flags {
+				if !strings.Contains(flag, "=") {
+					continue
+				}
+				parts := strings.SplitN(flag, "=", 2)
+				key := strings.TrimPrefix(parts[0], "--")
+				rawInst.Flags[key] = parts[1]
+			}
+
+			currentStage.Instructions = append(currentStage.Instructions, rawInst)
+		}
 
 		switch instruction {
 		case "FROM":
@@ -162,11 +198,12 @@ func ParseDockerfile(filepath string) (*DockerfileInfo, error) {
 // Example: FROM --platform=linux/amd64 golang:1.21 AS builder
 func parseFromInstruction(node *parser.Node) *Stage {
 	stage := &Stage{
-		Args:   make(map[string]string),
-		Env:    make(map[string]string),
-		Copies: []CopyInstruction{},
-		Runs:   []string{},
-		Expose: []string{},
+		Args:         make(map[string]string),
+		Env:          make(map[string]string),
+		Copies:       []CopyInstruction{},
+		Runs:         []string{},
+		Expose:       []string{},
+		Instructions: []RawInstruction{},
 	}
 
 	// Check for flags (buildkit already parsed them)

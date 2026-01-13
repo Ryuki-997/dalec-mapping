@@ -14,8 +14,6 @@ import (
 // DalecSpec represents a Dalec specification using flexible maps for dynamic keys
 type DalecSpec map[string]interface{}
 
-// TODO: Per-target platforms
-
 // DefaultSpec combines GitHub repo info and parsed Dockerfile info
 type DefaultSpec struct {
 	github.RepoInfo
@@ -84,12 +82,18 @@ func populateArgs(defaultSpec *DefaultSpec) map[string]interface{} {
 	args["VERSION"] = defaultSpec.Version
 	args["COMMIT"] = defaultSpec.LatestCommit
 
-	if val, ok := defaultSpec.Args["TARGETARCH"]; ok {
-		args["TARGETARCH"] = val
+	targetArgs := map[string]bool{
+		"ARCH":       true,
+		"OS":         true,
+		"OS_VERSION": true,
+		"VERSION":    true,
 	}
 
-	if val, ok := defaultSpec.Args["TARGETOS"]; ok {
-		args["TARGETOS"] = val
+	for k, v := range defaultSpec.Args {
+		if targetArgs[k] {
+			continue
+		}
+		args[k] = v
 	}
 
 	return args
@@ -113,7 +117,7 @@ func buildExtensions(defaultSpec *DefaultSpec) map[string]interface{} {
 	ext["image-name"] = strings.ToLower(defaultSpec.Repo)
 	ext["repository"] = "azure"
 
-	// TODO: Set default build target(s)
+	// Set default build target(s)
 	ext["build-targets"] = defaultSpec.BuildTargets
 
 	// Per-target configurations
@@ -124,53 +128,6 @@ func buildExtensions(defaultSpec *DefaultSpec) map[string]interface{} {
 	ext["per-target"] = perTarget
 
 	return ext
-}
-
-// extractSources creates source definitions from Dockerfile
-func extractSources(defaultSpec *DefaultSpec) map[string]interface{} {
-	sources := make(map[string]interface{})
-	sourceName := defaultSpec.Repo
-
-	// TODO: Verify if sources need to be defined from actual builds in stages
-
-	// Find builder stages with actual builds
-	// for _, stage := range defaultSpec.Stages {
-	// 	if !isBuilderStage(stage) {
-	// 		continue
-	// 	}
-
-	// 	source := make(map[string]interface{})
-
-	// 	git := make(map[string]interface{})
-	// 	git["url"] = defaultSpec.GitURL
-	// 	git["commit"] = "${COMMIT}"
-
-	// 	source["git"] = git
-
-	// 	// TODO: Check for language-specific generators
-	// 	source["generate"] = []map[string]interface{}{
-	// 		{string(defaultSpec.Generator): map[string]interface{}{}},
-	// 	}
-
-	// 	sources[sourceName] = source
-	// 	break // Use first builder stage
-	// }
-
-	// Fallback if no builder found
-	if len(sources) == 0 {
-		source := make(map[string]interface{})
-		git := make(map[string]interface{})
-		git["url"] = defaultSpec.GitURL
-		git["commit"] = "${COMMIT}"
-		source["git"] = git
-		source["generate"] = []map[string]interface{}{
-			{string(defaultSpec.Generator): map[string]interface{}{}},
-		}
-
-		sources[sourceName] = source
-	}
-
-	return sources
 }
 
 // extractDependencies extracts build and runtime dependencies
@@ -346,9 +303,6 @@ func extractBuildCommands(defaultSpec *DefaultSpec) []map[string]interface{} {
 	var steps []map[string]interface{}
 
 	for _, stage := range defaultSpec.Stages {
-		if !isBuilderStage(stage) {
-			continue
-		}
 
 		if len(stage.Runs) == 0 {
 			continue
@@ -532,11 +486,6 @@ func appendTests(defaultSpec *DefaultSpec) []map[string]interface{} {
 
 // Helper functions
 
-func isBuilderStage(stage parser.Stage) bool {
-	name := strings.ToLower(stage.Name)
-	return name == "builder" || strings.Contains(name, "build")
-}
-
 func hasGoModules(stage parser.Stage) bool {
 	for _, run := range stage.Runs {
 		if strings.Contains(run, "go build") || strings.Contains(run, "go mod") {
@@ -559,59 +508,41 @@ func deriveSourceName(stage parser.Stage) string {
 
 func findBuilderStageName(defaultSpec *DefaultSpec) string {
 	for _, stage := range defaultSpec.Stages {
-		if !isBuilderStage(stage) {
-			continue
-		}
+		// TODO: Implement isBuilderStage check
+		// if !isBuilderStage(stage) {
+		// 	continue
+		// }
 
-		if stage.Name != "" {
+		if stage.Name != "" && (stage.Name == "builder" || strings.Contains(strings.ToLower(stage.Name), "build")) {
 			return stage.Name
 		}
 	}
 	return "builder"
 }
 
-// Path-based helper functions for nested map manipulation
+func PrintDockerfileInfo(defaultSpec *DefaultSpec) {
+	fmt.Println("Parsed Dockerfile Stages:")
+	fmt.Println("")
 
-// Set sets a nested value using dot notation path
-// Example: Set(spec, "build.env.VERSION", "1.0")
-func Set(spec DalecSpec, path string, value interface{}) {
-	keys := strings.Split(path, ".")
-	current := spec
-
-	for i := 0; i < len(keys)-1; i++ {
-		key := keys[i]
-		if _, exists := current[key]; !exists {
-			current[key] = make(map[string]interface{})
+	for _, stage := range defaultSpec.Stages {
+		fmt.Printf("Stage: %s (From: %s)\n", stage.Name, stage.From)
+		fmt.Println("  Env:")
+		for k, v := range stage.Env {
+			fmt.Printf("    %s=%s\n", k, v)
 		}
-		if m, ok := current[key].(map[string]interface{}); ok {
-			current = m
-		} else {
-			// Can't traverse further, recreate as map
-			current[key] = make(map[string]interface{})
-			current = current[key].(map[string]interface{})
+		fmt.Println("  Runs:")
+		for _, run := range stage.Runs {
+			fmt.Printf("    %s\n", run)
 		}
+		fmt.Println("  Copies:")
+		for _, copy := range stage.Copies {
+			fmt.Printf("    From: %s, Source: %v, Dest: %s\n", copy.From, copy.Source, copy.Dest)
+		}
+		fmt.Println("")
 	}
 
-	current[keys[len(keys)-1]] = value
-}
-
-// Get retrieves a nested value using dot notation path
-// Example: Get(spec, "build.env.VERSION")
-func Get(spec DalecSpec, path string) (interface{}, error) {
-	keys := strings.Split(path, ".")
-	var current interface{} = spec
-
-	for _, key := range keys {
-		if m, ok := current.(map[string]interface{}); ok {
-			if val, exists := m[key]; exists {
-				current = val
-			} else {
-				return nil, fmt.Errorf("key not found: %s in path %s", key, path)
-			}
-		} else {
-			return nil, fmt.Errorf("not a map at key: %s in path %s", key, path)
-		}
+	for k, v := range defaultSpec.Args {
+		fmt.Printf("Build Arg: %s=%s\n", k, v)
 	}
-
-	return current, nil
+	fmt.Println("")
 }
