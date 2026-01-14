@@ -130,39 +130,6 @@ func buildExtensions(defaultSpec *DefaultSpec) map[string]interface{} {
 	return ext
 }
 
-// extractDependencies extracts build and runtime dependencies
-func extractDependencies(defaultSpec *DefaultSpec) map[string]interface{} {
-	deps := make(map[string]interface{})
-	buildDeps := make(map[string]interface{})
-
-	// Detect language/framework dependencies
-	for _, stage := range defaultSpec.Stages {
-		// Check for Go
-		if hasGoModules(stage) || stage.From == "go" || strings.Contains(stage.From, "golang") {
-			buildDeps["msft-golang"] = map[string]interface{}{}
-		}
-
-		// Check for package manager installs
-		for _, run := range stage.Runs {
-			run = strings.ToLower(run)
-			// tdnf, yum, apt, etc.
-			if strings.Contains(run, "tdnf install") || strings.Contains(run, "yum install") {
-				// Could parse package names, for now leave as TODO
-			}
-		}
-	}
-
-	if len(buildDeps) > 0 {
-		deps["build"] = buildDeps
-	} else {
-		deps["build"] = map[string]interface{}{
-			"msft-golang": map[string]interface{}{},
-		}
-	}
-
-	return deps
-}
-
 // extractTargets creates target-specific configurations
 func extractTargets(defaultSpec *DefaultSpec) map[string]interface{} {
 	targets := make(map[string]interface{})
