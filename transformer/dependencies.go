@@ -27,6 +27,8 @@ func extractDependencies(defaultSpec *DefaultSpec) map[string]interface{} {
 		for _, run := range stage.Runs {
 			packages := extractPackagesFromRun(run)
 
+			fmt.Println("Extracted packages from RUN:", packages)
+
 			for _, pkg := range packages {
 				pkgDef := make(map[string]interface{})
 
@@ -170,31 +172,6 @@ func parseRpmBasedPackages(cmd, keyword string) []Package {
 		if word == "&&" || word == "||" || word == "update" || word == "upgrade" {
 			continue
 		}
-
-		// RPM format: package-version-release or just package
-		// Not enough info
-		// Likely has version: package-1.2.3-1
-		if strings.Count(word, "-") < 2 {
-			continue
-		}
-
-		lastDash := strings.LastIndex(word, "-")
-		if lastDash <= 0 {
-			continue
-		}
-
-		name := word[:lastDash]
-		secondLastDash := strings.LastIndex(name, "-")
-		if secondLastDash <= 0 {
-			continue
-		}
-
-		pkgName := name[:secondLastDash]
-		version := name[secondLastDash+1:] + "-" + word[lastDash+1:]
-		packages = append(packages, Package{
-			Name:    pkgName,
-			Version: version,
-		})
 
 		if isValidPackageName(word) {
 			packages = append(packages, Package{Name: word})
