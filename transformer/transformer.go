@@ -14,7 +14,7 @@ import (
 // DalecSpec represents a Dalec specification using flexible maps for dynamic keys
 type DalecSpec map[string]interface{}
 
-// DefaultSpec combines GitHub repo info and parsed Dockerfile info
+// DefaultSpec combines GitHub repo info, parsed Dockerfile info, and Makefile info
 type DefaultSpec struct {
 	github.RepoInfo
 	parser.DockerfileInfo
@@ -27,13 +27,9 @@ func InitDefaultSpec(repoInfo *github.RepoInfo, dockerfileInfo *parser.Dockerfil
 	defaultSpec := &DefaultSpec{}
 	defaultSpec.RepoInfo = *repoInfo
 
-	fmt.Printf("------------- Default Spec Generator: ------------- %s\n", defaultSpec.Generator)
-
 	if dockerfileInfo != nil {
 		defaultSpec.DockerfileInfo = *dockerfileInfo
 	}
-
-	fmt.Printf("Repo Version: %s, Previous Version: %s\n", repoInfo.Version, previousDalecSpecInfo.Args.Version)
 
 	if repoInfo.Version != previousDalecSpecInfo.Args.Version {
 		defaultSpec.Revision = 1
@@ -51,14 +47,14 @@ func InitDefaultSpec(repoInfo *github.RepoInfo, dockerfileInfo *parser.Dockerfil
 }
 
 // TransformToDalec converts parsed Dockerfile info to Dalec spec format
-func TransformToDalec(defaultSpec *DefaultSpec) DalecSpec {
+func TransformToDalec(defaultSpec *DefaultSpec, makefileInfo *parser.MakefileInfo) DalecSpec {
 	spec := make(DalecSpec)
 
 	// Add syntax header (special comment format)
 	spec["# syntax"] = "ghcr.io/azure/dalec/frontend:latest"
 
 	// Initialize args section
-	spec["args"] = populateArgs(defaultSpec)
+	spec["args"] = populateArgs(defaultSpec, makefileInfo)
 	populateMetadata(defaultSpec, spec)
 
 	// Build extensions section
@@ -74,41 +70,6 @@ func TransformToDalec(defaultSpec *DefaultSpec) DalecSpec {
 	spec["tests"] = appendTests(defaultSpec)
 
 	return spec
-}
-
-func populateArgs(defaultSpec *DefaultSpec) map[string]interface{} {
-	args := make(map[string]interface{})
-	args["REVISION"] = defaultSpec.Revision
-	args["VERSION"] = defaultSpec.Version
-	args["COMMIT"] = defaultSpec.LatestCommit
-
-	targetArgs := map[string]bool{
-		"ARCH":       true,
-		"OS":         true,
-		"OS_VERSION": true,
-		"VERSION":    true,
-	}
-
-	for k, v := range defaultSpec.Args {
-		if targetArgs[k] {
-			continue
-		}
-		args[k] = v
-	}
-
-	return args
-}
-
-func populateMetadata(defaultSpec *DefaultSpec, spec DalecSpec) {
-
-	spec["name"] = strings.ToLower(defaultSpec.Repo)
-	spec["packager"] = "Azure Container Upstream"
-	spec["vendor"] = "Microsoft Corporation"
-	spec["license"] = defaultSpec.License
-	spec["website"] = defaultSpec.GitURL
-	spec["description"] = defaultSpec.Description
-	spec["version"] = "${VERSION}"
-	spec["revision"] = "${REVISION}"
 }
 
 // buildExtensions creates the x-build-extensions section

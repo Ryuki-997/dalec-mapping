@@ -27,6 +27,7 @@ type CLIOptions struct {
 	// Optional paths
 	DockerfilePath string
 	SpecFilePath   string
+	MakefilePath   string
 	OutputPath     string
 
 	// Field overrides
@@ -52,6 +53,7 @@ func DefineFlags() CLIOptions {
 	repoPath := flag.String("repo", "", "GitHub repository (required)")
 	dockerfilePath := flag.String("dockerfile", "", "Path to Dockerfile")
 	specFilePath := flag.String("spec", "", "Path to previous Dalec spec")
+	makefilePath := flag.String("makefile", "", "Path to Makefile")
 	outputPath := flag.String("output", "output.yml", "Output YAML file path")
 
 	name := flag.String("name", "", "Override package name")
@@ -96,6 +98,7 @@ func DefineFlags() CLIOptions {
 	opts.RepoPath = *repoPath
 	opts.DockerfilePath = *dockerfilePath
 	opts.SpecFilePath = *specFilePath
+	opts.MakefilePath = *makefilePath
 	opts.OutputPath = *outputPath
 	opts.Name = *name
 	opts.Description = *description
@@ -130,6 +133,8 @@ OPTIONAL PATHS:
         Path to Dockerfile (default: "Dockerfile")
     -spec string
         Path to previous spec (default: "output.yml")
+		-makefile string
+				Path to Makefile (default: "Makefile")
     -output string
         Output file path (default: "output.yml")
 
@@ -171,6 +176,7 @@ func printContextualHelp(usedFlags map[string]bool) {
 	flagInfo := map[string]string{
 		"repo":        "GitHub repository (required)",
 		"dockerfile":  "Path to Dockerfile",
+		"makefile":    "Path to Makefile",
 		"spec":        "Path to previous Dalec spec",
 		"output":      "Output YAML file path",
 		"name":        "Override package name",
@@ -183,7 +189,7 @@ func printContextualHelp(usedFlags map[string]bool) {
 		"help":        "Show complete usage",
 	}
 
-	order := []string{"repo", "dockerfile", "spec", "output", "name",
+	order := []string{"repo", "dockerfile", "makefile", "spec", "output", "name",
 		"description", "license", "tag", "targets", "v", "h", "help"}
 
 	for _, f := range order {

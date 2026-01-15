@@ -15,15 +15,6 @@ func extractBuildSteps(defaultSpec *DefaultSpec) map[string]interface{} {
 	env["CGO_ENABLED"] = "1"
 	env["GOOS"] = "${OS}"
 
-	for _, stage := range defaultSpec.Stages {
-		for _, run := range stage.Runs {
-			if strings.Contains(run, "CGO_ENABLED=0") {
-				env["CGO_ENABLED"] = "0"
-				break
-			}
-		}
-	}
-
 	env["GOPROXY"] = "direct"
 	env["GOEXPERIMENT"] = "systemcrypto"
 	build["env"] = env

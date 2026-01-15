@@ -27,7 +27,7 @@ func main() {
 	applyFieldOverrides(repoInfo, cliOptions)
 
 	// Parse Dockerfile if path provided
-	dockerfileInfo, previousDalecSpecInfo, err := parseOptionalFileInfo(cliOptions.DockerfilePath, cliOptions.SpecFilePath, cliOptions.Verbose)
+	dockerfileInfo, makefileInfo, previousDalecSpecInfo, err := parseOptionalFileInfo(cliOptions.DockerfilePath, cliOptions.MakefilePath, cliOptions.SpecFilePath, cliOptions.Verbose)
 	if err != nil {
 		fmt.Printf("❌ Error parsing optional files: %v\n", err)
 	}
@@ -48,7 +48,7 @@ func main() {
 	// 	}
 	// }
 
-	dalecSpec := transformer.TransformToDalec(defaultSpec)
+	dalecSpec := transformer.TransformToDalec(defaultSpec, makefileInfo)
 
 	// Write to output file
 	fmt.Println("=== WRITING OUTPUT YAML FILE ===")
@@ -98,18 +98,23 @@ func fetchGitHubRepoInfo(repoPath, tag string) (*github.RepoInfo, error) {
 	return repoInfo, nil
 }
 
-func parseOptionalFileInfo(dockerfilePath, specFilePath string, verbose bool) (*parser.DockerfileInfo, transformer.PreviousDalecSpec, error) {
+func parseOptionalFileInfo(dockerfilePath, makefilePath, specFilePath string, verbose bool) (*parser.DockerfileInfo, *parser.MakefileInfo, transformer.PreviousDalecSpec, error) {
 	dockerfileInfo, err := fetchDockerfileInfo(dockerfilePath, verbose)
 	if err != nil {
-		return nil, transformer.PreviousDalecSpec{}, err
+		return nil, nil, transformer.PreviousDalecSpec{}, err
+	}
+
+	makefileInfo, err := fetchMakefileInfo(makefilePath, verbose)
+	if err != nil {
+		return nil, nil, transformer.PreviousDalecSpec{}, err
 	}
 
 	previousDalecSpecInfo, err := fetchPreviousYAMLInfo(specFilePath)
 	if err != nil {
-		return nil, transformer.PreviousDalecSpec{}, err
+		return nil, nil, transformer.PreviousDalecSpec{}, err
 	}
 
-	return dockerfileInfo, previousDalecSpecInfo, nil
+	return dockerfileInfo, makefileInfo, previousDalecSpecInfo, nil
 }
 
 func fetchDockerfileInfo(dockerfilePath string, verbose bool) (*parser.DockerfileInfo, error) {
@@ -135,6 +140,35 @@ func fetchDockerfileInfo(dockerfilePath string, verbose bool) (*parser.Dockerfil
 	}
 
 	return dockerfileInfo, nil
+}
+
+func fetchMakefileInfo(makefilePath string, verbose bool) (*parser.MakefileInfo, error) {
+	fmt.Println("=== PARSING MAKEFILE ===")
+
+	var makefileInfo *parser.MakefileInfo
+
+	if makefilePath == "" {
+		fmt.Println("⚠️  No Makefile path provided.")
+		return nil, nil
+	}
+
+	makefileInfo, err := parser.ParseMakefile(makefilePath)
+	if err != nil {
+		fmt.Printf("❌ Error parsing Makefile: %v\n", err)
+		os.Exit(1)
+	}
+
+	if verbose {
+		fmt.Println("Makefile Variables:")
+		for k, v := range makefileInfo.Variables {
+			fmt.Printf("  %s = %s\n", k, v)
+		}
+		fmt.Println()
+	} else {
+		fmt.Printf("✅ Parsed %d variables from Makefile\n\n", len(makefileInfo.Variables))
+	}
+
+	return makefileInfo, nil
 }
 
 func fetchPreviousYAMLInfo(filepath string) (transformer.PreviousDalecSpec, error) {
