@@ -64,8 +64,9 @@ func TransformToDalec(defaultSpec *DefaultSpec, makefileInfo *parser.MakefileInf
 	spec["sources"] = extractSources(defaultSpec)
 	spec["dependencies"] = extractDependencies(defaultSpec)
 	spec["targets"] = extractTargets(defaultSpec)
-	spec["build"] = extractBuildSteps(defaultSpec)
-	spec["artifacts"] = extractArtifacts(defaultSpec)
+	buildSection, binaryPath := extractBuildSteps(defaultSpec)
+	spec["build"] = buildSection
+	spec["artifacts"] = extractArtifacts(defaultSpec, binaryPath)
 	spec["image"] = extractImageConfig(defaultSpec)
 	spec["tests"] = appendTests(defaultSpec)
 
@@ -173,50 +174,18 @@ func extractTargets(defaultSpec *DefaultSpec) map[string]interface{} {
 }
 
 // extractArtifacts identifies build artifacts
-func extractArtifacts(defaultSpec *DefaultSpec) map[string]interface{} {
+func extractArtifacts(defaultSpec *DefaultSpec, binaryPath string) map[string]interface{} {
 	artifacts := make(map[string]interface{})
 	binaries := make(map[string]interface{})
-	license := make(map[string]interface{})
 
-	// Find binaries from COPY --from=builder in final stages
-	// builderName := findBuilderStageName(defaultSpec)
+	// Use the binary path extracted from build steps
+	if binaryPath == "" {
+		// Fallback to default
+		binaryPath = defaultSpec.Repo + "/bin/" + defaultSpec.Repo
+	}
 
-	// for i := len(defaultSpec.Stages) - 1; i >= 0; i-- {
-	// 	stage := defaultSpec.Stages[i]
-	// 	// Skip builder stages, look at final stages
-	// 	if isBuilderStage(stage) {
-	// 		continue
-	// 	}
-
-	// 	for _, copy := range stage.Copies {
-	// 		if copy.From != builderName && copy.From != "builder" {
-	// 			continue
-	// 		}
-	// 		for _, src := range copy.Source {
-	// 			// Check if it's a binary path
-	// 			if strings.Contains(src, "/bin/") || strings.HasSuffix(src, ".exe") {
-	// 				binaries[src] = map[string]interface{}{}
-	// 			}
-	// 		}
-	// 	}
-	// }
-
-	// if len(binaries) > 0 {
-	// 	artifacts["binaries"] = binaries
-	// }
-
-	binaryPath := defaultSpec.Repo + "/bin/" + defaultSpec.Repo
 	binaries[binaryPath] = map[string]interface{}{}
-
-	licensePath := defaultSpec.Repo + "/LICENSE"
-	license[licensePath] = map[string]interface{}{}
-
 	artifacts["binaries"] = binaries
-
-	// TODO: Add license artifact if necessary
-	// artifacts["licenses"] = license
-
-	// Add licenses placeholder
 
 	return artifacts
 }

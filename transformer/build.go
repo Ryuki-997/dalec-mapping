@@ -6,7 +6,7 @@ import (
 )
 
 // extractBuildSteps converts RUN commands to Dalec build steps
-func extractBuildSteps(defaultSpec *DefaultSpec) map[string]interface{} {
+func extractBuildSteps(defaultSpec *DefaultSpec) (map[string]interface{}, string) {
 	build := make(map[string]interface{})
 
 	// Extract environment variables
@@ -36,32 +36,39 @@ func extractBuildSteps(defaultSpec *DefaultSpec) map[string]interface{} {
 	build["env"] = env
 
 	// Extract build steps
-	steps := extractBuildCommands(defaultSpec)
+	commands := extractBuildCommands(defaultSpec)
 
-	if len(steps) == 0 {
-		buildCommand := fmt.Sprintf("cd %s\ngo build -o bin/%s ./main.go", defaultSpec.Repo, defaultSpec.Repo)
-		steps = []map[string]interface{}{
-			{"command": buildCommand},
-		}
+	var buildCommand string
+	var output string
+	if len(commands) == 0 {
+		// Default: cd to repo and run go build
+		output = fmt.Sprintf("bin/%s", defaultSpec.Repo)
+		buildCommand = fmt.Sprintf("cd %s\ngo build -o %s ./main.go", defaultSpec.Repo, output)
+	} else {
+		// Use extracted commands with cd prefix
+		output = getBinaryOutput(defaultSpec.Repo, commands)
+		buildCommand = fmt.Sprintf("cd %s\n%s", defaultSpec.Repo, strings.Join(commands, "\n"))
+	}
+
+	steps := []map[string]interface{}{
+		{"command": buildCommand},
 	}
 
 	build["steps"] = steps
 
-	return build
+	return build, output
 }
 
 // extractBuildCommands extracts build commands from builder stages
-func extractBuildCommands(defaultSpec *DefaultSpec) []map[string]interface{} {
-	var steps []map[string]interface{}
+func extractBuildCommands(defaultSpec *DefaultSpec) []string {
+	var commands []string
 
 	for _, stage := range defaultSpec.Stages {
-
 		if len(stage.Runs) == 0 {
 			continue
 		}
 
-		// Combine relevant build commands
-		var commands []string
+		// Collect relevant build commands from this stage
 		for _, run := range stage.Runs {
 			// Filter out package installations (they go in dependencies)
 			if isPackageInstallCommand(run) {
@@ -69,26 +76,14 @@ func extractBuildCommands(defaultSpec *DefaultSpec) []map[string]interface{} {
 			}
 
 			cleanedCommand := cleanInlineEnvVars(run)
-			commands = append(commands, cleanedCommand)
 
-			if len(commands) == 0 {
-				continue
+			if cleanedCommand != "" {
+				commands = append(commands, cleanedCommand)
 			}
-
-			cmd := strings.Join(commands, "\n")
-
-			// Adjust working directory
-			if stage.Workdir != "" {
-				cmd = adjustWorkDir(cmd, stage.Workdir, defaultSpec.Repo)
-			}
-
-			steps = append(steps, map[string]interface{}{
-				"command": cmd,
-			})
 		}
 	}
 
-	return steps
+	return commands
 }
 
 func isPackageInstallCommand(command string) bool {
@@ -110,7 +105,24 @@ func cleanInlineEnvVars(command string) string {
 	return command
 }
 
-func adjustWorkDir(command, workdir, repoName string) string {
-	command = strings.ReplaceAll(command, "cd "+workdir, "cd "+repoName)
-	return command
+// getBinaryOutput extracts the binary output path from build commands
+func getBinaryOutput(repoName string, commands []string) string {
+	for _, cmd := range commands {
+		if !strings.Contains(cmd, "go build") {
+			continue
+		}
+
+		// Find -o flag and extract the path
+		fields := strings.Fields(cmd)
+		for i, field := range fields {
+			if field != "-o" || i+1 >= len(fields) {
+				continue
+			}
+
+			outputPath := fields[i+1]
+			return outputPath
+		}
+	}
+
+	return fmt.Sprintf("bin/%s", repoName)
 }
