@@ -13,10 +13,26 @@ func extractBuildSteps(defaultSpec *DefaultSpec) map[string]interface{} {
 	env := make(map[string]string)
 	env["VERSION"] = "${VERSION}"
 	env["CGO_ENABLED"] = "1"
-	env["GOOS"] = "${OS}"
-
+	// env["GOOS"] = "${OS}"
 	env["GOPROXY"] = "direct"
 	env["GOEXPERIMENT"] = "systemcrypto"
+
+	skipArguments := map[string]bool{
+		"COMMIT":     true,
+		"VERSION":    true,
+		"REVISION":   true,
+		"ARCH":       true,
+		"OS":         true,
+		"OS_VERSION": true,
+	}
+
+	for arg := range defaultSpec.Args {
+		if skipArguments[arg] {
+			continue
+		}
+		env[string(arg)] = fmt.Sprintf("${%s}", arg)
+	}
+
 	build["env"] = env
 
 	// Extract build steps
