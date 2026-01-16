@@ -1,5 +1,6 @@
 tmp.yml
 output.yml
 
-.github
 Dockerfile
+Makefile
+examples
