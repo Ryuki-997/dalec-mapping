@@ -11,76 +11,116 @@ This tool implements a deterministic agent skill for converting GitHub repositor
 
 The tool follows a fixed, predictable sequence of operations:
 
-### Step 1: Fetch GitHub Metadata
+### Step 1: Fetch GitHub Metadata & Download Build Files
 
-**Action:** Query GitHub API for repository information
+**Action:** Query GitHub API for repository information and download build configuration files
 
-- **Input:** Repository URL or `owner/repo` format
+- **Input:** Repository URL or `owner/repo` format (supports `owner/repo/tree/branch/subdir` for monorepos)
 - **Operations:**
-  - Parse repository path and extract owner/repo/branch
+  - Parse repository path and extract owner/repo/branch/subdirectory
   - Fetch repository metadata via GitHub API
   - Retrieve latest release information
   - Extract commit SHA from release tag
-  - Detect source generator (gomod, cargohome, pip)
-- **Output:** `RepoInfo` struct with metadata
-- **Validation:** Verify all required fields populated (Owner, Repo, GitURL, LatestCommit, Version)
+  - Detect source generator (gomod, cargohome, pip, godep)
+  - **Download Dockerfile if exists** → Save to `examples/{repo-name}/Dockerfile`
+  - **Download Makefile if exists** → Save to `examples/{repo-name}/Makefile`
+  - Create examples directory structure: `examples/{repo-name}/`
+- **Output:** `RepoInfo` struct with metadata + local file paths
+- **Validation:**:
+  - Verify all required fields populated (Owner, Repo, GitURL, LatestCommit, Version)
+  - Confirm downloaded files exist and are readable
+  - Log file download status (found/not found)
 
-### Step 2: Parse Dockerfile (Optional)
+### Step 2: Parse Dockerfile (Auto-detected or Manual)
 
-**Action:** Extract build configuration from Dockerfile if provided
+**Action:** Extract build configuration from Dockerfile
 
-- **Input:** Path to Dockerfile (optional via `-dockerfile` flag)
+- **Input:** Downloaded Dockerfile from Step 1 OR manual path via `-dockerfile` flag
 - **Operations:**
   - Parse Dockerfile stages and instructions
   - Extract build arguments (ARG directives)
   - Identify dependencies from base images
   - Extract environment variables
-- **Output:** `DockerfileInfo` struct
-- **Validation:** Check parsing completed without errors; skip if no Dockerfile provided
+  - **Resolve base image placeholders** (e.g., `FROM BASEIMAGE` → lookup in Makefile)
+  - **Extract COPY/ADD instructions** to identify binary artifacts being copied
+  - **Parse CMD/ENTRYPOINT** to identify the primary executable
+- **Output:** `DockerfileInfo` struct with:
+  - `BaseImage`: Resolved base image name
+  - `BuildArgs`: Map of ARG values
+  - `CopiedArtifacts`: List of files copied into the image
+  - `Entrypoint`: Primary executable command
+- **Validation:** Check parsing completed without errors; skip if no Dockerfile found
 
-### Step 3: Parse Makefile (Optional)
+### Step 3: Parse Makefile & Extract Build Artifacts
 
-**Action:** Extract arguments used by Dockerfile as well as potential output path
+**Action:** Extract build commands, arguments, and artifact output paths from Makefile
 
-- **Input:** Path to Makefile (optional via `-makefile` flag)
+- **Input:** Downloaded Makefile from Step 1 OR manual path via `-makefile` flag
 - **Operations:**
-  - Parse all values into a map
-  - Get the true (non-nested) value of the argument
-  - Set build steps underneath the build section through targets like `container`
-  - Acquire potential binary output path
-- **Output** `MakefileInfo` struct, output path string
-- **Validation** Verify build steps can be completed and provide valid binary output; skip if no Makefile provided
+  - Parse all variables into a map with full resolution (handle nested `$(VAR)` references)
+  - **Identify .PHONY targets** and their associated build commands
+  - **Search common build targets** in priority order:
+    1. `.PHONY: container` / `container:` target
+    2. `.PHONY: build` / `build:` target  
+    3. `.PHONY: all` / `all:` target
+    4. `binary:` or `binaries:` targets
+    5. Direct `go build`, `cargo build`, `make` commands
+  - **Extract binary output path** from build commands:
+    - Go: `-o <path>` flag in `go build` command
+    - Rust: Parse `target/release/<binary>` or `--out-dir` flag
+    - Generic: Look for `-o`, `--output`, `OUTPUT=` patterns
+  - **Resolve placeholder variables** (e.g., `BASEIMAGE`, `TAG`, `VERSION`)
+  - Extract ldflags for version injection patterns
+- **Output:** `MakefileInfo` struct with:
+  - `Variables`: Fully resolved variable map
+  - `BuildTargets`: List of identified build targets
+  - `BuildCommands`: Actual shell commands for each target
+  - `BinaryOutputPath`: Detected artifact output location
+  - `LdFlags`: Version/metadata injection flags
+- **Validation:**:
+  - Verify at least one build target identified
+  - Confirm binary output path is determinable
+  - Log warning if build target detection is ambiguous
 
 ### Step 4: Initialize Default Spec
 
-**Action:** Combine GitHub metadata and Dockerfile info
+**Action:** Combine GitHub metadata, Dockerfile info, and Makefile info
 
-- **Input:** RepoInfo + DockerfileInfo
+- **Input:** RepoInfo + DockerfileInfo + MakefileInfo
 - **Operations:**
   - Set default revision to 1
   - Configure default build targets (azlinux3/container, azlinux3/rpm, noble/deb)
   - Initialize DefaultSpec structure
+  - **Cross-reference artifact paths** between Makefile and Dockerfile
 - **Output:** `DefaultSpec` struct
 - **Validation:** Ensure all required fields present
 
-### Step 4: Transform to Dalec Spec
+### Step 5: Transform to Dalec Spec with Artifact Consistency
 
-**Action:** Generate complete Dalec specification
+**Action:** Generate complete Dalec specification with validated artifact paths
 
-- **Input:** DefaultSpec
+- **Input:** DefaultSpec + MakefileInfo.BinaryOutputPath + DockerfileInfo.Entrypoint
 - **Operations:**
   - Populate args Common args: (Revision, Version, Commit, TARGETARCH, TARGETOS) and Env Args from makefile if necessary
   - Extract sources with Git URL and generator
   - Add build extensions and targets
   - Setup build steps from dockerfile and makefile if necessary
   - Configure dependencies (build and runtime) by looking into dockerfile and makefile
-  - Define artifacts (binaries, licenses)
-  - Set up image configuration (entrypoint, symlinks)
+  - **Define artifacts with consistency validation:**
+    - Binary path from Makefile `-o` output OR Dockerfile COPY source
+    - Ensure artifact path matches between build output and COPY instruction
+  - **Set up image configuration with artifact alignment:**
+    - Entrypoint: Must reference a defined artifact binary
+    - Symlinks: Auto-generate `/usr/bin/{binary}` → artifact path
+    - Validate entrypoint binary exists in artifacts section
   - Generate test specifications
-- **Output:** Complete `DalecSpec` map
-- **Validation:** Verify all sections populated correctly
+- **Output:** Complete `DalecSpec` map with consistent artifact references
+- **Validation:**:
+  - Verify artifact binary path matches build output
+  - Confirm entrypoint references valid artifact
+  - Validate symlink targets exist
 
-### Step 5: Write YAML Output
+### Step 6: Write YAML Output
 
 **Action:** Serialize spec to YAML file
 
@@ -93,35 +133,151 @@ The tool follows a fixed, predictable sequence of operations:
 - **Output:** YAML file
 - **Validation:** Confirm file written successfully
 
+---
+
+## Artifact Discovery & Consistency
+
+### Build Artifact Detection Strategy
+
+The tool uses a multi-source approach to identify the correct binary output path:
+
+#### Priority Order for Binary Path Detection
+
+1. **Makefile `-o` flag** (highest confidence)
+
+   ```makefile
+   go build -o $(TEMP_DIR)/pod_nanny main.go
+   # Extracts: pod_nanny
+   ```
+
+2. **Makefile OUTPUT/BINARY variable**
+
+   ```makefile
+   BINARY = myapp
+   OUTPUT_DIR = /go/bin
+   # Extracts: /go/bin/myapp
+   ```
+
+3. **Dockerfile COPY instruction** (for pre-built binaries)
+
+   ```dockerfile
+   COPY pod_nanny /
+   # Extracts: pod_nanny → /pod_nanny
+   ```
+
+4. **Dockerfile ENTRYPOINT/CMD** (fallback)
+
+   ```dockerfile
+   CMD /pod_nanny
+   # Infers: /pod_nanny is the binary
+   ```
+
+#### .PHONY Target Parsing
+
+For Makefiles with .PHONY declarations, extract build commands from these targets:
+
+```makefile
+.PHONY: container build all
+
+container: .container-$(ARCH)
+.container-$(ARCH): buildx-setup
+    # Build command here - EXTRACT THIS
+    go build -o $(OUTPUT)/binary main.go
+```
+
+**Extraction Rules:**
+
+- Follow target dependencies recursively
+- Look for actual shell commands (lines starting with tab)
+- Parse `go build`, `cargo build`, `make`, `gcc`, etc.
+- Extract `-o` output path from build commands
+
+### Artifact Consistency Matrix
+
+The tool validates that artifacts are consistent across all references:
+
+| Source | Field | Must Match |
+| ------ | ----- | ---------- |
+| Makefile | `-o <path>` output | → `artifacts.binaries` key |
+| Dockerfile | `COPY <src> <dest>` | → `artifacts.binaries` value |
+| Dockerfile | `ENTRYPOINT ["/bin"]` | → `image.entrypoint` |
+| Dalec Spec | `image.entrypoint` | → Must exist in `artifacts.binaries` |
+| Dalec Spec | `image.post.symlinks` | → Target must match artifact path |
+
+#### Example Consistency Flow
+
+```bash
+Makefile:     go build -o /go/bin/azure-cns ...
+                           ↓
+Dockerfile:   COPY /go/bin/azure-cns /
+                           ↓
+Dalec Spec:   
+  artifacts:
+    binaries:
+      /go/bin/azure-cns: {}    ← Must match Makefile output
+  image:
+    entrypoint: /azure-cns      ← Must reference artifact
+    post:
+      symlinks:
+        /usr/bin/azure-cns:
+          path: /azure-cns      ← Must match entrypoint
+```
+
+### Validation Errors
+
+The tool reports errors when consistency is broken:
+
+- ❌ `ARTIFACT_MISMATCH`: Makefile output path doesn't match Dockerfile COPY
+- ❌ `ENTRYPOINT_NOT_FOUND`: Entrypoint binary not in artifacts
+- ❌ `SYMLINK_TARGET_MISSING`: Symlink points to non-existent path
+- ⚠️ `AMBIGUOUS_OUTPUT`: Multiple possible binary outputs detected
+
 ## Execution
 
 ### Command Syntax
 
 ```bash
-go run main.go -repo <repository> [-dockerfile <path>] [-output <file>] [-v]
+go run main.go -repo <repository> [-dockerfile <path>] [-makefile <path>] [-output <file>] [-v]
 ```
 
 ### Required Parameters
 
-- `-repo`: GitHub repository (formats: `owner/repo`, `https://github.com/owner/repo`, `owner/repo/tree/branch`)
+- `-repo`: GitHub repository (formats: `owner/repo`, `https://github.com/owner/repo`, `owner/repo/tree/branch`, `owner/repo/tree/branch/subdir`)
 
 ### Optional Parameters
 
-- `-dockerfile`: Path to Dockerfile (default: none)
+- `-dockerfile`: Path to Dockerfile (default: auto-download from repo if exists)
+- `-makefile`: Path to Makefile (default: auto-download from repo if exists)
 - `-output`: Output YAML file path (default: `output.yml`)
 - `-v`: Verbose output
+
+### Auto-Download Behavior
+
+When `-dockerfile` or `-makefile` flags are not provided, the tool:
+
+1. Queries GitHub API for file existence at repo root (or subdirectory if specified)
+2. Downloads found files to `examples/{repo-name}/`
+3. Uses downloaded files for parsing
+4. Logs download status: `✓ Downloaded Dockerfile` / `⚠ No Dockerfile found`
 
 ### Example Usage
 
 ```bash
-# Basic: Generate spec from GitHub repo only
+# Basic: Generate spec from GitHub repo (auto-downloads Dockerfile/Makefile)
 go run main.go -repo microsoft/azurelinuxagent
 
-# With Dockerfile
-go run main.go -repo owner/repo -dockerfile ./Dockerfile -output spec.yml
+# With explicit Dockerfile and Makefile
+go run main.go -repo owner/repo -dockerfile ./Dockerfile -makefile ./Makefile -output spec.yml
 
 # With branch
 go run main.go -repo owner/repo/tree/develop
+
+# Monorepo subdirectory (e.g., kubernetes/autoscaler addon-resizer)
+go run main.go -repo kubernetes/autoscaler/tree/master/addon-resizer
+
+# Downloaded files will be saved to:
+# examples/autoscaler-addon-resizer/Dockerfile
+# examples/autoscaler-addon-resizer/Makefile
 ```
 
 ## Validation Checklist
@@ -154,13 +310,24 @@ After generation, verify the spec file:
 
 ### 4. Artifacts Section
 
-- [ ] Binary path format: `{repo}/bin/{repo}`
+- [ ] Binary path derived from Makefile `-o` output or Dockerfile COPY
+- [ ] Binary path format consistent: e.g., `/go/bin/{binary}` or `/{binary}`
 - [ ] License path format: `{repo}/LICENSE`
+- [ ] Artifact path matches build command output
 
 ### 5. Image Configuration (for container targets)
 
-- [ ] Entrypoint defined
+- [ ] Entrypoint defined and references a valid artifact binary
 - [ ] Symlinks created for binaries in `/usr/bin/`
+- [ ] Symlink target path matches artifact binary location
+- [ ] Entrypoint command is executable (not a directory)
+
+### 6. Artifact Consistency Validation
+
+- [ ] Makefile output path == Artifacts binaries key
+- [ ] Dockerfile COPY destination == Image entrypoint path
+- [ ] Symlink target == Entrypoint path
+- [ ] No orphaned artifacts (all artifacts referenced somewhere)
 
 ### 6. Tests Section
 
@@ -209,8 +376,19 @@ The tool exits with non-zero status codes on failure:
 
 - **Missing required flag**: `-repo` flag not provided
 - **GitHub API errors**: Repository not found, rate limiting, network issues
+- **File download errors**: Dockerfile/Makefile not found in repo (warning only, continues)
 - **Dockerfile parse errors**: Invalid Dockerfile syntax
+- **Makefile parse errors**: Unable to resolve variables or find build targets
+- **Artifact consistency errors**: Mismatch between build output and image configuration
 - **YAML write errors**: Permission denied, disk full
+
+### Warning Conditions (Non-Fatal)
+
+- ⚠️ No Dockerfile found in repository
+- ⚠️ No Makefile found in repository
+- ⚠️ Multiple .PHONY targets detected, using first match
+- ⚠️ Binary output path inferred (not explicitly detected)
+- ⚠️ Entrypoint not found, using default `/{repo-name}`
 
 ## Success Criteria
 
@@ -218,8 +396,22 @@ A successful run produces:
 
 1. ✅ No error messages during execution
 2. ✅ Output YAML file created at specified location
-3. ✅ All validation checks pass
-4. ✅ Spec builds successfully with azcu/docker buildx
+3. ✅ Downloaded files saved to `examples/{repo-name}/` (if auto-download enabled)
+4. ✅ All validation checks pass
+5. ✅ Artifact consistency validated (binary → entrypoint → symlink)
+6. ✅ Spec builds successfully with azcu/docker buildx
+
+## Directory Structure After Run
+
+```bash
+dalec-mapping/
+├── examples/
+│   └── {repo-name}/
+│       ├── Dockerfile      # Downloaded from GitHub
+│       └── Makefile         # Downloaded from GitHub
+├── output.yml               # Generated Dalec spec
+└── ...
+```
 
 ## Deterministic Behavior
 
