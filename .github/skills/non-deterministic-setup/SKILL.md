@@ -53,10 +53,10 @@ type ExternalTool struct {
 
 ### Task 1: Binary Output Extraction
 
-**Input:** Makefile content  
+**Input:** Makefile or Dockerfile content  
 **Output:** `BinaryName`, `BinaryOutputPath`, `AuxiliaryBinaries`
 
-#### Extraction Checklist
+#### 1.1 Extraction Checklist
 
 - [ ] Find all `go build -o <path>` commands in Makefile
 - [ ] Extract binary name from `-o` flag path (last path segment)
@@ -66,7 +66,7 @@ type ExternalTool struct {
   - [ ] Others = add to auxiliary binaries list
 - [ ] Store full path for artifact mapping
 
-#### Patterns
+#### 1.2 Patterns
 
 ```makefile
 # Pattern A: Direct -o flag
@@ -85,12 +85,6 @@ go build ./cmd/myapp
 # → BinaryOutputPath: "myapp"
 ```
 
-#### Agent Tool
-
-```go
-func ExtractBinaryOutput(makefileContent string) (primary string, path string, auxiliaries []string, err error)
-```
-
 ---
 
 ### Task 2: Entrypoint & Symlink
@@ -98,7 +92,7 @@ func ExtractBinaryOutput(makefileContent string) (primary string, path string, a
 **Input:** Dockerfile content  
 **Output:** `Entrypoint`, `Symlink`
 
-#### Extraction Checklist
+#### 2.1 Extraction Checklist
 
 - [ ] Find last `ENTRYPOINT` or `CMD` instruction in final Dockerfile stage
 - [ ] Parse command: array form `["/bin"]` or shell form `/bin`
@@ -106,7 +100,7 @@ func ExtractBinaryOutput(makefileContent string) (primary string, path string, a
 - [ ] Derive symlink: `/usr/bin/<binary-name>` → `<entrypoint>`
 - [ ] Verify entrypoint matches extracted binary name
 
-#### Patterns
+#### 2.2 Patterns
 
 ```dockerfile
 # Pattern A: ENTRYPOINT array form
@@ -125,12 +119,6 @@ ENTRYPOINT ["/app", "--config", "/etc/app.conf"]
 # → Symlink: "/usr/bin/app"
 ```
 
-#### Agent Tool
-
-```go
-func ExtractEntrypoint(dockerfileContent string) (entrypoint string, symlink string, err error)
-```
-
 ---
 
 ### Task 3: Dependencies Extraction
@@ -138,7 +126,7 @@ func ExtractEntrypoint(dockerfileContent string) (entrypoint string, symlink str
 **Input:** Dockerfile content, Makefile content  
 **Output:** `BuildDeps`, `RuntimeDeps`, `ExternalTools`
 
-#### Build Dependencies Checklist
+#### 3.1 Build Dependencies Checklist
 
 - [ ] Check Dockerfile builder stage for `apt install` packages
 - [ ] Check Makefile for `golang:` image → add `msft-golang`
@@ -146,14 +134,14 @@ func ExtractEntrypoint(dockerfileContent string) (entrypoint string, symlink str
 - [ ] Extract C library deps: `libssl-dev`, `pkg-config`, etc.
 - [ ] Add `curl` if used in builder stage
 
-#### Runtime Dependencies Checklist
+#### 3.2 Runtime Dependencies Checklist
 
 - [ ] Analyze **final Dockerfile stage only** (not builder stages)
 - [ ] Find `apt install`, `yum install`, `apk add` commands
 - [ ] Apply exclusion filter:
 
 | Exclude | Reason |
-|---------|--------|
+| ------- | ------ |
 | `fi`, `then`, `else`, `do`, `done`, `;;` | Shell syntax |
 | `&&`, `\|\|`, `;` | Operators |
 | `install`, `dpkg`, `apt`, `apt-get` | Commands |
@@ -162,14 +150,14 @@ func ExtractEntrypoint(dockerfileContent string) (entrypoint string, symlink str
 
 - [ ] Handle conditionals: extract all branches, add arch comments
 
-#### External Tools Checklist
+#### 3.3 External Tools Checklist
 
 - [ ] Find `curl -L`, `curl -Ls`, `wget` commands downloading binaries
 - [ ] Extract tool name from URL path
 - [ ] Mark as `NeedsSeparateSpec: true`
 - [ ] Add TODO comment in generated spec
 
-#### Patterns
+#### 3.4 Patterns
 
 ```dockerfile
 # Build deps (builder stage)
@@ -190,17 +178,6 @@ RUN curl -Ls https://github.com/Azure/azcopy/releases/.../azcopy.tar.gz | tar xz
 # → ExternalTools: [{Name: "azcopy", NeedsSeparateSpec: true}]
 ```
 
-#### Agent Tool
-
-```go
-func ExtractDependencies(dockerfileContent, makefileContent string) (
-    build []string, 
-    runtime []string, 
-    external []ExternalTool, 
-    err error,
-)
-```
-
 ---
 
 ### Task 4: Build Command Translation
@@ -208,7 +185,7 @@ func ExtractDependencies(dockerfileContent, makefileContent string) (
 **Input:** Makefile content  
 **Output:** `BuildCommand`, `LdFlags`, `BuildEnv`
 
-#### Extraction Checklist
+#### 4.1 Extraction Checklist
 
 - [ ] Find primary build target:
   1. `.PHONY: container` or `container:` target
@@ -230,7 +207,7 @@ func ExtractDependencies(dockerfileContent, makefileContent string) (
   - [ ] `GOARCH=$(ARCH)` → `BuildEnv["GOARCH"]`
 - [ ] Convert `$(VAR)` to `${VAR}` syntax
 
-#### Patterns
+#### 4.2 Patterns
 
 ```makefile
 # Makefile input:
@@ -244,7 +221,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=$(ARCH) go build -a \
 # BuildEnv: {"CGO_ENABLED": "0", "GOOS": "linux", "GOARCH": "${ARCH}"}
 ```
 
-#### Dalec Translation
+#### 4.3 Dalec Translation
 
 ```yaml
 build:
@@ -257,17 +234,6 @@ build:
         go build -a -ldflags "-X ${PKG}/pkg/version.Ver=${VERSION} -s -w" -o binary ./cmd/main
 ```
 
-#### Agent Tool
-
-```go
-func ExtractBuildCommand(makefileContent string) (
-    command string, 
-    ldflags string, 
-    env map[string]string, 
-    err error,
-)
-```
-
 ---
 
 ### Task 5: Validation & Confidence Scoring
@@ -278,7 +244,7 @@ func ExtractBuildCommand(makefileContent string) (
 #### Confidence Scoring
 
 | Condition | Score |
-|-----------|-------|
+| --------- | ----- |
 | Binary name matches entrypoint binary | +0.25 |
 | Symlink target matches entrypoint | +0.15 |
 | Runtime deps filtered correctly (no shell syntax) | +0.20 |
@@ -291,7 +257,7 @@ func ExtractBuildCommand(makefileContent string) (
 #### Warning Codes
 
 | Code | Condition | Action Required |
-|------|-----------|-----------------|
+| ---- | --------- | --------------- |
 | `WARN_MULTI_BINARY` | Multiple binaries detected | Verify primary binary |
 | `WARN_CONDITIONAL_DEPS` | Architecture-specific deps | Review for target arch |
 | `WARN_EXTERNAL_TOOLS` | External tools found | Create separate Dalec specs |
@@ -336,7 +302,7 @@ func FillNonDeterministicValues(dockerfileContent, makefileContent string) (*Non
 
 ## Workflow Integration
 
-```
+```bash
 ┌─────────────────────────────────────────────────────────────────┐
 │                     main.go Entry Point                         │
 └─────────────────────────────────────────────────────────────────┘
@@ -381,7 +347,7 @@ func FillNonDeterministicValues(dockerfileContent, makefileContent string) (*Non
 After agent extraction, verify:
 
 | # | Check | Status |
-|---|-------|--------|
+| --- | ------- | -------- |
 | V1 | `BinaryName` matches Makefile `-o` output (not repo name) | [ ] |
 | V2 | `Entrypoint` matches Dockerfile `ENTRYPOINT`/`CMD` | [ ] |
 | V3 | `Symlink` target matches `Entrypoint` path | [ ] |
@@ -400,6 +366,7 @@ After agent extraction, verify:
 ### Input Files
 
 **Makefile:**
+
 ```makefile
 PKG = sigs.k8s.io/blob-csi-driver
 IMAGE_VERSION ?= v1.28.0
@@ -415,6 +382,7 @@ blobfuse-proxy:
 ```
 
 **Dockerfile:**
+
 ```dockerfile
 FROM golang:1.21 AS builder
 RUN apt install -y curl
