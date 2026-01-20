@@ -7,6 +7,12 @@ description: Agent skill for extracting variable values from Dockerfile and Make
 
 Before any parsing or algorithm runs, the agent must extract variable values that cannot be determined by fixed rules. These values populate the `NonDeterministicValues` struct in `transformer/agent.go` and are later used by `main.go` to fill the Dalec spec.
 
+**Prerequisite:** The dalec-spec-generator Step 0 must have completed, downloading available files to:
+- `examples/{repo-name}/Dockerfile` (if exists in repo)
+- `examples/{repo-name}/Makefile` (if exists in repo)
+
+This skill reads from these downloaded files to extract non-deterministic values.
+
 ---
 
 ## Data Structures
@@ -33,7 +39,6 @@ type NonDeterministicValues struct {
     // Build Configuration
     BuildCommand      string            // Primary go build command
     LdFlags           string            // Translated ldflags with ${VERSION}
-    BuildEnv          map[string]string // CGO_ENABLED, GOOS, GOARCH
     
     // Validation
     Warnings          []string          // Agent review warnings
@@ -47,13 +52,26 @@ type ExternalTool struct {
 }
 ```
 
+### Output Location
+
+The agent must write the extracted values to:
+
+```
+examples/{repo-name}/NonDeterministicValues.yml
+```
+
+Where `{repo-name}` is the repository name (e.g., `blob-csi-driver`). This ensures the file is co-located with the downloaded Dockerfile and Makefile.
+
 ---
 
 ## Agent Extraction Tasks
 
 ### Task 1: Binary Output Extraction
 
-**Input:** Makefile or Dockerfile content  
+**Input:** Downloaded files from `examples/{repo-name}/` directory:
+- `examples/{repo-name}/Makefile` - Search for build commands  
+- `examples/{repo-name}/Dockerfile` - Search for COPY and ENTRYPOINT instructions
+
 **Output:** `BinaryName`, `BinaryOutputPath`, `AuxiliaryBinaries`
 
 #### 1.1 Extraction Checklist
@@ -89,7 +107,7 @@ go build ./cmd/myapp
 
 ### Task 2: Entrypoint & Symlink
 
-**Input:** Dockerfile content  
+**Input:** `examples/{repo-name}/Dockerfile` (downloaded file)  
 **Output:** `Entrypoint`, `Symlink`
 
 #### 2.1 Extraction Checklist
@@ -123,7 +141,10 @@ ENTRYPOINT ["/app", "--config", "/etc/app.conf"]
 
 ### Task 3: Dependencies Extraction
 
-**Input:** Dockerfile content, Makefile content  
+**Input:** Downloaded files from `examples/{repo-name}/` directory:  
+- `examples/{repo-name}/Dockerfile` - Search for apt/yum install commands  
+- `examples/{repo-name}/Makefile` - Search for image references
+
 **Output:** `BuildDeps`, `RuntimeDeps`, `ExternalTools`
 
 #### 3.1 Build Dependencies Checklist
@@ -182,8 +203,8 @@ RUN curl -Ls https://github.com/Azure/azcopy/releases/.../azcopy.tar.gz | tar xz
 
 ### Task 4: Build Command Translation
 
-**Input:** Makefile content  
-**Output:** `BuildCommand`, `LdFlags`, `BuildEnv`
+**Input:** `examples/{repo-name}/Makefile` (downloaded file)  
+**Output:** `BuildCommand`, `LdFlags`
 
 #### 4.1 Extraction Checklist
 
@@ -201,24 +222,19 @@ RUN curl -Ls https://github.com/Azure/azcopy/releases/.../azcopy.tar.gz | tar xz
   - [ ] Replace `$(TAG)`, `$(VERSION)`, `$(IMAGE_VERSION)` with `${VERSION}`
   - [ ] Replace `$(GIT_COMMIT)` with `${COMMIT}`
   - [ ] Preserve `-s -w` strip flags
-- [ ] Extract environment variables:
-  - [ ] `CGO_ENABLED=0/1` → `BuildEnv["CGO_ENABLED"]`
-  - [ ] `GOOS=linux` → `BuildEnv["GOOS"]`
-  - [ ] `GOARCH=$(ARCH)` → `BuildEnv["GOARCH"]`
 - [ ] Convert `$(VAR)` to `${VAR}` syntax
 
 #### 4.2 Patterns
 
 ```makefile
 # Makefile input:
-CGO_ENABLED=0 GOOS=linux GOARCH=$(ARCH) go build -a \
+CGO_ENABLED=1 GOOS=linux GOARCH=$(ARCH) go build -a \
     -ldflags "-X ${PKG}/pkg/version.Ver=$(TAG) -s -w" \
     -o _output/binary ./cmd/main
 
 # Extracted:
 # BuildCommand: "go build -a -ldflags \"...\" -o _output/binary ./cmd/main"
 # LdFlags: "-X ${PKG}/pkg/version.Ver=${VERSION} -s -w"
-# BuildEnv: {"CGO_ENABLED": "0", "GOOS": "linux", "GOARCH": "${ARCH}"}
 ```
 
 #### 4.3 Dalec Translation
@@ -226,7 +242,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=$(ARCH) go build -a \
 ```yaml
 build:
   env:
-    CGO_ENABLED: "0"
+    CGO_ENABLED: "1"
     GOOS: linux
   steps:
     - command: |
@@ -333,7 +349,6 @@ func FillNonDeterministicValues(dockerfileContent, makefileContent string) (*Non
 │  - image.post.symlinks (from Symlink)                           │
 │  - dependencies.build (from BuildDeps)                          │
 │  - dependencies.runtime (from RuntimeDeps)                      │
-│  - build.env (from BuildEnv)                                    │
 │  - build.steps (from BuildCommand, LdFlags)                     │
 │  CLI fills remaining deterministic fields (license, version)    │
 │  Generates final Dalec YAML spec                                │
@@ -374,11 +389,11 @@ LDFLAGS ?= "-X ${PKG}/pkg/blob.driverVersion=${IMAGE_VERSION} -s -w"
 
 .PHONY: blob
 blob:
-    CGO_ENABLED=0 GOOS=linux GOARCH=$(ARCH) go build -a -ldflags ${LDFLAGS} -mod vendor -o _output/${ARCH}/blobplugin ./pkg/blobplugin
+    CGO_ENABLED=1 GOOS=linux GOARCH=$(ARCH) go build -a -ldflags ${LDFLAGS} -mod vendor -o _output/${ARCH}/blobplugin ./pkg/blobplugin
 
 .PHONY: blobfuse-proxy
 blobfuse-proxy:
-    CGO_ENABLED=0 go build -o _output/${ARCH}/blobfuse-proxy ./pkg/blobfuse-proxy
+    CGO_ENABLED=1 go build -o _output/${ARCH}/blobfuse-proxy ./pkg/blobfuse-proxy
 ```
 
 **Dockerfile:**
@@ -410,7 +425,6 @@ NonDeterministicValues{
     
     BuildCommand:      "go build -a -ldflags \"${LDFLAGS}\" -mod vendor -o blobplugin ./pkg/blobplugin",
     LdFlags:           "-X sigs.k8s.io/blob-csi-driver/pkg/blob.driverVersion=${VERSION} -s -w",
-    BuildEnv:          map[string]string{"CGO_ENABLED": "0"},
     
     Warnings:          []string{"WARN_MULTI_BINARY: blobfuse-proxy detected"},
     Confidence:        0.85,
