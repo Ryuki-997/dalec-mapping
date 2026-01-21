@@ -100,7 +100,7 @@ func fetchGitHubRepoInfo(repoPath, tag string) (*github.RepoInfo, error) {
 	return repoInfo, nil
 }
 
-func parseOptionalFileInfo(dockerfilePath, makefilePath, specFilePath string, verbose bool) (*parser.DockerfileInfo, *parser.MakefileInfo, *transformer.NonDeterministicValues, transformer.PreviousDalecSpec, error) {
+func parseOptionalFileInfo(dockerfilePath, makefilePath, specFilePath string, verbose bool) (*parser.DockerfileInfo, *parser.MakefileInfo, *parser.NonDeterministicValues, transformer.PreviousDalecSpec, error) {
 	dockerfileInfo, err := fetchDockerfileInfo(dockerfilePath, verbose)
 	if err != nil {
 		return nil, nil, nil, transformer.PreviousDalecSpec{}, err
@@ -214,7 +214,7 @@ func writeOutput(dalecSpec transformer.DalecSpec, cliOptions cli.CLIOptions) err
 	return nil
 }
 
-func fetchNonDeterministicValue() (*transformer.NonDeterministicValues, error) {
+func fetchNonDeterministicValue() (*parser.NonDeterministicValues, error) {
 	path := "examples/blob-csi-driver/NonDeterministicValues.yml"
 
 	content, err := os.ReadFile(path)
@@ -227,7 +227,7 @@ func fetchNonDeterministicValue() (*transformer.NonDeterministicValues, error) {
 		return nil, err
 	}
 
-	var nonDeterministicValues transformer.NonDeterministicValues
+	var nonDeterministicValues parser.NonDeterministicValues
 	err = yaml.Unmarshal(content, &nonDeterministicValues)
 	if err != nil {
 		fmt.Printf("❌ Error parsing NonDeterministicValues.yml file: %v\n", err)

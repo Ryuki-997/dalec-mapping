@@ -47,7 +47,7 @@ func InitDefaultSpec(repoInfo *github.RepoInfo, dockerfileInfo *parser.Dockerfil
 }
 
 // TransformToDalec converts parsed Dockerfile info to Dalec spec format
-func TransformToDalec(defaultSpec *DefaultSpec, makefileInfo *parser.MakefileInfo, nonDeterministicValues *NonDeterministicValues) DalecSpec {
+func TransformToDalec(defaultSpec *DefaultSpec, makefileInfo *parser.MakefileInfo, nonDeterministicValues *parser.NonDeterministicValues) DalecSpec {
 	spec := make(DalecSpec)
 
 	// Add syntax header (special comment format)
@@ -174,7 +174,7 @@ func extractTargets(defaultSpec *DefaultSpec) map[string]interface{} {
 }
 
 // extractArtifacts identifies build artifacts (uses nonDeterministicValues if available)
-func extractArtifacts(defaultSpec *DefaultSpec, binaryPath string, nonDeterministicValues *NonDeterministicValues) map[string]interface{} {
+func extractArtifacts(defaultSpec *DefaultSpec, binaryPath string, nonDeterministicValues *parser.NonDeterministicValues) map[string]interface{} {
 	artifacts := make(map[string]interface{})
 	binaries := make(map[string]interface{})
 
@@ -199,7 +199,7 @@ func extractArtifacts(defaultSpec *DefaultSpec, binaryPath string, nonDeterminis
 }
 
 // extractImageConfig extracts final image configuration (uses nonDeterministicValues if available)
-func extractImageConfig(defaultSpec *DefaultSpec, nonDeterministicValues *NonDeterministicValues) map[string]interface{} {
+func extractImageConfig(defaultSpec *DefaultSpec, nonDeterministicValues *parser.NonDeterministicValues) map[string]interface{} {
 	image := make(map[string]interface{})
 
 	var entrypoint string
@@ -266,7 +266,7 @@ func createSymlinks(stage *parser.Stage) map[string]interface{} {
 }
 
 // appendTests creates test specifications (uses nonDeterministicValues if available)
-func appendTests(defaultSpec *DefaultSpec, nonDeterministicValues *NonDeterministicValues) []map[string]interface{} {
+func appendTests(defaultSpec *DefaultSpec, nonDeterministicValues *parser.NonDeterministicValues) []map[string]interface{} {
 	tests := make([]map[string]interface{}, 0)
 
 	var binaryPath string

@@ -1,4 +1,4 @@
-package transformer
+package parser
 
 // ExternalTool represents external binaries downloaded via curl/wget
 type ExternalTool struct {

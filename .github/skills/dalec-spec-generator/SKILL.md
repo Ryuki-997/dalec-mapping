@@ -36,7 +36,7 @@ The dalec-spec-generator follows this sequence:
 ┌─────────────────────────────────────────────────────────────────┐
 │  main.go: Unmarshal examples/{repo}/NonDeterministicValues.yml  │
 │  ─────────────────────────────────────────────────────────────  │
-│  var nonDeterministicValues transformer.NonDeterministicValues  │
+│  var nonDeterministicValues parser.NonDeterministicValues  │
 │  yaml.Unmarshal(file, &nonDeterministicValues)                  │
 │  Pass to TransformToDalec()                                     │
 └─────────────────────────────────────────────────────────────────┘
