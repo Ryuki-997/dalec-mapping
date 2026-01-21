@@ -68,7 +68,7 @@ func TransformToDalec(defaultSpec *DefaultSpec, makefileInfo *parser.MakefileInf
 	spec["build"] = buildSection
 	spec["artifacts"] = extractArtifacts(defaultSpec, binaryPath, nonDeterministicValues)
 	spec["image"] = extractImageConfig(defaultSpec, nonDeterministicValues)
-	spec["tests"] = appendTests(defaultSpec, nonDeterministicValues)
+	spec["tests"] = appendTests(defaultSpec)
 
 	return spec
 }
@@ -265,27 +265,11 @@ func createSymlinks(stage *parser.Stage) map[string]interface{} {
 	return post
 }
 
-// appendTests creates test specifications (uses nonDeterministicValues if available)
-func appendTests(defaultSpec *DefaultSpec, nonDeterministicValues *parser.NonDeterministicValues) []map[string]interface{} {
+// appendTests creates test specifications
+func appendTests(defaultSpec *DefaultSpec) []map[string]interface{} {
 	tests := make([]map[string]interface{}, 0)
 
-	var binaryPath string
-
-	// Use agent-extracted symlink if available
-	if nonDeterministicValues != nil && nonDeterministicValues.Symlink != "" {
-		binaryPath = nonDeterministicValues.Symlink
-	} else {
-		binaryPath = "/usr/bin/" + defaultSpec.Repo
-	}
-
-	tests = append(tests, map[string]interface{}{
-		"name": "Check files",
-		"files": map[string]interface{}{
-			binaryPath: map[string]interface{}{
-				"permissions": 0755,
-			},
-		},
-	})
+	tests = append(tests, TestCheckFiles(defaultSpec.Repo, 0755))
 
 	return tests
 }
