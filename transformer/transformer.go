@@ -184,7 +184,7 @@ func extractArtifacts(defaultSpec *DefaultSpec, binaryPath string, nonDeterminis
 
 		// Add auxiliary binaries
 		for _, aux := range nonDeterministicValues.AuxiliaryBinaries {
-			binaries[aux] = map[string]interface{}{}
+			binaries[aux.Name] = map[string]interface{}{}
 		}
 	} else if binaryPath != "" {
 		binaries[binaryPath] = map[string]interface{}{}

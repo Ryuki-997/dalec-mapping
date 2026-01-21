@@ -7,12 +7,20 @@ type ExternalTool struct {
 	NeedsSeparateSpec bool   `yaml:"needsSeparateSpec"`
 }
 
+// AuxiliaryBinary represents additional binaries built alongside the primary binary
+type AuxiliaryBinary struct {
+	Name         string `yaml:"name"`
+	OutputPath   string `yaml:"outputPath"`
+	BuildCommand string `yaml:"buildCommand"`
+	LdFlags      string `yaml:"ldFlags"`
+}
+
 // NonDeterministicValues holds agent-extracted values from Dockerfile/Makefile
 type NonDeterministicValues struct {
 	// Build Artifacts
-	BinaryName        string   `yaml:"binaryName"`
-	BinaryOutputPath  string   `yaml:"binaryOutputPath"`
-	AuxiliaryBinaries []string `yaml:"auxiliaryBinaries"`
+	BinaryName        string            `yaml:"binaryName"`
+	BinaryOutputPath  string            `yaml:"binaryOutputPath"`
+	AuxiliaryBinaries []AuxiliaryBinary `yaml:"auxiliaryBinaries"`
 
 	// Image Configuration
 	Entrypoint string `yaml:"entrypoint"`

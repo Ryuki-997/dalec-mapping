@@ -18,12 +18,9 @@ func populateArgs(defaultSpec *DefaultSpec, makefileInfo *parser.MakefileInfo) m
 		"VERSION":    true,
 	}
 
-	if makefileInfo.Variables["ARCH"] != "" {
-		makefileInfo.Variables["ARCH"] = "amd64"
-	}
-	if makefileInfo.Variables["OS"] != "" {
-		makefileInfo.Variables["OS"] = "linux"
-	}
+	// Always use sensible defaults for ARCH and OS (override any bad Makefile values)
+	makefileInfo.Variables["ARCH"] = "amd64"
+	makefileInfo.Variables["OS"] = "linux"
 
 	for k, v := range defaultSpec.Args {
 		if selfHandledArgs[k] {
@@ -67,6 +64,14 @@ func NestedValueReplacement(defaultSpec *DefaultSpec, makefileInfo *parser.Makef
 			nestedIndex = dollarBraceIdx
 			startPattern = "${"
 			endPattern = "}"
+		}
+
+		// Skip escaped variables ($${ or $$() - literal $ in Makefiles
+		if nestedIndex > 0 && value[nestedIndex-1] == '$' {
+			// This is an escaped variable, skip it by replacing $$ with a placeholder
+			// then continue - we'll restore it later or just leave it
+			fmt.Printf("Skipping escaped variable at index %d\n", nestedIndex)
+			break
 		}
 
 		fmt.Printf("Nested replacement found at index: %d (pattern: %s)\n", nestedIndex, startPattern)
