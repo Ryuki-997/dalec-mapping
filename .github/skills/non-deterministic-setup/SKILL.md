@@ -8,6 +8,7 @@ description: Agent skill for extracting variable values from Dockerfile and Make
 Before any parsing or algorithm runs, the agent must extract variable values that cannot be determined by fixed rules. These values populate the `NonDeterministicValues` struct in `transformer/agent.go` and are later used by `main.go` to fill the Dalec spec.
 
 **Prerequisite:** The dalec-spec-generator Step 0 must have completed, downloading available files to:
+
 - `examples/{repo-name}/Dockerfile` (if exists in repo)
 - `examples/{repo-name}/Makefile` (if exists in repo)
 
@@ -56,7 +57,7 @@ type ExternalTool struct {
 
 The agent must write the extracted values to:
 
-```
+```bash
 examples/{repo-name}/NonDeterministicValues.yml
 ```
 
@@ -69,6 +70,7 @@ Where `{repo-name}` is the repository name (e.g., `blob-csi-driver`). This ensur
 ### Task 1: Binary Output Extraction
 
 **Input:** Downloaded files from `examples/{repo-name}/` directory:
+
 - `examples/{repo-name}/Makefile` - Search for build commands  
 - `examples/{repo-name}/Dockerfile` - Search for COPY and ENTRYPOINT instructions
 
@@ -142,6 +144,7 @@ ENTRYPOINT ["/app", "--config", "/etc/app.conf"]
 ### Task 3: Dependencies Extraction
 
 **Input:** Downloaded files from `examples/{repo-name}/` directory:  
+
 - `examples/{repo-name}/Dockerfile` - Search for apt/yum install commands  
 - `examples/{repo-name}/Makefile` - Search for image references
 
