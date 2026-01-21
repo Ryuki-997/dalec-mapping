@@ -8,6 +8,8 @@ import (
 	"dalec/github"
 	"dalec/parser"
 	"dalec/transformer"
+
+	"gopkg.in/yaml.v3"
 )
 
 func main() {
@@ -27,7 +29,7 @@ func main() {
 	applyFieldOverrides(repoInfo, cliOptions)
 
 	// Parse Dockerfile if path provided
-	dockerfileInfo, makefileInfo, previousDalecSpecInfo, err := parseOptionalFileInfo(cliOptions.DockerfilePath, cliOptions.MakefilePath, cliOptions.SpecFilePath, cliOptions.Verbose)
+	dockerfileInfo, makefileInfo, nonDeterministicInfo, previousDalecSpecInfo, err := parseOptionalFileInfo(cliOptions.DockerfilePath, cliOptions.MakefilePath, cliOptions.SpecFilePath, cliOptions.Verbose)
 	if err != nil {
 		fmt.Printf("❌ Error parsing optional files: %v\n", err)
 	}
@@ -48,7 +50,7 @@ func main() {
 	// 	}
 	// }
 
-	dalecSpec := transformer.TransformToDalec(defaultSpec, makefileInfo)
+	dalecSpec := transformer.TransformToDalec(defaultSpec, makefileInfo, nonDeterministicInfo)
 
 	// Write to output file
 	fmt.Println("=== WRITING OUTPUT YAML FILE ===")
@@ -98,23 +100,28 @@ func fetchGitHubRepoInfo(repoPath, tag string) (*github.RepoInfo, error) {
 	return repoInfo, nil
 }
 
-func parseOptionalFileInfo(dockerfilePath, makefilePath, specFilePath string, verbose bool) (*parser.DockerfileInfo, *parser.MakefileInfo, transformer.PreviousDalecSpec, error) {
+func parseOptionalFileInfo(dockerfilePath, makefilePath, specFilePath string, verbose bool) (*parser.DockerfileInfo, *parser.MakefileInfo, *transformer.NonDeterministicValues, transformer.PreviousDalecSpec, error) {
 	dockerfileInfo, err := fetchDockerfileInfo(dockerfilePath, verbose)
 	if err != nil {
-		return nil, nil, transformer.PreviousDalecSpec{}, err
+		return nil, nil, nil, transformer.PreviousDalecSpec{}, err
 	}
 
 	makefileInfo, err := fetchMakefileInfo(makefilePath, verbose)
 	if err != nil {
-		return nil, nil, transformer.PreviousDalecSpec{}, err
+		return nil, nil, nil, transformer.PreviousDalecSpec{}, err
 	}
 
 	previousDalecSpecInfo, err := fetchPreviousYAMLInfo(specFilePath)
 	if err != nil {
-		return nil, nil, transformer.PreviousDalecSpec{}, err
+		return nil, nil, nil, transformer.PreviousDalecSpec{}, err
 	}
 
-	return dockerfileInfo, makefileInfo, previousDalecSpecInfo, nil
+	nonDeterministicInfo, err := fetchNonDeterministicValue()
+	if err != nil {
+		return nil, nil, nil, transformer.PreviousDalecSpec{}, err
+	}
+
+	return dockerfileInfo, makefileInfo, nonDeterministicInfo, previousDalecSpecInfo, nil
 }
 
 func fetchDockerfileInfo(dockerfilePath string, verbose bool) (*parser.DockerfileInfo, error) {
@@ -205,4 +212,28 @@ func writeOutput(dalecSpec transformer.DalecSpec, cliOptions cli.CLIOptions) err
 	}
 
 	return nil
+}
+
+func fetchNonDeterministicValue() (*transformer.NonDeterministicValues, error) {
+	path := "examples/blob-csi-driver/NonDeterministicValues.yml"
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("⚠️  No NonDeterministicValues.yml file found, proceeding without it.")
+			return nil, nil
+		}
+		fmt.Printf("❌ Error reading NonDeterministicValues.yml file: %v\n", err)
+		return nil, err
+	}
+
+	var nonDeterministicValues transformer.NonDeterministicValues
+	err = yaml.Unmarshal(content, &nonDeterministicValues)
+	if err != nil {
+		fmt.Printf("❌ Error parsing NonDeterministicValues.yml file: %v\n", err)
+		return nil, err
+	}
+
+	fmt.Println("✅ Successfully read NonDeterministicValues.yml file.")
+	return &nonDeterministicValues, nil
 }

@@ -26,24 +26,7 @@ func populateArgs(defaultSpec *DefaultSpec, makefileInfo *parser.MakefileInfo) m
 		}
 
 		value := makefileInfo.Variables[k]
-
-		for nestedIndex := strings.Index(value, "$("); nestedIndex != -1; nestedIndex = strings.Index(value, "$(") {
-			endIndex := strings.Index(value[nestedIndex:], ")")
-			if endIndex == -1 {
-				fmt.Printf("Broken makefile variable reference in arg %s: %s\n", k, value)
-				os.Exit(1)
-			}
-
-			nestedKey := value[nestedIndex+2 : nestedIndex+endIndex]
-			nestedValue, exists := makefileInfo.Variables[nestedKey]
-			if !exists {
-				fmt.Printf("Undefined makefile variable %s referenced in arg %s\n", nestedKey, k)
-				os.Exit(1)
-			}
-
-			value = strings.ReplaceAll(value, "$("+nestedKey+")", nestedValue)
-			fmt.Printf("Value after nested replacement: %s\n", value)
-		}
+		value = NestedValueReplacement(makefileInfo, value)
 
 		args[k] = value
 		fmt.Printf("key: %s, value: %v\n", k, args[k])
@@ -52,8 +35,28 @@ func populateArgs(defaultSpec *DefaultSpec, makefileInfo *parser.MakefileInfo) m
 	return args
 }
 
-func populateMetadata(defaultSpec *DefaultSpec, spec DalecSpec) {
+func NestedValueReplacement(makefileInfo *parser.MakefileInfo, value string) string {
+	for nestedIndex := strings.Index(value, "$("); nestedIndex != -1; nestedIndex = strings.Index(value, "$(") {
+		endIndex := strings.Index(value[nestedIndex:], ")")
+		if endIndex == -1 {
+			fmt.Printf("Broken makefile variable reference in value: %s\n", value)
+			os.Exit(1)
+		}
 
+		nestedKey := value[nestedIndex+2 : nestedIndex+endIndex]
+		nestedValue, exists := makefileInfo.Variables[nestedKey]
+		if !exists {
+			fmt.Printf("Undefined makefile variable %s referenced in value: %s\n", nestedKey, value)
+			os.Exit(1)
+		}
+
+		value = strings.ReplaceAll(value, "$("+nestedKey+")", nestedValue)
+		fmt.Printf("Value after nested replacement: %s\n", value)
+	}
+	return value
+}
+
+func populateMetadata(defaultSpec *DefaultSpec, spec DalecSpec) {
 	spec["name"] = strings.ToLower(defaultSpec.Repo)
 	spec["packager"] = "Azure Container Upstream"
 	spec["vendor"] = "Microsoft Corporation"

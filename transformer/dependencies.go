@@ -8,13 +8,29 @@ import (
 	"dalec/github"
 )
 
-// extractDependencies extracts build and runtime dependencies
-func extractDependencies(defaultSpec *DefaultSpec) map[string]interface{} {
+// extractDependencies extracts build and runtime dependencies (uses nonDeterministicValues if available)
+func extractDependencies(defaultSpec *DefaultSpec, nonDeterministicValues *NonDeterministicValues) map[string]interface{} {
 	deps := make(map[string]interface{})
 	buildDeps := make(map[string]interface{})
 	runtimeDeps := make(map[string]interface{})
 
-	// Iterate through all stages to extract dependencies
+	// Use agent-extracted values if available
+	if nonDeterministicValues != nil && len(nonDeterministicValues.BuildDeps) > 0 {
+		for _, dep := range nonDeterministicValues.BuildDeps {
+			buildDeps[dep] = map[string]interface{}{}
+		}
+	}
+
+	if nonDeterministicValues != nil && len(nonDeterministicValues.RuntimeDeps) > 0 {
+		for _, dep := range nonDeterministicValues.RuntimeDeps {
+			runtimeDeps[dep] = map[string]interface{}{}
+		}
+		deps["build"] = buildDeps
+		deps["runtime"] = runtimeDeps
+		return deps
+	}
+
+	// Fallback: Extract from Dockerfile stages
 	for _, stage := range defaultSpec.Stages {
 		isBuilder := isBuilderStage(stage)
 

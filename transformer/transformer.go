@@ -47,7 +47,7 @@ func InitDefaultSpec(repoInfo *github.RepoInfo, dockerfileInfo *parser.Dockerfil
 }
 
 // TransformToDalec converts parsed Dockerfile info to Dalec spec format
-func TransformToDalec(defaultSpec *DefaultSpec, makefileInfo *parser.MakefileInfo) DalecSpec {
+func TransformToDalec(defaultSpec *DefaultSpec, makefileInfo *parser.MakefileInfo, nonDeterministicValues *NonDeterministicValues) DalecSpec {
 	spec := make(DalecSpec)
 
 	// Add syntax header (special comment format)
@@ -62,13 +62,13 @@ func TransformToDalec(defaultSpec *DefaultSpec, makefileInfo *parser.MakefileInf
 
 	// Transform Dockerfile content to Dalec sections
 	spec["sources"] = extractSources(defaultSpec)
-	spec["dependencies"] = extractDependencies(defaultSpec)
+	spec["dependencies"] = extractDependencies(defaultSpec, nonDeterministicValues)
 	spec["targets"] = extractTargets(defaultSpec)
-	buildSection, binaryPath := extractBuildSteps(defaultSpec)
+	buildSection, binaryPath := extractBuildSection(defaultSpec, nonDeterministicValues)
 	spec["build"] = buildSection
-	spec["artifacts"] = extractArtifacts(defaultSpec, binaryPath)
-	spec["image"] = extractImageConfig(defaultSpec)
-	spec["tests"] = appendTests(defaultSpec)
+	spec["artifacts"] = extractArtifacts(defaultSpec, binaryPath, nonDeterministicValues)
+	spec["image"] = extractImageConfig(defaultSpec, nonDeterministicValues)
+	spec["tests"] = appendTests(defaultSpec, nonDeterministicValues)
 
 	return spec
 }
@@ -173,75 +173,60 @@ func extractTargets(defaultSpec *DefaultSpec) map[string]interface{} {
 	return targets
 }
 
-// extractArtifacts identifies build artifacts
-func extractArtifacts(defaultSpec *DefaultSpec, binaryPath string) map[string]interface{} {
+// extractArtifacts identifies build artifacts (uses nonDeterministicValues if available)
+func extractArtifacts(defaultSpec *DefaultSpec, binaryPath string, nonDeterministicValues *NonDeterministicValues) map[string]interface{} {
 	artifacts := make(map[string]interface{})
 	binaries := make(map[string]interface{})
 
-	// Use the binary path extracted from build steps
-	if binaryPath == "" {
+	// Use agent-extracted binary name if available
+	if nonDeterministicValues != nil && nonDeterministicValues.BinaryName != "" {
+		binaries[nonDeterministicValues.BinaryName] = map[string]interface{}{}
+
+		// Add auxiliary binaries
+		for _, aux := range nonDeterministicValues.AuxiliaryBinaries {
+			binaries[aux] = map[string]interface{}{}
+		}
+	} else if binaryPath != "" {
+		binaries[binaryPath] = map[string]interface{}{}
+	} else {
 		// Fallback to default
-		binaryPath = defaultSpec.Repo + "/bin/" + defaultSpec.Repo
+		binaries["bin/"+defaultSpec.Repo] = map[string]interface{}{}
 	}
 
-	binaries[binaryPath] = map[string]interface{}{}
 	artifacts["binaries"] = binaries
 
 	return artifacts
 }
 
-// extractImageConfig extracts final image configuration
-func extractImageConfig(defaultSpec *DefaultSpec) map[string]interface{} {
+// extractImageConfig extracts final image configuration (uses nonDeterministicValues if available)
+func extractImageConfig(defaultSpec *DefaultSpec, nonDeterministicValues *NonDeterministicValues) map[string]interface{} {
 	image := make(map[string]interface{})
 
-	// if len(defaultSpec.Stages) == 0 {
-	// 	return image
-	// }
+	var entrypoint string
+	var symlink string
 
-	// // Find the final Linux stage (skip Windows)
-	// var finalStage *parser.Stage
-	// for i := len(defaultSpec.Stages) - 1; i >= 0; i-- {
-	// 	stage := &defaultSpec.Stages[i]
-	// 	if stage.Name == "windows" || stage.Name == "hpc" {
-	// 		continue
-	// 	}
-
-	// 	if len(stage.Entrypoint) > 0 || len(stage.Copies) > 0 {
-	// 		finalStage = stage
-	// 		break
-	// 	}
-	// }
-
-	// if finalStage == nil {
-	// 	return image
-	// }
-
-	// // Extract entrypoint
-	// if len(finalStage.Entrypoint) > 0 {
-	// 	entrypoint := finalStage.Entrypoint[0]
-	// 	// If shell-wrapped, extract actual command
-	// 	if len(finalStage.Entrypoint) > 2 && finalStage.Entrypoint[0] == "/bin/sh" {
-	// 		entrypoint = finalStage.Entrypoint[2]
-	// 	}
-	// 	image["entrypoint"] = entrypoint
-	// }
-
-	// // Create symlinks for binaries if needed
-	// post := createSymlinks(finalStage)
-	// if len(post) > 0 {
-	// 	image["post"] = post
-	// }
-
-	entrypoint := fmt.Sprintf("/%s", defaultSpec.Repo)
-	post := make(map[string]interface{})
-	symlinks := make(map[string]interface{})
-	symlinks["/usr/bin/"+defaultSpec.Repo] = map[string]interface{}{
-		"path": entrypoint,
+	// Use agent-extracted values if available
+	if nonDeterministicValues != nil && nonDeterministicValues.Entrypoint != "" {
+		entrypoint = nonDeterministicValues.Entrypoint
+		symlink = nonDeterministicValues.Symlink
+	} else {
+		// Fallback to repo name
+		entrypoint = "/" + defaultSpec.Repo
+		symlink = "/usr/bin/" + defaultSpec.Repo
 	}
-	post["symlinks"] = symlinks
 
 	image["entrypoint"] = entrypoint
-	image["post"] = post
+
+	// Create symlinks
+	symlinks := make(map[string]interface{})
+	symlinks[symlink] = map[string]interface{}{
+		"path": entrypoint,
+	}
+
+	image["post"] = map[string]interface{}{
+		"symlinks": symlinks,
+	}
+
 	return image
 }
 
@@ -280,10 +265,27 @@ func createSymlinks(stage *parser.Stage) map[string]interface{} {
 	return post
 }
 
-func appendTests(defaultSpec *DefaultSpec) []map[string]interface{} {
-	tests := []map[string]interface{}{
-		TestCheckFiles(defaultSpec.Repo, 0755),
+// appendTests creates test specifications (uses nonDeterministicValues if available)
+func appendTests(defaultSpec *DefaultSpec, nonDeterministicValues *NonDeterministicValues) []map[string]interface{} {
+	tests := make([]map[string]interface{}, 0)
+
+	var binaryPath string
+
+	// Use agent-extracted symlink if available
+	if nonDeterministicValues != nil && nonDeterministicValues.Symlink != "" {
+		binaryPath = nonDeterministicValues.Symlink
+	} else {
+		binaryPath = "/usr/bin/" + defaultSpec.Repo
 	}
+
+	tests = append(tests, map[string]interface{}{
+		"name": "Check files",
+		"files": map[string]interface{}{
+			binaryPath: map[string]interface{}{
+				"permissions": 0755,
+			},
+		},
+	})
 
 	return tests
 }
