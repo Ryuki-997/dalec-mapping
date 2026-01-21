@@ -65,6 +65,7 @@ func extractBuildSteps(nonDeterministicValues *parser.NonDeterministicValues) (s
 		return command, output
 	}
 
+	// Build primary binary
 	if nonDeterministicValues.BuildCommand != "" {
 		if nonDeterministicValues.LdFlags != "" {
 			output = nonDeterministicValues.BinaryName
@@ -72,7 +73,24 @@ func extractBuildSteps(nonDeterministicValues *parser.NonDeterministicValues) (s
 		} else {
 			command += nonDeterministicValues.BuildCommand
 		}
+	}
 
+	// Build auxiliary binaries
+	for _, aux := range nonDeterministicValues.AuxiliaryBinaries {
+		if aux.Name == "" {
+			continue
+		}
+
+		// Always output to simple binary name for Dalec artifacts compatibility
+		auxOutput := aux.Name
+
+		if aux.LdFlags != "" {
+			command += "\ngo build -ldflags \"" + aux.LdFlags + "\" -o " + auxOutput + " ./pkg/" + aux.Name
+		} else if aux.BuildCommand != "" {
+			command += "\n" + aux.BuildCommand
+		} else {
+			command += "\ngo build -o " + auxOutput + " ./pkg/" + aux.Name
+		}
 	}
 
 	return command, output

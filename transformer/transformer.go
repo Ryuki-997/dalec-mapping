@@ -180,11 +180,11 @@ func extractArtifacts(defaultSpec *DefaultSpec, binaryPath string, nonDeterminis
 
 	// Use agent-extracted binary name if available
 	if nonDeterministicValues != nil && nonDeterministicValues.BinaryName != "" {
-		binaries[nonDeterministicValues.BinaryName] = map[string]interface{}{}
+		binaries[defaultSpec.Repo+"/"+nonDeterministicValues.BinaryName] = map[string]interface{}{}
 
 		// Add auxiliary binaries
 		for _, aux := range nonDeterministicValues.AuxiliaryBinaries {
-			binaries[aux.Name] = map[string]interface{}{}
+			binaries[defaultSpec.Repo+"/"+aux.Name] = map[string]interface{}{}
 		}
 	} else if binaryPath != "" {
 		binaries[binaryPath] = map[string]interface{}{}
