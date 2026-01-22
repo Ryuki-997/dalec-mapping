@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"dalec/cli"
 	"dalec/github"
@@ -116,7 +117,7 @@ func parseOptionalFileInfo(dockerfilePath, makefilePath, specFilePath string, ve
 		return nil, nil, nil, transformer.PreviousDalecSpec{}, err
 	}
 
-	nonDeterministicInfo, err := fetchNonDeterministicValue()
+	nonDeterministicInfo, err := fetchNonDeterministicValue(dockerfilePath)
 	if err != nil {
 		return nil, nil, nil, transformer.PreviousDalecSpec{}, err
 	}
@@ -214,8 +215,9 @@ func writeOutput(dalecSpec transformer.DalecSpec, cliOptions cli.CLIOptions) err
 	return nil
 }
 
-func fetchNonDeterministicValue() (*parser.NonDeterministicValues, error) {
-	path := "examples/blob-csi-driver/NonDeterministicValues.yml"
+func fetchNonDeterministicValue(dockerfilePath string) (*parser.NonDeterministicValues, error) {
+	dir := filepath.Dir(dockerfilePath)
+	path := filepath.Join(dir, "NonDeterministicValues.yml")
 
 	content, err := os.ReadFile(path)
 	if err != nil {
