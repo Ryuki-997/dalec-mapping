@@ -34,6 +34,11 @@ func extractBuildSection(defaultSpec *DefaultSpec, nonDeterministicValues *parse
 		env[string(arg)] = fmt.Sprintf("${%s}", arg)
 	}
 
+	// Add LDFLAGS from NonDeterministicValues if available
+	if nonDeterministicValues != nil && nonDeterministicValues.LdFlags != "" {
+		env["LDFLAGS"] = nonDeterministicValues.LdFlags
+	}
+
 	build["env"] = env
 
 	// Extract build steps
@@ -67,12 +72,13 @@ func extractBuildSteps(nonDeterministicValues *parser.NonDeterministicValues) (s
 
 	// Build primary binary
 	if nonDeterministicValues.BuildCommand != "" {
-		if nonDeterministicValues.LdFlags != "" {
-			output = nonDeterministicValues.BinaryName
-			command += "go build -ldflags \"" + nonDeterministicValues.LdFlags + "\" -o " + output + " ./pkg/" + nonDeterministicValues.BinaryName
-		} else {
-			command += nonDeterministicValues.BuildCommand
-		}
+		// Use the explicit build command if provided
+		command += nonDeterministicValues.BuildCommand
+		output = nonDeterministicValues.BinaryName
+	} else if nonDeterministicValues.LdFlags != "" {
+		// Construct build command from ldflags
+		output = nonDeterministicValues.BinaryName
+		command += "go build -ldflags \"" + nonDeterministicValues.LdFlags + "\" -o " + output + " ./pkg/" + nonDeterministicValues.BinaryName
 	}
 
 	// Build auxiliary binaries
@@ -84,10 +90,11 @@ func extractBuildSteps(nonDeterministicValues *parser.NonDeterministicValues) (s
 		// Always output to simple binary name for Dalec artifacts compatibility
 		auxOutput := aux.Name
 
-		if aux.LdFlags != "" {
-			command += "\ngo build -ldflags \"" + aux.LdFlags + "\" -o " + auxOutput + " ./pkg/" + aux.Name
-		} else if aux.BuildCommand != "" {
+		if aux.BuildCommand != "" {
+			// Use explicit build command if provided
 			command += "\n" + aux.BuildCommand
+		} else if aux.LdFlags != "" {
+			command += "\ngo build -ldflags \"" + aux.LdFlags + "\" -o " + auxOutput + " ./pkg/" + aux.Name
 		} else {
 			command += "\ngo build -o " + auxOutput + " ./pkg/" + aux.Name
 		}

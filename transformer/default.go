@@ -18,6 +18,13 @@ func populateArgs(defaultSpec *DefaultSpec, makefileInfo *parser.MakefileInfo) m
 		"VERSION":    true,
 	}
 
+	// Initialize empty MakefileInfo if nil
+	if makefileInfo == nil {
+		makefileInfo = &parser.MakefileInfo{
+			Variables: make(map[string]string),
+		}
+	}
+
 	// Always use sensible defaults for ARCH and OS (override any bad Makefile values)
 	makefileInfo.Variables["ARCH"] = "amd64"
 	makefileInfo.Variables["OS"] = "linux"
