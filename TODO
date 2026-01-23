@@ -1,19 +1,10 @@
 TODO:
 
-fix:
-license (other type from LICENSE)
-hash
-
-feat: 
-get dockerfile from github as well 
-enable docerkfile integration
-enable agent skill
-
-cli: (optional)
-tag specfic
-dockerfile path
-bootstrap changelog
-template (build from latest)
+subdir godep pckg
+-static (from trivy)
+more test (auto)
 
 phase 3: 
+integration
+atuh
 patch during build-time (check from upstream)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"dalec/cli"
 	"dalec/github"
@@ -235,6 +236,16 @@ func fetchNonDeterministicValue(dockerfilePath string) (*parser.NonDeterministic
 		fmt.Printf("❌ Error parsing NonDeterministicValues.yml file: %v\n", err)
 		return nil, err
 	}
+
+	// Clear out unecessary flags
+	commands := &nonDeterministicValues.BuildCommand
+
+	*commands = strings.ReplaceAll(*commands, "'", "\"")
+	*commands = strings.ReplaceAll(*commands, "`", "\"")
+	*commands = strings.ReplaceAll(*commands, "CGO_ENABLED=0 ", "")
+	*commands = strings.ReplaceAll(*commands, "CGO_ENABLED=1 ", "")
+	*commands = strings.ReplaceAll(*commands, "GOOS=linux ", "")
+	*commands = strings.ReplaceAll(*commands, "GOARCH=amd64 ", "")
 
 	fmt.Println("✅ Successfully read NonDeterministicValues.yml file.")
 	return &nonDeterministicValues, nil

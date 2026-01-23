@@ -178,16 +178,22 @@ func extractArtifacts(defaultSpec *DefaultSpec, binaryPath string, nonDeterminis
 	artifacts := make(map[string]interface{})
 	binaries := make(map[string]interface{})
 
+	fmt.Printf("ARTIFACTS: %v\n", binaryPath)
+
 	// Use agent-extracted binary name if available
-	if nonDeterministicValues != nil && nonDeterministicValues.BinaryName != "" {
-		binaries[defaultSpec.Repo+"/"+nonDeterministicValues.BinaryName] = map[string]interface{}{}
+	if nonDeterministicValues != nil {
+		if binaryPath != "" {
+			binaries[defaultSpec.Repo+"/"+binaryPath] = map[string]interface{}{}
+		} else if nonDeterministicValues.BinaryName != "" {
+			binaries[defaultSpec.Repo+"/"+nonDeterministicValues.BinaryName] = map[string]interface{}{}
+		}
 
 		// Add auxiliary binaries
 		for _, aux := range nonDeterministicValues.AuxiliaryBinaries {
 			binaries[defaultSpec.Repo+"/"+aux.Name] = map[string]interface{}{}
 		}
 	} else if binaryPath != "" {
-		binaries[binaryPath] = map[string]interface{}{}
+		binaries[defaultSpec.Repo+"/"+binaryPath] = map[string]interface{}{}
 	} else {
 		// Fallback to default
 		binaries["bin/"+defaultSpec.Repo] = map[string]interface{}{}
@@ -278,42 +284,6 @@ func appendTests(defaultSpec *DefaultSpec, nonDeterministicValues *parser.NonDet
 	tests = append(tests, TestCheckFiles(binaryName, 0755))
 
 	return tests
-}
-
-// Helper functions
-
-func hasGoModules(stage parser.Stage) bool {
-	for _, run := range stage.Runs {
-		if strings.Contains(run, "go build") || strings.Contains(run, "go mod") {
-			return true
-		}
-	}
-	return false
-}
-
-func deriveSourceName(stage parser.Stage) string {
-	// Try to derive from workdir
-	if stage.Workdir != "" {
-		name := filepath.Base(stage.Workdir)
-		if name != "" && name != "/" && name != "." {
-			return name
-		}
-	}
-	return "source"
-}
-
-func findBuilderStageName(defaultSpec *DefaultSpec) string {
-	for _, stage := range defaultSpec.Stages {
-		// TODO: Implement isBuilderStage check
-		// if !isBuilderStage(stage) {
-		// 	continue
-		// }
-
-		if stage.Name != "" && (stage.Name == "builder" || strings.Contains(strings.ToLower(stage.Name), "build")) {
-			return stage.Name
-		}
-	}
-	return "builder"
 }
 
 func PrintDockerfileInfo(defaultSpec *DefaultSpec) {

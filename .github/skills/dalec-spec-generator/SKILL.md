@@ -14,13 +14,14 @@ This tool implements a deterministic agent skill for converting GitHub repositor
 The dalec-spec-generator follows this sequence:
 
 ```bash
-┌─────────────────────────────────────────────────────────────────┐
-│  Step 0: Check Repository for Build Files                       │
-│  ─────────────────────────────────────────────────────────────  │
-│  Action: Query GitHub API for Dockerfile and Makefile           │
-│  Output: examples/{repo-name}/Dockerfile (if exists)            │
-│          examples/{repo-name}/Makefile (if exists)              │
-└─────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────┐
+│  Step 0: Check Repository for Build Files                         │
+│  ──────────────────────────────────────────────────────────────── │
+│  Action: List remote directory contents to locate files           │
+│  Output: examples/{repo}/{subdir}/Dockerfile (if exists)          │
+│          examples/{repo}/{subdir}/Makefile (if exists)            │
+│  Note: Directory is {repo}/{subdir} if subdir exists, else {repo} │
+└───────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
@@ -29,22 +30,18 @@ The dalec-spec-generator follows this sequence:
 │  Trigger: Dockerfile AND/OR Makefile downloaded in Step 0       │
 │  Action: Search through downloaded files for build values       │
 │  Skill: .github/skills/non-deterministic-setup/SKILL.md         │
-│  Output: examples/{repo-name}/NonDeterministicValues.yml        │
+│  Output: examples/{repo}/{subdir}/NonDeterministicValues.yml    │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  main.go: Unmarshal examples/{repo}/NonDeterministicValues.yml  │
+│  Step 2: Run CLI Tool to Generate Dalec Spec                    │
 │  ─────────────────────────────────────────────────────────────  │
-│  var nonDeterministicValues parser.NonDeterministicValues  │
-│  yaml.Unmarshal(file, &nonDeterministicValues)                  │
-│  Pass to TransformToDalec()                                     │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Steps 2-7: Deterministic Workflow                              │
-│  Parse files → Initialize Spec → Transform → Write YAML         │
+│  Command: go run main.go -repo <repo> \                         │
+│           -dockerfile examples/{repo}/{subdir}/Dockerfile \     │
+│           -makefile examples/{repo}/{subdir}/Makefile \         │
+│           -output examples/{repo}/{subdir}/{name}.yml           │
+│  Output: examples/{repo}/{subdir}/{name}.yml                    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -58,26 +55,49 @@ If repo source does not contain either Dockerfile or Makefile:
 
 ---
 
+## Directory Naming Convention
+
+The examples directory structure follows this naming pattern:
+
+| Input Format | Directory Created |
+| ------------ | ----------------- |
+| `owner/repo` | `examples/{repo}/` |
+| `owner/repo/tree/branch` | `examples/{repo}/` |
+| `owner/repo/tree/branch/subdir` | `examples/{repo}/{subdir}/` |
+| `owner/repo/tree/branch/path/to/subdir` | `examples/{repo}/{subdir}/` (last path component) |
+
+**Examples:**
+
+- `kubernetes/autoscaler` → `examples/autoscaler/`
+- `kubernetes/autoscaler/tree/master/addon-resizer` → `examples/autoscaler/addon-resizer/`
+- `Azure/azure-cni/tree/main/npm` → `examples/azure-cni/npm/`
+
+---
+
 ## Detailed Workflow Steps
 
 ### Step 0: Check Repository for Build Files
 
-**Action:** Query GitHub repository for Dockerfile and Makefile, download if present
+**Action:** List remote directory contents to precisely locate Dockerfile and Makefile, then download if present
 
-- **Input:** Repository URL or `owner/repo` format
+- **Input:** Repository URL or `owner/repo` format (supports `owner/repo/tree/branch/subdir` for monorepos)
 - **Operations:**
-  1. Create examples directory structure: `examples/{repo-name}/`
-  2. Query GitHub API to check for Dockerfile in repo root
-  3. Query GitHub API to check for Makefile in repo root
-  4. If Dockerfile exists → Download to `examples/{repo-name}/Dockerfile`
-  5. If Makefile exists → Download to `examples/{repo-name}/Makefile`
-- **Output:** Downloaded files in `examples/{repo-name}/` directory
+  1. Parse repository URL to extract: owner, repo, branch, subdirectory (if any)
+  2. Determine target directory: `examples/{repo}/{subdir}/` if subdir exists, else `examples/{repo}/`
+  3. **List remote directory contents** at the target path (subdir or root) to check for files
+  4. Search the directory listing for `Dockerfile` and `Makefile` entries
+  5. If Dockerfile exists in listing → Download raw content to local examples directory
+  6. If Makefile exists in listing → Download raw content to local examples directory
+- **Output:** Downloaded files in `examples/{repo}/{subdir}/` directory
 - **Files Downloaded:**
-  - `examples/{repo-name}/Dockerfile` (if exists in repo)
-  - `examples/{repo-name}/Makefile` (if exists in repo)
+  - `examples/{repo}/{subdir}/Dockerfile` (if exists in remote directory)
+  - `examples/{repo}/{subdir}/Makefile` (if exists in remote directory)
 - **Validation:**
-  - Log file download status (found/not found)
+  - Log file discovery status from directory listing (found/not found)
   - Confirm downloaded files are readable
+- **File Location Strategy:**
+  - Use raw GitHub URL: `https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{subdir}/Dockerfile`
+  - Do NOT make API requests to check existence; use directory listing instead
 
 ### Step 1: Extract Non-Deterministic Values (Conditional)
 
@@ -86,19 +106,54 @@ If repo source does not contain either Dockerfile or Makefile:
 **Action:** Run [non-deterministic-setup](./../non-deterministic-setup/SKILL.md) skill to extract build values
 
 - **Input:** Downloaded files from Step 0
-  - `examples/{repo-name}/Dockerfile`
-  - `examples/{repo-name}/Makefile`
+  - `examples/{repo}/{subdir}/Dockerfile`
+  - `examples/{repo}/{subdir}/Makefile`
 - **Operations:**
   1. Read downloaded Dockerfile (if exists)
   2. Read downloaded Makefile (if exists)
   3. Search for binary name, output path, entrypoint in these files
   4. Extract ldflags, build commands, dependencies
   5. Populate `NonDeterministicValues` struct
-  6. Write to `examples/{repo-name}/NonDeterministicValues.yml`
-- **Output:** `examples/{repo-name}/NonDeterministicValues.yml`
+  6. Write to `examples/{repo}/{subdir}/NonDeterministicValues.yml`
+- **Output:** `examples/{repo}/{subdir}/NonDeterministicValues.yml`
 - **Skip If:** Neither Dockerfile nor Makefile was found in Step 0
 
-### Step 2: Fetch GitHub Metadata
+### Step 2: Run CLI Tool to Generate Dalec Spec
+
+**CRITICAL:** This step is the single source of truth for spec file generation. The agent MUST use the CLI tool.
+
+**Action:** Execute `go run main.go` with the downloaded files to generate the Dalec spec
+
+- **Input:**
+  - Repository path
+  - Downloaded Dockerfile path
+  - Downloaded Makefile path
+  - Output path for generated spec
+- **Command:**
+
+  ```bash
+  go run main.go \
+    -repo {owner}/{repo}/tree/{branch}/{subdir} \
+    -dockerfile examples/{repo}/{subdir}/Dockerfile \
+    -makefile examples/{repo}/{subdir}/Makefile \
+    -output examples/{repo}/{subdir}/{name}.yml
+  ```
+  
+- **Operations:**
+  - CLI parses Dockerfile and Makefile
+  - CLI fetches GitHub metadata
+  - CLI reads NonDeterministicValues.yml from same directory as Dockerfile
+  - CLI generates complete Dalec spec
+  - CLI writes output YAML file
+- **Output:** `examples/{repo}/{subdir}/{name}.yml`
+- **Validation:**
+  - Command exits with status 0
+  - Output YAML file exists and is valid YAML
+- **Note:** Do NOT manually create the spec file - always use the CLI tool
+
+### Step 3: Fetch GitHub Metadata (CLI Internal)
+
+**Note:** This step is performed internally by the CLI tool (`main.go`). The agent does not perform this step directly.
 
 **Action:** Query GitHub API for repository information
 
@@ -113,7 +168,9 @@ If repo source does not contain either Dockerfile or Makefile:
 - **Validation:**
   - Verify all required fields populated (Owner, Repo, GitURL, LatestCommit, Version)
 
-### Step 3: Parse Dockerfile (Auto-detected or Manual)
+### Step 4: Parse Dockerfile (CLI Internal)
+
+**Note:** This step is performed internally by the CLI tool. The agent does not perform this step directly.
 
 **Action:** Extract build configuration from Dockerfile
 
@@ -133,7 +190,9 @@ If repo source does not contain either Dockerfile or Makefile:
   - `Entrypoint`: Primary executable command
 - **Validation:** Check parsing completed without errors; skip if no Dockerfile found
 
-### Step 4: Parse Makefile & Extract Build Artifacts
+### Step 5: Parse Makefile & Extract Build Artifacts (CLI Internal)
+
+**Note:** This step is performed internally by the CLI tool. The agent does not perform this step directly.
 
 **Action:** Extract build commands, arguments, and artifact output paths from Makefile
 
@@ -164,7 +223,9 @@ If repo source does not contain either Dockerfile or Makefile:
   - Confirm binary output path is determinable
   - Log warning if build target detection is ambiguous
 
-### Step 5: Initialize Default Spec
+### Step 6: Initialize Default Spec (CLI Internal)
+
+**Note:** This step is performed internally by the CLI tool. The agent does not perform this step directly.
 
 **Action:** Combine GitHub metadata, Dockerfile info, and Makefile info
 
@@ -177,7 +238,9 @@ If repo source does not contain either Dockerfile or Makefile:
 - **Output:** `DefaultSpec` struct
 - **Validation:** Ensure all required fields present
 
-### Step 6: Transform to Dalec Spec with Artifact Consistency
+### Step 7: Transform to Dalec Spec with Artifact Consistency (CLI Internal)
+
+**Note:** This step is performed internally by the CLI tool. The agent does not perform this step directly.
 
 **Action:** Generate complete Dalec specification with validated artifact paths
 
@@ -202,7 +265,9 @@ If repo source does not contain either Dockerfile or Makefile:
   - Confirm entrypoint references valid artifact
   - Validate symlink targets exist
 
-### Step 7: Write YAML Output
+### Step 8: Write YAML Output (CLI Internal)
+
+**Note:** This step is performed internally by the CLI tool. The agent does not perform this step directly.
 
 **Action:** Serialize spec to YAML file
 
@@ -211,9 +276,21 @@ If repo source does not contain either Dockerfile or Makefile:
   - Add Dalec syntax header
   - Encode to YAML with proper formatting
   - Apply Dalec-specific formatting rules
-  - Write to output file (default: `examples/{repo-name}/{repo-name}.yml`)
+  - Write to output file (default: `examples/{repo}/{subdir}/{name}.yml`)
 - **Output:** YAML file
 - **Validation:** Confirm file written successfully
+
+---
+
+## Agent Execution Summary
+
+The agent performs only **3 steps**:
+
+1. **Step 0:** List remote directory, locate files, download Dockerfile/Makefile
+2. **Step 1:** Extract non-deterministic values and write NonDeterministicValues.yml
+3. **Step 2:** Run `go run main.go` CLI command to generate the Dalec spec
+
+Steps 3-8 are handled internally by the CLI tool and should NOT be performed manually by the agent.
 
 ---
 
@@ -319,47 +396,38 @@ The tool reports errors when consistency is broken:
 ### Command Syntax
 
 ```bash
-go run main.go -repo <repository> [-dockerfile <path>] [-makefile <path>] [-output <file>] [-v]
+go run main.go -repo <repository> -dockerfile <path> -makefile <path> -output <file> [-v]
 ```
 
 ### Required Parameters
 
 - `-repo`: GitHub repository (formats: `owner/repo`, `https://github.com/owner/repo`, `owner/repo/tree/branch`, `owner/repo/tree/branch/subdir`)
+- `-dockerfile`: Path to downloaded Dockerfile
+- `-makefile`: Path to downloaded Makefile
+- `-output`: Output YAML file path
 
 ### Optional Parameters
 
-- `-dockerfile`: Path to Dockerfile (default: auto-download from repo if exists)
-- `-makefile`: Path to Makefile (default: auto-download from repo if exists)
-- `-output`: Output YAML file path (default: `examples/{repo-name}/{repo-name}.yml`)
 - `-v`: Verbose output
-
-### Auto-Download Behavior
-
-When `-dockerfile` or `-makefile` flags are not provided, the tool:
-
-1. Queries GitHub API for file existence at repo root (or subdirectory if specified)
-2. Downloads found files to `examples/{repo-name}/`
-3. Uses downloaded files for parsing
-4. Logs download status: `✓ Downloaded Dockerfile` / `⚠ No Dockerfile found`
 
 ### Example Usage
 
 ```bash
-# Basic: Generate spec from GitHub repo (auto-downloads Dockerfile/Makefile)
-go run main.go -repo microsoft/azurelinuxagent
-
-# With explicit Dockerfile and Makefile
-go run main.go -repo owner/repo -dockerfile ./Dockerfile -makefile ./Makefile -output spec.yml
-
-# With branch
-go run main.go -repo owner/repo/tree/develop
-
 # Monorepo subdirectory (e.g., kubernetes/autoscaler addon-resizer)
-go run main.go -repo kubernetes/autoscaler/tree/master/addon-resizer
+# After downloading files to examples/autoscaler/addon-resizer/
+go run main.go \
+  -repo kubernetes/autoscaler/tree/master/addon-resizer \
+  -dockerfile examples/autoscaler/addon-resizer/Dockerfile \
+  -makefile examples/autoscaler/addon-resizer/Makefile \
+  -output examples/autoscaler/addon-resizer/addon-resizer.yml
 
-# Downloaded files will be saved to:
-# examples/autoscaler-addon-resizer/Dockerfile
-# examples/autoscaler-addon-resizer/Makefile
+# Simple repo without subdirectory
+# After downloading files to examples/myrepo/
+go run main.go \
+  -repo microsoft/myrepo \
+  -dockerfile examples/myrepo/Dockerfile \
+  -makefile examples/myrepo/Makefile \
+  -output examples/myrepo/myrepo.yml
 ```
 
 ## Validation Checklist
@@ -488,11 +556,39 @@ A successful run produces:
 ```bash
 dalec-mapping/
 ├── examples/
-│   └── {repo-name}/
-│       ├── Dockerfile                # Downloaded from GitHub
-│       ├── Makefile                  # Downloaded from GitHub
-│       ├── NonDeterministicValues.yml # Agent-extracted values
-│       └── {repo-name}.yml           # Generated Dalec spec
+│   └── {repo}/
+│       └── {subdir}/              # Only if subdirectory specified
+│           ├── Dockerfile         # Downloaded from GitHub
+│           ├── Makefile           # Downloaded from GitHub
+│           ├── NonDeterministicValues.yml # Agent-extracted values
+│           └── {name}.yml         # Generated Dalec spec (via CLI)
+└── ...
+```
+
+**Example for `kubernetes/autoscaler/tree/master/addon-resizer`:**
+
+```bash
+dalec-mapping/
+├── examples/
+│   └── autoscaler/
+│       └── addon-resizer/
+│           ├── Dockerfile
+│           ├── Makefile
+│           ├── NonDeterministicValues.yml
+│           └── addon-resizer.yml
+└── ...
+```
+
+**Example for `microsoft/myrepo` (no subdirectory):**
+
+```bash
+dalec-mapping/
+├── examples/
+│   └── myrepo/
+│       ├── Dockerfile
+│       ├── Makefile
+│       ├── NonDeterministicValues.yml
+│       └── myrepo.yml
 └── ...
 ```
 

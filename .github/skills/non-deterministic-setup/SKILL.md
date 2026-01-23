@@ -20,38 +20,49 @@ This skill reads from these downloaded files to extract non-deterministic values
 
 ### NonDeterministicValues Struct
 
+The Go struct uses yaml tags that **require camelCase keys** in the YAML file:
+
 ```go
-// transformer/agent.go
+// parser/agentValues.go
 type NonDeterministicValues struct {
     // Build Artifacts
-    BinaryName        string            // Primary binary name (e.g., "blobplugin")
-    BinaryOutputPath  string            // Full output path (e.g., "_output/${ARCH}/blobplugin")
-    AuxiliaryBinaries []string          // Additional binaries produced
+    BinaryName        string            `yaml:"binaryName"`        // Primary binary name
+    BinaryOutputPath  string            `yaml:"binaryOutputPath"`  // Full output path
+    AuxiliaryBinaries []AuxiliaryBinary `yaml:"auxiliaryBinaries"` // Additional binaries
     
     // Image Configuration  
-    Entrypoint        string            // Container entrypoint (e.g., "/blobplugin")
-    Symlink           string            // Symlink path (e.g., "/usr/bin/blobplugin")
+    Entrypoint        string            `yaml:"entrypoint"`        // Container entrypoint
+    Symlink           string            `yaml:"symlink"`           // Symlink path
     
     // Dependencies
-    BuildDeps         []string          // Build-time dependencies
-    RuntimeDeps       []string          // Runtime dependencies (filtered)
-    ExternalTools     []ExternalTool    // curl/wget downloaded tools
+    BuildDeps         []string          `yaml:"buildDeps"`         // Build-time dependencies
+    RuntimeDeps       []string          `yaml:"runtimeDeps"`       // Runtime dependencies
+    ExternalTools     []ExternalTool    `yaml:"externalTools"`     // curl/wget downloaded tools
     
     // Build Configuration
-    BuildCommand      string            // Primary go build command
-    LdFlags           string            // Translated ldflags with ${VERSION}
+    BuildCommand      string            `yaml:"buildCommand"`      // Primary go build command
+    LdFlags           string            `yaml:"ldFlags"`           // Translated ldflags
     
     // Validation
-    Warnings          []string          // Agent review warnings
-    Confidence        float64           // Extraction confidence score (0.0 - 1.0)
+    Warnings          []string          `yaml:"warnings"`          // Agent review warnings
+    Confidence        float64           `yaml:"confidence"`        // Extraction confidence (0.0-1.0)
 }
 
 type ExternalTool struct {
-    Name              string  // Tool name (e.g., "azcopy")
-    DownloadURL       string  // Source URL
-    NeedsSeparateSpec bool    // Requires separate Dalec spec
+    Name              string `yaml:"name"`              // Tool name (e.g., "azcopy")
+    DownloadURL       string `yaml:"downloadURL"`       // Source URL
+    NeedsSeparateSpec bool   `yaml:"needsSeparateSpec"` // Requires separate Dalec spec
+}
+
+type AuxiliaryBinary struct {
+    Name         string `yaml:"name"`         // Binary name
+    OutputPath   string `yaml:"outputPath"`   // Output path
+    BuildCommand string `yaml:"buildCommand"` // Build command
+    LdFlags      string `yaml:"ldFlags"`      // LdFlags for this binary
 }
 ```
+
+**CRITICAL:** When writing `NonDeterministicValues.yml`, use the yaml tag names (camelCase), NOT the Go field names (PascalCase).
 
 ### Output Location
 
@@ -413,11 +424,46 @@ ENTRYPOINT ["/blobplugin"]
 
 ### Extracted Values
 
+**IMPORTANT:** YAML keys must be **camelCase** to match Go struct tags in `parser/agentValues.go`.
+
+```yaml
+# examples/{repo-name}/NonDeterministicValues.yml
+# YAML keys are camelCase (not PascalCase)
+
+binaryName: "blobplugin"
+binaryOutputPath: "_output/${ARCH}/blobplugin"
+auxiliaryBinaries:
+  - name: "blobfuse-proxy"
+    outputPath: "_output/${ARCH}/blobfuse-proxy"
+    buildCommand: "go build -o _output/${ARCH}/blobfuse-proxy ./pkg/blobfuse-proxy"
+    ldFlags: ""
+
+entrypoint: "/blobplugin"
+symlink: "/usr/bin/blobplugin"
+
+buildDeps:
+  - "msft-golang"
+  - "curl"
+runtimeDeps:
+  - "ca-certificates"
+  - "fuse"
+externalTools: []
+
+buildCommand: "go build -a -ldflags \"${LDFLAGS}\" -mod vendor -o blobplugin ./pkg/blobplugin"
+ldFlags: "-X sigs.k8s.io/blob-csi-driver/pkg/blob.driverVersion=${VERSION} -s -w"
+
+warnings:
+  - "WARN_MULTI_BINARY: blobfuse-proxy detected"
+confidence: 0.85
+```
+
+Equivalent Go struct (for reference):
+
 ```go
 NonDeterministicValues{
     BinaryName:        "blobplugin",
     BinaryOutputPath:  "_output/${ARCH}/blobplugin",
-    AuxiliaryBinaries: []string{"blobfuse-proxy"},
+    AuxiliaryBinaries: []AuxiliaryBinary{{Name: "blobfuse-proxy", ...}},
     
     Entrypoint:        "/blobplugin",
     Symlink:           "/usr/bin/blobplugin",

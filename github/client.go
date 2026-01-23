@@ -167,10 +167,27 @@ func fetchReleaseMetadata(info *RepoInfo) error {
 }
 
 func fetchSourceGenerator(info *RepoInfo) error {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents", info.Owner, info.Repo)
+	// Check if branch contains a subdirectory path (e.g., "master/addon-resizer")
+	subdir := ""
+	if strings.Contains(info.Branch, "/") {
+		parts := strings.SplitN(info.Branch, "/", 2)
+		if len(parts) == 2 {
+			subdir = parts[1]
+		}
+	}
+
+	// Build URL - check subdirectory first if specified, then fall back to root
+	var url string
+	if subdir != "" {
+		url = fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s", info.Owner, info.Repo, subdir)
+	} else {
+		url = fmt.Sprintf("https://api.github.com/repos/%s/%s/contents", info.Owner, info.Repo)
+	}
 
 	// Verified files susceptible for upstream generators
-	goFile := map[string]bool{"go.mod": true, "main.go": true}
+	// Note: Godeps is a directory, not a file, so we check for it separately
+	goFile := map[string]bool{"go.mod": true, "main.go": true, "Gopkg.toml": true}
+	goDir := map[string]bool{"Godeps": true, "vendor": true} // Directories that indicate Go project
 	cargoFile := map[string]bool{"Cargo.toml": true, "Cargo.lock": true}
 	pipFile := map[string]bool{"requirements.txt": true, "setup.py": true, "Pipfile": true}
 
@@ -190,13 +207,26 @@ func fetchSourceGenerator(info *RepoInfo) error {
 			continue
 		}
 
+		itemType, _ := itemMap["type"].(string)
+
+		// Check for Go files
 		if goFile[name] {
 			info.Generator = GoModGenerator
 			return nil
-		} else if cargoFile[name] {
+		}
+
+		// Check for Go directories (Godeps, vendor)
+		if itemType == "dir" && goDir[name] {
+			info.Generator = GoModGenerator
+			return nil
+		}
+
+		if cargoFile[name] {
 			info.Generator = CargoHomeGenerator
 			return nil
-		} else if pipFile[name] {
+		}
+
+		if pipFile[name] {
 			info.Generator = PipGenerator
 			return nil
 		}
