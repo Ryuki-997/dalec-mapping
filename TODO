@@ -4,7 +4,13 @@ subdir godep pckg
 -static (from trivy)
 more test (auto)
 
-phase 3: 
+phase 3:
+
+create new github repo
+get repo
+get ado api
+invoke skill.md
+
 integration
 atuh
 patch during build-time (check from upstream)

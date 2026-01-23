@@ -30,6 +30,9 @@ func main() {
 	// Apply field overrides from CLI
 	applyFieldOverrides(repoInfo, cliOptions)
 
+	pathResult := &github.FileSearchResult{}
+	listBuildFiles(pathResult, *repoInfo)
+
 	// Parse Dockerfile if path provided
 	dockerfileInfo, makefileInfo, nonDeterministicInfo, previousDalecSpecInfo, err := parseOptionalFileInfo(cliOptions.DockerfilePath, cliOptions.MakefilePath, cliOptions.SpecFilePath, cliOptions.Verbose)
 	if err != nil {
@@ -256,4 +259,10 @@ func fetchNonDeterministicValue(dockerfilePath string) (*parser.NonDeterministic
 
 	fmt.Println("✅ Successfully read NonDeterministicValues.yml file.")
 	return &nonDeterministicValues, nil
+}
+
+func listBuildFiles(pathResult *github.FileSearchResult, repoInfo github.RepoInfo) {
+	github.FindBuildFiles(pathResult, repoInfo.Owner, repoInfo.Repo, repoInfo.Branch)
+	fmt.Printf("File Paths: %v\n", pathResult.Dockerfiles)
+	fmt.Printf("File Paths: %v\n", pathResult.Makefiles)
 }
