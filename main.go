@@ -237,15 +237,22 @@ func fetchNonDeterministicValue(dockerfilePath string) (*parser.NonDeterministic
 		return nil, err
 	}
 
-	// Clear out unecessary flags
-	commands := &nonDeterministicValues.BuildCommand
+	removeFlags := map[string]string{
+		"'":              "\"",
+		"`":              "\"",
+		"CGO_ENABLED=0 ": "",
+		"CGO_ENABLED=1 ": "",
+		"GOOS=linux ":    "",
+		"GOARCH=amd64 ":  "",
+	}
 
-	*commands = strings.ReplaceAll(*commands, "'", "\"")
-	*commands = strings.ReplaceAll(*commands, "`", "\"")
-	*commands = strings.ReplaceAll(*commands, "CGO_ENABLED=0 ", "")
-	*commands = strings.ReplaceAll(*commands, "CGO_ENABLED=1 ", "")
-	*commands = strings.ReplaceAll(*commands, "GOOS=linux ", "")
-	*commands = strings.ReplaceAll(*commands, "GOARCH=amd64 ", "")
+	for i := range nonDeterministicValues.Binaries {
+		for key, value := range removeFlags {
+			nonDeterministicValues.Binaries[i].BuildCommand = strings.ReplaceAll(nonDeterministicValues.Binaries[i].BuildCommand, key, value)
+		}
+
+		fmt.Printf("New Command: %v\n", nonDeterministicValues.Binaries[i].BuildCommand)
+	}
 
 	fmt.Println("✅ Successfully read NonDeterministicValues.yml file.")
 	return &nonDeterministicValues, nil

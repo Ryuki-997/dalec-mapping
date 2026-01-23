@@ -3,11 +3,10 @@ package transformer
 import (
 	"dalec/parser"
 	"fmt"
-	"strings"
 )
 
 // extractBuildSteps converts RUN commands to Dalec build steps (uses nonDeterministicValues if available)
-func extractBuildSection(defaultSpec *DefaultSpec, nonDeterministicValues *parser.NonDeterministicValues) (map[string]interface{}, string) {
+func extractBuildSection(defaultSpec *DefaultSpec, nonDeterministicValues *parser.NonDeterministicValues) map[string]interface{} {
 	build := make(map[string]interface{})
 	env := make(map[string]interface{})
 
@@ -36,14 +35,19 @@ func extractBuildSection(defaultSpec *DefaultSpec, nonDeterministicValues *parse
 	}
 
 	// Add LDFLAGS from NonDeterministicValues if available
-	if nonDeterministicValues != nil && nonDeterministicValues.LdFlags != "" {
-		env["LDFLAGS"] = nonDeterministicValues.LdFlags
+	if nonDeterministicValues != nil {
+		for _, aux := range nonDeterministicValues.Binaries {
+			if aux.LdFlags != "" {
+				env["LDFLAGS"] = aux.LdFlags
+				break
+			}
+		}
 	}
 
 	build["env"] = env
 
 	// Extract build steps
-	command, output := extractBuildSteps(nonDeterministicValues)
+	command := extractBuildSteps(nonDeterministicValues)
 
 	buildCommand := "cd " + defaultSpec.Repo + "\n"
 
@@ -56,7 +60,7 @@ func extractBuildSection(defaultSpec *DefaultSpec, nonDeterministicValues *parse
 		buildCommand += command
 	}
 
-	fmt.Printf("OUTPUT: %v\n", output)
+	fmt.Printf("BUILD COMMAND: %v\n", buildCommand)
 
 	steps := []map[string]interface{}{
 		{"command": buildCommand},
@@ -64,65 +68,32 @@ func extractBuildSection(defaultSpec *DefaultSpec, nonDeterministicValues *parse
 
 	build["steps"] = steps
 
-	return build, output
+	return build
 }
 
-func extractBuildSteps(nonDeterministicValues *parser.NonDeterministicValues) (string, string) {
+func extractBuildSteps(nonDeterministicValues *parser.NonDeterministicValues) string {
 	command := ""
-	output := ""
 
 	if nonDeterministicValues == nil {
-		return command, output
+		return command
 	}
 
-	output = extractOutput(nonDeterministicValues)
-
-	// Build primary binary
-	if nonDeterministicValues.BuildCommand != "" {
-		// Use the explicit build command if provided
-		command += nonDeterministicValues.BuildCommand
-	} else if nonDeterministicValues.LdFlags != "" {
-		// Construct build command from ldflags
-		command += "go build -ldflags \"" + nonDeterministicValues.LdFlags + "\" -o " + output + " ./pkg/" + nonDeterministicValues.BinaryName
-	}
-
-	// Build auxiliary binaries
-	for _, aux := range nonDeterministicValues.AuxiliaryBinaries {
+	// Build additional binaries
+	for _, aux := range nonDeterministicValues.Binaries {
 		if aux.Name == "" {
 			continue
 		}
 
-		// Always output to simple binary name for Dalec artifacts compatibility
-		auxOutput := aux.Name
-
 		if aux.BuildCommand != "" {
 			// Use explicit build command if provided
 			command += "\n" + aux.BuildCommand
+			fmt.Printf("Current Command: %v\n", command)
 		} else if aux.LdFlags != "" {
-			command += "\ngo build -ldflags \"" + aux.LdFlags + "\" -o " + auxOutput + " ./pkg/" + aux.Name
+			command += "\ngo build -ldflags \"" + aux.LdFlags + "\" -o " + aux.OutputPath + " ./pkg/" + aux.Name
 		} else {
-			command += "\ngo build -o " + auxOutput + " ./pkg/" + aux.Name
+			command += "\ngo build -o " + aux.OutputPath + " ./pkg/" + aux.Name
 		}
 	}
 
-	return command, output
-}
-
-func extractOutput(nonDeterministicValues *parser.NonDeterministicValues) string {
-	output := ""
-	if nonDeterministicValues == nil {
-		return output
-	}
-
-	command := nonDeterministicValues.BuildCommand
-	parts := strings.Split(command, " ")
-
-	for i, part := range parts {
-		if part == "-o" && i+1 < len(parts) {
-			output = parts[i+1]
-			break
-		}
-	}
-
-	return output
+	return command
 }

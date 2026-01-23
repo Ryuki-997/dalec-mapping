@@ -28,7 +28,7 @@ type NonDeterministicValues struct {
     // Build Artifacts
     BinaryName        string            `yaml:"binaryName"`        // Primary binary name
     BinaryOutputPath  string            `yaml:"binaryOutputPath"`  // Full output path
-    AuxiliaryBinaries []AuxiliaryBinary `yaml:"auxiliaryBinaries"` // Additional binaries
+    Binaries []Binary `yaml:"binaries"` // All binaries
     
     // Image Configuration  
     Entrypoint        string            `yaml:"entrypoint"`        // Container entrypoint
@@ -38,10 +38,6 @@ type NonDeterministicValues struct {
     BuildDeps         []string          `yaml:"buildDeps"`         // Build-time dependencies
     RuntimeDeps       []string          `yaml:"runtimeDeps"`       // Runtime dependencies
     ExternalTools     []ExternalTool    `yaml:"externalTools"`     // curl/wget downloaded tools
-    
-    // Build Configuration
-    BuildCommand      string            `yaml:"buildCommand"`      // Primary go build command
-    LdFlags           string            `yaml:"ldFlags"`           // Translated ldflags
     
     // Validation
     Warnings          []string          `yaml:"warnings"`          // Agent review warnings
@@ -54,7 +50,7 @@ type ExternalTool struct {
     NeedsSeparateSpec bool   `yaml:"needsSeparateSpec"` // Requires separate Dalec spec
 }
 
-type AuxiliaryBinary struct {
+type Binary struct {
     Name         string `yaml:"name"`         // Binary name
     OutputPath   string `yaml:"outputPath"`   // Output path
     BuildCommand string `yaml:"buildCommand"` // Build command
@@ -85,16 +81,15 @@ Where `{repo-name}` is the repository name (e.g., `blob-csi-driver`). This ensur
 - `examples/{repo-name}/Makefile` - Search for build commands  
 - `examples/{repo-name}/Dockerfile` - Search for COPY and ENTRYPOINT instructions
 
-**Output:** `BinaryName`, `BinaryOutputPath`, `AuxiliaryBinaries`
+**Output:** `BinaryName`, `BinaryOutputPath`, `Binaries`
 
 #### 1.1 Extraction Checklist
 
 - [ ] Find all `go build -o <path>` commands in Makefile
 - [ ] Extract binary name from `-o` flag path (last path segment)
 - [ ] If no `-o` flag, infer from `./cmd/<name>` package path
-- [ ] If multiple binaries found:
+- [ ] Add all binaries to binary list:
   - [ ] Primary = matches Dockerfile ENTRYPOINT or repo name
-  - [ ] Others = add to auxiliary binaries list
 - [ ] Store full path for artifact mapping
 
 #### 1.2 Patterns
@@ -363,7 +358,7 @@ func FillNonDeterministicValues(dockerfileContent, makefileContent string) (*Non
 │  - image.post.symlinks (from Symlink)                           │
 │  - dependencies.build (from BuildDeps)                          │
 │  - dependencies.runtime (from RuntimeDeps)                      │
-│  - build.steps (from BuildCommand, LdFlags)                     │
+│  - build.steps (from binary BuildCommand, LdFlags)              │
 │  CLI fills remaining deterministic fields (license, version)    │
 │  Generates final Dalec YAML spec                                │
 └─────────────────────────────────────────────────────────────────┘
@@ -384,7 +379,7 @@ After agent extraction, verify:
 | V5 | `BuildDeps` includes compiler (`msft-golang` / `rust`) | [ ] |
 | V6 | `LdFlags` uses `${VERSION}` not hardcoded values | [ ] |
 | V7 | `BuildCommand` has no `docker run` commands | [ ] |
-| V8 | All `AuxiliaryBinaries` have corresponding build commands | [ ] |
+| V8 | All `Binaries` have corresponding build commands | [ ] |
 | V9 | `ExternalTools` documented with TODO comments | [ ] |
 | V10 | `Confidence` >= 0.8 or manual review completed | [ ] |
 
@@ -432,7 +427,11 @@ ENTRYPOINT ["/blobplugin"]
 
 binaryName: "blobplugin"
 binaryOutputPath: "_output/${ARCH}/blobplugin"
-auxiliaryBinaries:
+binaries:
+  - name: "blobplugin"
+    outputPath: "blobplugin"
+    buildCommand: "go build -a -ldflags \"${LDFLAGS}\" -mod vendor -o blobplugin ./pkg/blobplugin"
+    ldFlags: "-X sigs.k8s.io/blob-csi-driver/pkg/blob.driverVersion=${VERSION} -s -w"
   - name: "blobfuse-proxy"
     outputPath: "_output/${ARCH}/blobfuse-proxy"
     buildCommand: "go build -o _output/${ARCH}/blobfuse-proxy ./pkg/blobfuse-proxy"
@@ -449,9 +448,6 @@ runtimeDeps:
   - "fuse"
 externalTools: []
 
-buildCommand: "go build -a -ldflags \"${LDFLAGS}\" -mod vendor -o blobplugin ./pkg/blobplugin"
-ldFlags: "-X sigs.k8s.io/blob-csi-driver/pkg/blob.driverVersion=${VERSION} -s -w"
-
 warnings:
   - "WARN_MULTI_BINARY: blobfuse-proxy detected"
 confidence: 0.85
@@ -462,8 +458,8 @@ Equivalent Go struct (for reference):
 ```go
 NonDeterministicValues{
     BinaryName:        "blobplugin",
-    BinaryOutputPath:  "_output/${ARCH}/blobplugin",
-    AuxiliaryBinaries: []AuxiliaryBinary{{Name: "blobfuse-proxy", ...}},
+    BinaryOutputPath:  "_output/${ARCH}/blobplugin", 
+    Binaries: []{{Name: "blobfuse-proxy", ...}},
     
     Entrypoint:        "/blobplugin",
     Symlink:           "/usr/bin/blobplugin",

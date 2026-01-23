@@ -64,9 +64,9 @@ func TransformToDalec(defaultSpec *DefaultSpec, makefileInfo *parser.MakefileInf
 	spec["sources"] = extractSources(defaultSpec)
 	spec["dependencies"] = extractDependencies(defaultSpec, nonDeterministicValues)
 	spec["targets"] = extractTargets(defaultSpec)
-	buildSection, binaryPath := extractBuildSection(defaultSpec, nonDeterministicValues)
+	buildSection := extractBuildSection(defaultSpec, nonDeterministicValues)
 	spec["build"] = buildSection
-	spec["artifacts"] = extractArtifacts(defaultSpec, binaryPath, nonDeterministicValues)
+	spec["artifacts"] = extractArtifacts(defaultSpec, nonDeterministicValues)
 	spec["image"] = extractImageConfig(defaultSpec, nonDeterministicValues)
 	spec["tests"] = appendTests(defaultSpec, nonDeterministicValues)
 
@@ -174,26 +174,18 @@ func extractTargets(defaultSpec *DefaultSpec) map[string]interface{} {
 }
 
 // extractArtifacts identifies build artifacts (uses nonDeterministicValues if available)
-func extractArtifacts(defaultSpec *DefaultSpec, binaryPath string, nonDeterministicValues *parser.NonDeterministicValues) map[string]interface{} {
+func extractArtifacts(defaultSpec *DefaultSpec, nonDeterministicValues *parser.NonDeterministicValues) map[string]interface{} {
 	artifacts := make(map[string]interface{})
 	binaries := make(map[string]interface{})
 
-	fmt.Printf("ARTIFACTS: %v\n", binaryPath)
-
 	// Use agent-extracted binary name if available
 	if nonDeterministicValues != nil {
-		if binaryPath != "" {
-			binaries[defaultSpec.Repo+"/"+binaryPath] = map[string]interface{}{}
-		} else if nonDeterministicValues.BinaryName != "" {
-			binaries[defaultSpec.Repo+"/"+nonDeterministicValues.BinaryName] = map[string]interface{}{}
+		// Add additional binaries
+		for _, aux := range nonDeterministicValues.Binaries {
+			artifact := defaultSpec.Repo + "/" + aux.OutputPath
+			binaries[artifact] = map[string]interface{}{}
+			fmt.Printf("ARTIFACTS: %v\n", artifact)
 		}
-
-		// Add auxiliary binaries
-		for _, aux := range nonDeterministicValues.AuxiliaryBinaries {
-			binaries[defaultSpec.Repo+"/"+aux.Name] = map[string]interface{}{}
-		}
-	} else if binaryPath != "" {
-		binaries[defaultSpec.Repo+"/"+binaryPath] = map[string]interface{}{}
 	} else {
 		// Fallback to default
 		binaries["bin/"+defaultSpec.Repo] = map[string]interface{}{}
