@@ -120,6 +120,7 @@ makefiles:
 ```
 
 **Validation:**
+
 - Command exits with status 0
 - filepath.yml exists in result directory
 - At least one Dockerfile or Makefile found
@@ -130,16 +131,18 @@ makefiles:
 
 **Trigger:** filepath.yml exists and contains file paths
 
-**Action:** 
-1. Read `result/{repo}/filepath.yml` 
+**Action:**
+
+1. Read `result/{repo}/filepath.yml`
 2. Select the appropriate Dockerfile and Makefile from the paths
 3. Download the selected files to `result/{repo}/`
 4. Extract non-deterministic values per [non-deterministic-setup](../non-deterministic-setup/SKILL.md)
 5. Write `result/{repo}/NonDeterministicValues.yml`
 
 **Selection Heuristics (for agent):**
-- **Dockerfile priority:** 
-  1. Root-level `Dockerfile` 
+
+- **Dockerfile priority:**
+  1. Root-level `Dockerfile`
   2. `deploy/Dockerfile`
   3. `pkg/*/Dockerfile` (matches main package)
   4. First in list
@@ -148,11 +151,13 @@ makefiles:
   2. First in list
 
 **Download URLs:**
-```
+
+```bash
 https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}
 ```
 
 **Output Files:**
+
 - `result/{repo}/Dockerfile`
 - `result/{repo}/Makefile`  
 - `result/{repo}/NonDeterministicValues.yml`
@@ -174,6 +179,7 @@ go run main.go \
 ```
 
 **Operations:**
+
 - CLI parses Dockerfile and Makefile
 - CLI fetches GitHub metadata (version, commit, license)
 - CLI reads NonDeterministicValues.yml from same directory as Dockerfile
@@ -183,6 +189,7 @@ go run main.go \
 **Output:** `result/{repo}/{name}.yml`
 
 **Validation:**
+
 - Command exits with status 0
 - Output YAML file exists and is valid YAML
 
@@ -207,11 +214,13 @@ go run main.go -repo <repository> --discover
 ```
 
 **Parameters:**
+
 - `-repo`: GitHub repository (required)
   - Formats: `owner/repo`, `owner/repo/tree/branch`, `owner/repo/tree/branch/subdir`
 - `--discover`: Enable discovery mode (no value needed)
 
 **Output:**
+
 - Clears `result/{repo}/` directory
 - Creates `result/{repo}/filepath.yml` with discovered paths
 
@@ -222,6 +231,7 @@ go run main.go -repo <repository> -dockerfile <path> -makefile <path> -output <f
 ```
 
 **Parameters:**
+
 - `-repo`: GitHub repository (required)
 - `-dockerfile`: Path to local Dockerfile
 - `-makefile`: Path to local Makefile
