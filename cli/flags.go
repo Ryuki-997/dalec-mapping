@@ -40,6 +40,7 @@ type CLIOptions struct {
 	Targets []BuildTarget
 
 	// Flags
+	Discover    bool
 	Verbose     bool
 	ShowHelp    bool
 	ShowContext bool
@@ -64,6 +65,7 @@ func DefineFlags() CLIOptions {
 	var targetsStr string
 	flag.StringVar(&targetsStr, "targets", "", "Comma-separated build targets")
 
+	discover := flag.Bool("discover", false, "Discover Dockerfile and Makefile paths in repository")
 	verbose := flag.Bool("v", false, "Verbose output")
 	showHelp := flag.Bool("help", false, "Show complete usage")
 	showContext := flag.Bool("h", false, "Show usage for current flags")
@@ -104,6 +106,7 @@ func DefineFlags() CLIOptions {
 	opts.Description = *description
 	opts.License = *license
 	opts.Tag = *tag
+	opts.Discover = *discover
 	opts.Verbose = *verbose
 
 	if targetsStr != "" {
@@ -128,13 +131,18 @@ REQUIRED:
     -repo string
         GitHub repository (owner/repo or URL)
 
+MODES:
+    -discover
+        Discover Dockerfile and Makefile paths in repository
+        Outputs filepath.yml to result/{repo}/ directory
+
 OPTIONAL PATHS:
     -dockerfile string
-        Path to Dockerfile (default: "Dockerfile")
+        Path to Dockerfile
     -spec string
-        Path to previous spec (default: "output.yml")
-		-makefile string
-				Path to Makefile (default: "Makefile")
+        Path to previous spec
+    -makefile string
+        Path to Makefile
     -output string
         Output file path (default: "output.yml")
 
@@ -162,10 +170,14 @@ FLAGS:
         Show this help
 
 EXAMPLES:
-    dalec-gen -repo owner/repo
-    dalec-gen -repo owner/repo -name myapp -v -h
-    dalec-gen -repo owner/repo -tag v1.2.3
-    dalec-gen -repo owner/repo -targets "azlinux3/rpm,noble/deb"
+    # Discover build files in a repository
+    go run main.go -repo owner/repo -discover
+
+    # Generate Dalec spec after discovery
+    go run main.go -repo owner/repo -dockerfile result/repo/Dockerfile -output result/repo/spec.yml
+
+    # With branch specification
+    go run main.go -repo owner/repo/tree/main -discover
 
 `)
 }

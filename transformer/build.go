@@ -55,7 +55,7 @@ func extractBuildSection(defaultSpec *DefaultSpec, nonDeterministicValues *parse
 	if command == "" {
 		// Default: cd to repo and run go build
 		output := fmt.Sprintf("bin/%s", defaultSpec.Repo)
-		buildCommand += fmt.Sprintf("cd %s\ngo build -o %s ./main.go", defaultSpec.Repo, output)
+		buildCommand += fmt.Sprintf("go build -o %s ./main.go", output)
 	} else {
 		buildCommand += command
 	}

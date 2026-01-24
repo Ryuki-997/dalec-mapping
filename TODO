@@ -6,8 +6,7 @@ more test (auto)
 
 phase 3:
 
-create new github repo
-get repo
+put yaml parser in parser (interface)
 get ado api
 invoke skill.md
 

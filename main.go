@@ -14,11 +14,88 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const resultBaseDir = "result"
+
 func main() {
 	cliOptions := cli.DefineFlags()
 
 	fmt.Println("🚀 Dalec Spec Generator")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+	// Determine result directory based on repo
+	resultDir := getResultDir(cliOptions.RepoPath)
+
+	// Handle discover mode
+	if cliOptions.Discover {
+		runDiscoverMode(cliOptions, resultDir)
+		return
+	}
+
+	// Normal generation mode
+	runGenerateMode(cliOptions)
+}
+
+func getResultDir(repoPath string) string {
+	// Parse repo path to extract repo name and subdirectory
+	parts := strings.Split(repoPath, "/")
+	if len(parts) < 2 {
+		return filepath.Join(resultBaseDir, "unknown")
+	}
+
+	repo := parts[1]
+
+	// Check for subdirectory (e.g., owner/repo/tree/branch/subdir)
+	if len(parts) >= 5 && parts[2] == "tree" {
+		// Has subdirectory
+		if len(parts) > 4 {
+			subdir := parts[len(parts)-1]
+			return filepath.Join(resultBaseDir, repo, subdir)
+		}
+	}
+
+	return filepath.Join(resultBaseDir, repo)
+}
+
+func runDiscoverMode(cliOptions cli.CLIOptions, resultDir string) {
+	fmt.Println("=== DISCOVER MODE ===")
+
+	// Clear result directory for fresh start
+	if err := github.ClearResultDirectory(resultDir); err != nil {
+		fmt.Printf("⚠️  Warning: %v\n", err)
+	}
+
+	// Parse repo info (just need owner, repo, branch)
+	repoInfo, err := fetchGitHubRepoInfo(cliOptions.RepoPath, cliOptions.Tag)
+	if err != nil {
+		fmt.Printf("❌ Error fetching repository info: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Run DFS to find all Dockerfiles and Makefiles
+	pathResult := &github.FileSearchResult{}
+	_, err = github.FindBuildFiles(pathResult, repoInfo.Owner, repoInfo.Repo, repoInfo.Branch)
+	if err != nil {
+		fmt.Printf("❌ Error discovering build files: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Write filepath.yml to result directory
+	err = github.WriteFilepathYAML(pathResult, resultDir)
+	if err != nil {
+		fmt.Printf("❌ Error writing filepath.yml: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println()
+	fmt.Println("📋 Discovery Results:")
+	fmt.Printf("   Dockerfiles: %v\n", pathResult.Dockerfiles)
+	fmt.Printf("   Makefiles: %v\n", pathResult.Makefiles)
+	fmt.Println()
+	fmt.Printf("✅ Discovery complete. Results saved to %s/filepath.yml\n", resultDir)
+}
+
+func runGenerateMode(cliOptions cli.CLIOptions) {
+	fmt.Println("=== GENERATE MODE ===")
 
 	// Fetch GitHub repository info
 	repoInfo, err := fetchGitHubRepoInfo(cliOptions.RepoPath, cliOptions.Tag)
@@ -29,9 +106,6 @@ func main() {
 
 	// Apply field overrides from CLI
 	applyFieldOverrides(repoInfo, cliOptions)
-
-	pathResult := &github.FileSearchResult{}
-	listBuildFiles(pathResult, *repoInfo)
 
 	// Parse Dockerfile if path provided
 	dockerfileInfo, makefileInfo, nonDeterministicInfo, previousDalecSpecInfo, err := parseOptionalFileInfo(cliOptions.DockerfilePath, cliOptions.MakefilePath, cliOptions.SpecFilePath, cliOptions.Verbose)
@@ -259,10 +333,4 @@ func fetchNonDeterministicValue(dockerfilePath string) (*parser.NonDeterministic
 
 	fmt.Println("✅ Successfully read NonDeterministicValues.yml file.")
 	return &nonDeterministicValues, nil
-}
-
-func listBuildFiles(pathResult *github.FileSearchResult, repoInfo github.RepoInfo) {
-	github.FindBuildFiles(pathResult, repoInfo.Owner, repoInfo.Repo, repoInfo.Branch)
-	fmt.Printf("File Paths: %v\n", pathResult.Dockerfiles)
-	fmt.Printf("File Paths: %v\n", pathResult.Makefiles)
 }

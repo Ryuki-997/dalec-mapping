@@ -89,7 +89,7 @@ func parseRepoPath(path string) (owner, repo, branch string, err error) {
 	if n >= 4 && parts[2] == "tree" {
 		branch = parts[3]
 	} else if n == 2 {
-		branch = "main"
+		branch = "" // Will be fetched from API
 	} else {
 		return "", "", "", fmt.Errorf("invalid repository path: %s (expected format: owner/repo or owner/repo/tree/branch)", path)
 	}
@@ -104,6 +104,15 @@ func fetchRepoMetadata(info *RepoInfo) error {
 	data, err := makeGitHubMapRequest(url)
 	if err != nil {
 		return err
+	}
+
+	// Extract default branch if not already set
+	if info.Branch == "" {
+		if defaultBranch, ok := data["default_branch"].(string); ok {
+			info.Branch = defaultBranch
+		} else {
+			info.Branch = "main" // Fallback
+		}
 	}
 
 	// Extract metadata
