@@ -80,7 +80,8 @@ func runDiscoverMode(cliOptions cli.CLIOptions, resultDir string) {
 	}
 
 	// Write filepath.yml to result directory
-	err = github.WriteFilepathYAML(pathResult, resultDir)
+	crawler := &github.GitHubCrawler{}
+	err = crawler.WriteYAML(pathResult, resultDir)
 	if err != nil {
 		fmt.Printf("❌ Error writing filepath.yml: %v\n", err)
 		os.Exit(1)
@@ -265,7 +266,8 @@ func fetchPreviousYAMLInfo(filepath string) (transformer.PreviousDalecSpec, erro
 		return transformer.PreviousDalecSpec{}, nil
 	}
 
-	yamlInfo, err := transformer.ReadYAML(filepath)
+	writer := &transformer.DalecSpecWriter{}
+	yamlInfo, err := writer.ReadYAML(filepath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			fmt.Println("⚠️  No previous YAML file found, proceeding without it.")
@@ -280,7 +282,8 @@ func fetchPreviousYAMLInfo(filepath string) (transformer.PreviousDalecSpec, erro
 }
 
 func writeOutput(dalecSpec transformer.DalecSpec, cliOptions cli.CLIOptions) error {
-	yamlContent, err := transformer.WriteYAML(dalecSpec)
+	writer := &transformer.DalecSpecWriter{}
+	yamlContent, err := writer.WriteYAML(dalecSpec, cliOptions.OutputPath)
 	if err != nil {
 		return fmt.Errorf("❌ Error generating YAML: %v\n", err)
 	}

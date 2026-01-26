@@ -9,6 +9,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type GitHubCrawler struct{}
+
 // FileSearchResult contains paths to Dockerfiles and Makefiles found in the repo
 type FileSearchResult struct {
 	Dockerfiles []string `yaml:"dockerfiles"`
@@ -40,8 +42,8 @@ func FindBuildFiles(result *FileSearchResult, owner, repo, branch string) (*File
 	return result, nil
 }
 
-// WriteFilepathYAML writes the FileSearchResult to filepath.yml in the result directory
-func WriteFilepathYAML(result *FileSearchResult, resultDir string) error {
+// WriteYAML writes the FileSearchResult to filepath.yml in the result directory
+func (w *GitHubCrawler) WriteYAML(result *FileSearchResult, resultDir string) error {
 	// Ensure result directory exists
 	if err := os.MkdirAll(resultDir, 0755); err != nil {
 		return fmt.Errorf("failed to create result directory: %w", err)
@@ -63,8 +65,8 @@ func WriteFilepathYAML(result *FileSearchResult, resultDir string) error {
 	return nil
 }
 
-// ReadFilepathYAML reads the FileSearchResult from filepath.yml
-func ReadFilepathYAML(resultDir string) (*FileSearchResult, error) {
+// ReadYAML reads the FileSearchResult from filepath.yml
+func (w *GitHubCrawler) ReadYAML(resultDir string) (*FileSearchResult, error) {
 	filepathPath := filepath.Join(resultDir, "filepath.yml")
 
 	content, err := os.ReadFile(filepathPath)

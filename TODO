@@ -5,7 +5,6 @@ subdir godep pckg
 more test (auto)
 
 phase 3:
-
 put yaml parser in parser (interface)
 get ado api
 invoke skill.md

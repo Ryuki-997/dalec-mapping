@@ -9,6 +9,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type DalecSpecWriter struct{}
+
 type PreviousDalecSpec struct {
 	Args struct {
 		Version  string `yaml:"VERSION"`
@@ -17,7 +19,7 @@ type PreviousDalecSpec struct {
 }
 
 // ReadYAML reads a DalecSpec file and unmarshal updated values
-func ReadYAML(path string) (PreviousDalecSpec, error) {
+func (w *DalecSpecWriter) ReadYAML(path string) (PreviousDalecSpec, error) {
 	data := PreviousDalecSpec{}
 
 	// Read file content
@@ -37,7 +39,7 @@ func ReadYAML(path string) (PreviousDalecSpec, error) {
 }
 
 // WriteYAML converts DalecSpec to formatted YAML
-func WriteYAML(spec DalecSpec) (string, error) {
+func (w *DalecSpecWriter) WriteYAML(spec DalecSpec, outputPath string) (string, error) {
 	var buf bytes.Buffer
 
 	// Handle syntax header specially (needs to be first, with special format)
@@ -100,6 +102,13 @@ func WriteYAML(spec DalecSpec) (string, error) {
 	result := buf.String()
 
 	result = strings.TrimPrefix(result, "---\n")
+
+	// Write to output file if path is provided
+	if outputPath != "" {
+		if err := os.WriteFile(outputPath, []byte(result), 0644); err != nil {
+			return "", fmt.Errorf("failed to write YAML to file: %w", err)
+		}
+	}
 
 	return result, nil
 }
