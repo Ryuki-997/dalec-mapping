@@ -1,7 +1,6 @@
-tmp.yml
-output.yml
+.venv
+.env
 
-Dockerfile
-Makefile
-examples
-result
+generator/result
+
+TODO.md

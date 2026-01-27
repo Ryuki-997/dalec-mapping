@@ -1,259 +1,185 @@
-# Architecture Documentation
+# DALEC Mapping Architecture
 
 ## Overview
 
-This project converts Dockerfiles to Dalec specification files by combining multiple information sources: GitHub repository metadata, Dockerfile build stages, and optional previous spec files for validation and change detection.
+This document outlines the end-to-end process for generating DALEC spec files from GitHub repositories using a CLI-driven, serverless architecture on Azure.
 
-## System Design
-
-### Input Information Packets
-
-The system fetches and processes three distinct information packets:
-
-#### 1. GitHub Repository URL (Required)
-
-- **Input Method**: Positional command-line argument (not a flag)
-- **Format**: `owner/repo` or full GitHub URL
-- **Purpose**: Primary source of metadata including:
-  - Latest commit hash
-  - Repository description
-  - License information
-  - Source URL
-  - Homepage/website
-
-#### 2. Dockerfile Path (Optional)
-
-- **Input Method**: `-dockerfile` flag
-- **Default**: `./Dockerfile` in current directory
-- **Purpose**: Extract build configuration and arguments:
-  - Multi-stage build stages
-  - Build arguments (ARG directives)
-  - Base images and dependencies
-  - Build commands and steps
-  - Entry points and exposed ports
-- **Processing**:
-  - Uses Docker Buildkit parser for AST-based parsing
-  - Extracts stage names, platforms, and dependencies
-  - Identifies build-time arguments and environment variables
-  - Handles multi-architecture builds (--platform flags)
-
-#### 3. Previous Dalec Spec File Path (Optional)
-
-- **Input Method**: `-spec` flag
-- **Purpose**: Verify previous generation was properly formatted & fill previously generated values unless specifically identified.
-  - Repository updates (commit hash changes)
-  - Dockerfile modifications
-  - Manual spec adjustments
-  - Dependency updates
-- **Processing**:
-  - Parses existing YAML spec file
-  - Validates required fields are present
-  - Generates diff report showing changes
-- **Use Cases**:
-  - Incremental updates to existing specs
-  - Auditing changes over time
-  - Preventing accidental overwrites of manual modifications
-
-### Processing Pipeline
-
-```text
-┌─────────────────┐
-│  CLI Arguments  │
-│  - repo (pos)   │
-│  - dockerfile   │
-│  - spec         │
-│  - output       │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────────────────────────────┐
-│     Information Gathering Phase         │
-├─────────────────────────────────────────┤
-│  1. Parse GitHub repo path              │
-│  2. Fetch GitHub metadata (parallel)    │
-│  3. Parse Dockerfile (if provided)      │
-│  4. Load previous spec (if provided)    │
-└────────┬────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────┐
-│     Validation Phase                    │
-├─────────────────────────────────────────┤
-│  - Validate previous spec structure     │
-│  - Check commit hash for changes        │
-│  - Verify Dockerfile parse success      │
-│  - Report missing/invalid data          │
-└────────┬────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────┐
-│     Transformation Phase                │
-├─────────────────────────────────────────┤
-│  - Create flexible map-based DalecSpec  │
-│  - Merge GitHub metadata                │
-│  - Extract Dockerfile stages/args       │
-│  - Apply defaults for unknown values    │
-│  - Preserve manual modifications        │
-└────────┬────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────┐
-│     Output Phase                        │
-├─────────────────────────────────────────┤
-│  - Serialize to YAML format             │
-│  - Write to output path (or default)    │
-│  - Generate version metadata            │
-│  - Optional: Store in versioned dir     │
-└────────┬────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────┐
-│     Reporting                           │
-├─────────────────────────────────────────┤
-│  - Show auto-filled fields              │
-│  - List manual fields required          │
-│  - Report changes from previous spec    │
-│  - Display validation results           │
-└─────────────────────────────────────────┘
-```
-
-### Default Value Strategy
-
-When information is unavailable, the system applies intelligent defaults:
-
-| Field | Default Value | Fallback Strategy |
-| ----- | ------------- | ----------------- |
-| `description` | Empty string | User must manually fill if GitHub unavailable |
-| `license` | Empty string | User must manually fill if not in repo |
-| `commit` | "unknown" | Critical field - warn user to update |
-| `website` | GitHub repo URL | Safe default using repo as homepage |
-| `sources` | GitHub archive URL | Standard pattern: `https://github.com/{owner}/{repo}/archive/{commit}.tar.gz` |
-| `build.steps` | Empty array | Extracted from Dockerfile or left for manual entry |
-| `targets` | Default target | Basic structure, customize per platform |
-
-### Versioned Output (Proposed)
-
-To track evolution of generated specs over time:
+## High-Level Flow
 
 ```bash
-output/
-├── latest.yml                    # Symlink to most recent
-├── azure-cns-20250102-084da35.yml   # Timestamped + commit hash
-├── azure-cns-20250101-072bef12.yml
-└── .metadata/
-    ├── changes.json              # Change log between versions
-    └── validation.json           # Validation results per version
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                             USER WORKFLOW                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  1. User runs CLI locally                                                   │
+│     └─► python app.py owner/repo[/branch/subdir]                            │
+│                                                                             │
+│  2. CLI builds JSON request                                                 │
+│     └─► POST /api/agent/process                                             │
+│                                                                             │
+│  3. Agent processes request                                                 │
+│     └─► Executes SKILL.md instructions                                      │
+│                                                                             │
+│  4. Output returned to user                                                 │
+│     └─► Completed spec file or error with guidance                          │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Benefits**:
+## Detailed Process
 
-- Version history for audit trail
-- Easy rollback to previous specs
-- Comparison between generations
-- Track which changes came from repo vs manual edits
+### Step 1: CLI Invocation
 
-## Command-Line Interface
-
-### Current Usage
+User runs the CLI command locally:
 
 ```bash
-# Required: repository (positional argument)
-dalec-mapping owner/repo
-
-# With optional Dockerfile
-dalec-mapping owner/repo -dockerfile path/to/Dockerfile
-
-# With previous spec for validation
-dalec-mapping owner/repo -spec previous-spec.yml
-
-# Full example with all options
-dalec-mapping Ryuki-997/HelloWorld \
-  -dockerfile custom/Dockerfile \
-  -spec previous/output.yml \
-  -output generated/new-spec.yml \
-  -v
+python app.py owner/repo/branch/subdir
 ```
 
-### Flags
+The CLI:
 
-- **Positional**: `repository` - GitHub repository in `owner/repo` format (REQUIRED)
-- `-dockerfile string` - Path to Dockerfile (default: "./Dockerfile")
-- `-spec string` - Path to previous spec file for validation and comparison
-- `-output string` - Output path for generated spec (default: "output.yml")
-- `-v` - Verbose mode for detailed logging
+- Parses the repository path
+- Builds a JSON request payload
+- Includes Azure AD token if available (managed identity or user token)
+- Calls the Agent HTTP endpoint: `POST /api/agent/process`
 
-## Future Roadmap
+### Step 2: Agent Function Authentication
 
-### 1. Spec Validation Tool
+The Azure Function authenticates the caller:
+
+1. **Token Validation**: Validate Azure AD bearer token if present
+2. **Identity Mapping**: Map caller to identity and permissions
+3. **Allowlist Enforcement**: Check caller and repo against allowlist
+4. **Access Denied**: Return `401/403` with instructions if unauthorized
+
+### Step 3: Repository Fetch
+
+Deterministic fetch of repository content:
+
+1. **Credential Retrieval**: Read GitHub credential from Key Vault via Managed Identity
+2. **API Request**: Authenticated `GET` to GitHub API for `owner/repo@ref:path`
+3. **Caching**: Use `If-None-Match` header if ETag is known
+4. **Success (200)**: Decode content and proceed to skill execution
+5. **Failure (404/unreachable)**: Trigger auth fallback
+
+### Step 4: Auth Fallback (When Repo Unreachable)
+
+Return structured response to CLI requesting authorization:
+
+#### Option A: Interactive OAuth
+
+```json
+{
+  "status": "auth_required",
+  "method": "oauth",
+  "auth_url": "https://auth.example.com/github/authorize?session=abc123",
+  "instructions": "Visit the URL to grant read access to the repository"
+}
+```
+
+- User completes GitHub OAuth flow
+- Function receives callback
+- Short-lived token stored in Key Vault for session
+
+After authorization, retry fetch and proceed.
+
+### Step 5: Skill Execution
+
+The agent executes the process defined in [`generator/skills/dalec-spec-generator/SKILL.md`](generator/skills/dalec-spec-generator/SKILL.md):
+
+- Skill file loaded as system prompt
+- Repository context provided as user input
+- Azure OpenAI processes the request
+- Step-by-step instructions followed to generate spec
+
+### Step 6: Executor Invocation
+
+For approved executions:
+
+1. **Upload**: Function uploads `skill.md` and inputs to Blob storage with short-lived SAS
+2. **Container Creation**: Create ephemeral container job (ACI or Container Apps)
+   - Use immutable image from ACR (referenced by digest)
+   - Pass sanitized `cli_args` and input locations
+3. **Execution**: Container runs Go CLI
+4. **Output**: Artifacts written to Blob, stdout/stderr and exit code returned
+
+### Step 7: Postprocess and Response
+
+Function collects results and responds to CLI:
+
+```json
+{
+  "status": "success",
+  "spec": "<generated DALEC spec content>",
+  "artifacts": {
+    "spec_url": "https://storage.blob.core.windows.net/specs/abc123.yaml",
+    "logs_url": "https://storage.blob.core.windows.net/logs/abc123.log"
+  },
+  "audit_id": "abc123"
+}
+```
+
+## Output Handling
+
+### Successful Generation
+
+- Completed spec file returned to user
+- Artifacts stored in audit store
+- Logs available for review
+
+### Issues Encountered
+
+If the spec file has problems or user wants modifications:
+
+1. **Review COMMANDS.md**: Check available commands for spec manipulation
+2. **Direct Modification**: Edit the spec file directly
+3. **Re-run Generation**: Invoke CLI again with adjusted parameters
+
+## Security Architecture
 
 ```bash
-# Validate spec file structure
-dalec-mapping validate spec.yml
-
-# Compare two spec files
-dalec-mapping diff old-spec.yml new-spec.yml
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          SECURITY LAYERS                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐   │
+│  │   Azure AD  │───►│  Key Vault  │───►│  GitHub API │───►│  Container  │   │
+│  │   Auth      │    │  Secrets    │    │  Auth       │    │  Isolation  │   │
+│  └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘   │
+│                                                                             │
+│  • Bearer token validation          • Managed Identity access               │
+│  • Caller allowlist                 • Short-lived SAS tokens                │
+│  • Repo allowlist                   • Immutable container images            │
+│  • TLS encryption                   • Ephemeral execution environment       │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Features**:
+## Components
 
-- Schema validation against Dalec spec requirements
-- Field completeness checks
-- Semantic validation (e.g., valid commit hashes, reachable URLs)
-- Drift detection from upstream repository
+| Component          | Description                           | Location                                         |
+| ------------------ | ------------------------------------- | ------------------------------------------------ |
+| CLI Adapter        | Local CLI for user interaction        | `adapter/app.py`                                 |
+| Agent Function     | Azure Function for request processing | Azure Functions                                  |
+| Skill Definition   | Agent instructions and process        | `generator/skills/dalec-spec-generator/SKILL.md` |
+| Commands Reference | Available spec manipulation commands  | `COMMANDS.md`                                    |
+| Key Vault          | Secure credential storage             | Azure Key Vault                                  |
+| Blob Storage       | Artifact and log storage              | Azure Blob Storage                               |
+| Container Registry | Immutable executor images             | Azure ACR                                        |
 
-#### 2. CLI Commands
+## Environment Variables
 
 ```bash
+# Azure OpenAI
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+AZURE_OPENAI_KEY=<your-key>
+AZURE_OPENAI_DEPLOYMENT=gpt-4
 
-# Update specific field
-dalec-mapping set spec.yml build.env.VERSION 2.0.0
+# GitHub (for private repos)
+GITHUB_TOKEN=<pat-or-oauth-token>
 
-# Add new source
-dalec-mapping add-source spec.yml mysource https://example.com/file.tar.gz
-
-# Remove field
-dalec-mapping unset spec.yml build.steps[2]
-
-# Bulk update from JSON
-dalec-mapping update spec.yml --patch changes.json
+# Azure Resources
+AZURE_KEYVAULT_URL=https://your-vault.vault.azure.net/
+AZURE_STORAGE_ACCOUNT=<storage-account-name>
+AZURE_ACR_NAME=<container-registry-name>
 ```
-
-#### 3. Programmatic API
-
-```go
-
-import "github.com/dalec-mapping/api"
-
-// Load spec
-spec, err := api.LoadSpec("spec.yml")
-
-// Modify using fluent API
-spec.Set("build.env.VERSION", "2.0.0").
-     AddSource("mysource", "https://example.com/file.tar.gz").
-     RemoveField("build.steps[2]")
-
-// Save with validation
-err = spec.Save("spec.yml")
-```
-
-- Automated spec updates in CI/CD pipelines
-- Scriptable modifications for bulk operations
-- Type-safe programmatic access
-- Validation at modification time
-
-### 4. Multi-Repository Support
-
-- GitLab integration
-- Bitbucket support
-- Generic Git repository handling (self-hosted)
-- Monorepo support (multiple Dockerfiles)
-
-### 5. Advanced Compliance Testing & Suggestions
-
-- Apply standard testing for compliance
-- Suggest dependencies based on Dockerfile analysis
-- Auto-detect test commands
-
-**Last Updated**: January 2, 2026  
-**Version**: 1.0  
-**Status**: Active Development

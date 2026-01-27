@@ -1,285 +1,68 @@
 # Dalec Spec Generator
 
-Converts Dockerfiles to Dalec specifications with automatic GitHub metadata integration, plus utilities to get and set spec values.
-
-## Features
-
-✅ **Parse Dockerfiles** using Docker Buildkit frontend
-✅ **Fetch GitHub metadata** automatically (commit, description, license)  
-✅ **Generate Dalec specs** with proper formatting
-✅ **Get/Set spec values** using dot notation for nested fields
-✅ **Flexible map-based IR** - solves all nested structure issues
-✅ **Subcommand CLI** for easy integration
+Generate Dalec specifications from GitHub repositories.
 
 ## Installation
 
 ```bash
-go build -o dalec-gen main.go
+go build -o spec main.go
 ```
 
-## Quick Start
+## Usage
 
-### Generate a Spec
+### Public Repository
 
 ```bash
-./dalec-gen generate -repo owner/repo
+./spec generate -repo owner/repo
 ```
 
-### Get a Value
+### Private Repository
 
 ```bash
-./dalec-gen get -field version
+./spec generate -repo owner/repo -auth YOUR_GITHUB_TOKEN
 ```
 
-### Set a Value
-
-```bash
-./dalec-gen set -field license -value MIT
-```
-
-## Commands
-
-The tool provides three main commands:
-
-- **`generate`** - Generate a new Dalec spec from a GitHub repository
-- **`get`** - Retrieve a field value from an existing spec file
-- **`set`** - Set a field value in an existing spec file
-
-Run `dalec-gen help` or `dalec-gen <command> -h` for detailed usage.
-
-### Generate Command
-
-```bash
-dalec-gen generate [options]
-
-Options:
-  -repo string
-        GitHub repository (required)
-        Examples: owner/repo, https://github.com/owner/repo
-        
-  -dockerfile string
-        Path to Dockerfile (optional)
-        
-  -spec string
-        Path to previous Dalec spec YAML file (default: "output.yml")
-        
-  -output string
-        Output YAML file path (default: "output.yml")
-        
-  -v    Verbose output (shows detailed parsing info)
-```
-
-### Get Command
-
-```bash
-dalec-gen get [options]
-
-Options:
-  -spec string
-        Path to Dalec spec YAML file (default: "output.yml")
-        
-  -field string
-        Field path to retrieve (required)
-        Use dot notation for nested fields (e.g., build.env.VERSION)
-```
-
-### Set Command
-
-```bash
-dalec-gen set [options]
-
-Options:
-  -spec string
-        Path to Dalec spec YAML file (default: "output.yml")
-        
-  -field string
-        Field path to set (required)
-        
-  -value string
-        Value to set (required)
-        
-  -output string
-        Output file path (default: overwrites input spec)
-```
+This generates a `output.yml` spec file ready to use.
 
 ## Examples
 
 ```bash
-# Generate a spec from GitHub
-./dalec-gen generate -repo microsoft/azure-cns
+# Generate spec from public repo
+./spec generate -repo microsoft/azure-cns
 
-# Generate with Dockerfile parsing
-./dalec-gen generate -repo owner/repo -dockerfile ./Dockerfile -output spec.yml
+# Generate spec from private repo
+./spec generate -repo myorg/private-repo -auth ghp_xxxxxxxxxxxx
 
-# Generate from specific branch
-./dalec-gen generate -repo https://github.com/owner/repo/tree/develop
-
-# Get field values
-./dalec-gen get -field name
-./dalec-gen get -field version
-./dalec-gen get -field build.env.CGO_ENABLED
-
-# Set field values
-./dalec-gen set -field version -value v2.0.0
-./dalec-gen set -field license -value Apache-2.0
-./dalec-gen set -field build.env.VERSION -value v2.0.0
-
-# Workflow: generate, check, and update
-./dalec-gen generate -repo owner/repo
-./dalec-gen get -field version
-./dalec-gen set -field version -value v2.1.0
+# Custom output file
+./spec generate -repo owner/repo -output myspec.yml
 ```
 
-## Documentation
+## Customizing Your Spec
 
-For comprehensive command reference and examples, see [COMMANDS.md](COMMANDS.md).
-
-# Custom Dockerfile and output
-./dalec-gen -repo owner/repo -dockerfile ./custom.Dockerfile -output spec.yml
-
-# Verbose mode
-./dalec-gen -repo owner/repo -v
-
-# Using full GitHub URL
-./dalec-gen -repo https://github.com/owner/repo
-```
-
-## What Gets Auto-Filled
-
-When you provide a GitHub repository, the tool automatically fetches:
-
-- ✅ **Git URL**: Source repository URL
-- ✅ **Commit**: Latest commit SHA from default branch  
-- ✅ **Website**: Repository homepage (or GitHub URL)
-- ✅ **Description**: Repository description
-- ✅ **License**: SPDX license identifier
-- ✅ **Package name**: Derived from repository name
-
-## Output
-
-The tool generates a complete Dalec spec YAML file with:
-
-- Build args (VERSION, COMMIT, etc.)
-- Source definitions with Git URLs
-- Dependencies (build and runtime)
-- Build steps from Dockerfile RUN commands
-- Artifacts (binaries, licenses)
-- Image configuration (entrypoint, symlinks)
-- Target-specific configs
-
-## Example Output
-
-```yaml
-# syntax=ghcr.io/azure/dalec/frontend:latest
-
-args:
-  COMMIT: 84da35fdaa6b73a8e48b11ca962378323052c2bb
-  VERSION: "0.1"
-  
-name: helloworld
-
-sources:
-  HelloWorld:
-    git:
-      url: https://github.com/Ryuki-997/HelloWorld
-      commit: ${COMMIT}
-    generate:
-      - gomod: {}
-      
-dependencies:
-  build:
-    msft-golang: {}
-    
-build:
-  env:
-    CGO_ENABLED: "1"
-    GOEXPERIMENT: systemcrypto
-  steps:
-    - command: |
-        go build -o bin/binary ./main.go
-        
-# ... more sections
-```
-
-## Architecture
-
-### Components
-
-1. **Parser** (`parser/`) - Uses Docker Buildkit to parse Dockerfiles
-2. **GitHub Client** (`github/`) - Fetches repository metadata from GitHub API
-3. **Transformer** (`transformer/`) - Converts parsed data to Dalec spec format
-4. **Writer** (`transformer/writer.go`) - Serializes to formatted YAML
-
-### Key Design
-
-Uses `map[string]interface{}` for flexible IR:
-- **Dynamic keys**: Handle repository names, dependency names as keys
-- **Easy nesting**: Path-based helpers like `Set("build.env.VERSION", value)`
-- **No rigid structs**: Add fields dynamically without code changes
-- **Auto-formatting**: YAML library handles all indentation
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design information.
-
-## Development
-
-### Project Structure
-
-```
-dalec-mapping/
-├── main.go                 # CLI entry point
-├── parser/
-│   └── parser.go          # Dockerfile parser (uses buildkit)
-├── github/
-│   ├── client.go          # GitHub API client
-│   └── helpers.go         # Helper functions
-├── transformer/
-│   ├── transformer.go     # Dockerfile → Dalec converter
-│   └── writer.go          # YAML serialization
-├── Dockerfile             # Example input
-├── tmp.yml                # Reference Dalec spec
-└── test.yml               # Generated output
-```
-
-### Running Tests
+After generation, you may need to modify the spec file. Use the built-in commands:
 
 ```bash
-# Test with example repo
-go run main.go -repo Ryuki-997/HelloWorld
+# Get a value
+./spec get -field version
 
-# Test with custom Dockerfile
-go run main.go -repo owner/repo -dockerfile ./path/to/Dockerfile
+# Set a value
+./spec set -field version -value v2.0.0
+./spec set -field license -value MIT
 ```
 
-## Limitations
+For detailed command options, see [COMMANDS.md](COMMANDS.md).
 
-- Requires GitHub repository for full metadata
-- Some complex Dockerfile features may need manual adjustments
-- ARG substitutions in Dockerfile are not evaluated
-- Multi-stage builds are simplified to primary builder stage
+For the full spec template and all available fields, refer to the [Dalec template](https://github.com/Azure/dalec-build-defs/blob/main/template.yml).
 
-## Manual Fields
+## What's Auto-Generated
 
-Some fields still require manual input:
-- Custom build arguments specific to your project
-- Additional dependencies not detectable from Dockerfile
-- Custom test configurations
-- License (if not in GitHub metadata)
-- Description (if not in GitHub metadata)
+The tool fetches from GitHub:
 
-## GitHub API Rate Limiting
-
-The tool uses unauthenticated GitHub API requests:
-- Rate limit: 60 requests/hour per IP
-- For higher limits, set `GITHUB_TOKEN` environment variable (future enhancement)
-
-## Contributing
-
-Improvements welcome! Key areas:
-- Support for more package managers (npm, pip, etc.)
-- Better dependency detection
-- Support for GitLab, Bitbucket, etc.
-- Authentication for higher API limits
+- Git URL and latest commit SHA
+- Repository description
+- License (SPDX identifier)
+- Package name (from repo name)
 
 ## License
 
-MIT
+Microsoft
