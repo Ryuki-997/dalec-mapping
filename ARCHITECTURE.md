@@ -92,28 +92,24 @@ The agent executes the process defined in [`generator/skills/dalec-spec-generato
 - Azure OpenAI processes the request
 - Step-by-step instructions followed to generate spec
 
-### Step 6: Executor Invocation
+### Step 6: Output Storage
 
-For approved executions:
+Generated spec file is stored in Azure Blob Storage:
 
-1. **Upload**: Function uploads `skill.md` and inputs to Blob storage with short-lived SAS
-2. **Container Creation**: Create ephemeral container job (ACI or Container Apps)
-   - Use immutable image from ACR (referenced by digest)
-   - Pass sanitized `cli_args` and input locations
-3. **Execution**: Container runs Go CLI
-4. **Output**: Artifacts written to Blob, stdout/stderr and exit code returned
+1. **Upload**: Function uploads generated spec to Blob storage
+2. **SAS Token**: Short-lived SAS URL generated for user download
+3. **Audit**: Metadata logged for tracking
 
-### Step 7: Postprocess and Response
+### Step 7: Response
 
-Function collects results and responds to CLI:
+Function responds to CLI:
 
 ```json
 {
   "status": "success",
   "spec": "<generated DALEC spec content>",
   "artifacts": {
-    "spec_url": "https://storage.blob.core.windows.net/specs/abc123.yaml",
-    "logs_url": "https://storage.blob.core.windows.net/logs/abc123.log"
+    "spec_url": "https://storage.blob.core.windows.net/specs/abc123.yaml"
   },
   "audit_id": "abc123"
 }
@@ -142,15 +138,14 @@ If the spec file has problems or user wants modifications:
 │                          SECURITY LAYERS                                    │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐   │
-│  │   Azure AD  │───►│  Key Vault  │───►│  GitHub API │───►│  Container  │   │
-│  │   Auth      │    │  Secrets    │    │  Auth       │    │  Isolation  │   │
-│  └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘   │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐                      │
+│  │   Azure AD  │───►│  Key Vault  │───►│  GitHub API │                      │
+│  │   Auth      │    │  Secrets    │    │  Auth       │                      │
+│  └─────────────┘    └─────────────┘    └─────────────┘                      │
 │                                                                             │
 │  • Bearer token validation          • Managed Identity access               │
 │  • Caller allowlist                 • Short-lived SAS tokens                │
-│  • Repo allowlist                   • Immutable container images            │
-│  • TLS encryption                   • Ephemeral execution environment       │
+│  • Repo allowlist                   • TLS encryption                        │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -164,8 +159,7 @@ If the spec file has problems or user wants modifications:
 | Skill Definition   | Agent instructions and process        | `generator/skills/dalec-spec-generator/SKILL.md` |
 | Commands Reference | Available spec manipulation commands  | `COMMANDS.md`                                    |
 | Key Vault          | Secure credential storage             | Azure Key Vault                                  |
-| Blob Storage       | Artifact and log storage              | Azure Blob Storage                               |
-| Container Registry | Immutable executor images             | Azure ACR                                        |
+| Blob Storage       | Artifact and output storage           | Azure Blob Storage                               |
 
 ## Environment Variables
 
@@ -181,5 +175,4 @@ GITHUB_TOKEN=<pat-or-oauth-token>
 # Azure Resources
 AZURE_KEYVAULT_URL=https://your-vault.vault.azure.net/
 AZURE_STORAGE_ACCOUNT=<storage-account-name>
-AZURE_ACR_NAME=<container-registry-name>
 ```
