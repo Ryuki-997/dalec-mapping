@@ -2,177 +2,262 @@
 
 ## Overview
 
-This document outlines the end-to-end process for generating DALEC spec files from GitHub repositories using a CLI-driven, serverless architecture on Azure.
+This document outlines the internal automated workflow for generating and maintaining DALEC spec files from onboarded partner repositories.
 
 ## High-Level Flow
 
 ```bash
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                             USER WORKFLOW                                   │
+│                        AUTOMATED DAILY WORKFLOW                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  1. User runs CLI locally                                                   │
-│     └─► python app.py owner/repo[/branch/subdir]                            │
+│  Every 24 hours, for each onboarded default.yml:                            │
 │                                                                             │
-│  2. CLI builds JSON request                                                 │
-│     └─► POST /api/agent/process                                             │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                   │
+│  │   Step 1:    │───►│   Step 2:    │───►│   Step 3:    │                   │
+│  │   Discover   │    │   Populate   │    │   Generate   │                   │
+│  └──────────────┘    └──────────────┘    └──────────────┘                   │
+│         │                   │                   │                           │
+│         ▼                   ▼                   ▼                           │
+│  Validate paths      LLM agent fills     Transform to                       │
+│  from default.yml    non-deterministic   final DALEC spec                   │
+│                      values                                                 │
 │                                                                             │
-│  3. Agent processes request                                                 │
-│     └─► Executes SKILL.md instructions                                      │
+│  ┌──────────────────────────────────────────────────────────────────┐       │
+│  │                    Optional: CVE Patching                        │       │
+│  └──────────────────────────────────────────────────────────────────┘       │
 │                                                                             │
-│  4. Output returned to user                                                 │
-│     └─► Completed spec file or error with guidance                          │
+│                              │                                              │
+│                              ▼                                              │
+│                   ┌──────────────────┐                                      │
+│                   │  Update spec in  │                                      │
+│                   │  private branch  │                                      │
+│                   └──────────────────┘                                      │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Detailed Process
+## Input: Onboarded Configuration
 
-### Step 1: CLI Invocation
+Each partner team has a `default.yml` in the private repository:
 
-User runs the CLI command locally:
+```yaml
+# definitions/<team-name>/default.yml
+repository: owner/repo/branch
 
-```bash
-python app.py owner/repo/branch/subdir
+dockerfiles:
+  - Dockerfile
+  - docker/Dockerfile.alpine
+
+makefiles:
+  - Makefile
+  - src/Makefile
 ```
 
-The CLI:
+Location: [azure-management-and-platforms/aks-dalec-build-defs](https://github.com/azure-management-and-platforms/aks-dalec-build-defs)
 
-- Parses the repository path
-- Builds a JSON request payload
-- Includes Azure AD token if available (managed identity or user token)
-- Calls the Agent HTTP endpoint: `POST /api/agent/process`
+---
 
-### Step 2: Agent Function Authentication
+## Step 1: Discover
 
-The Azure Function authenticates the caller:
+**Purpose**: Validate that paths specified in `default.yml` exist in the source repository.
 
-1. **Token Validation**: Validate Azure AD bearer token if present
-2. **Identity Mapping**: Map caller to identity and permissions
-3. **Allowlist Enforcement**: Check caller and repo against allowlist
-4. **Access Denied**: Return `401/403` with instructions if unauthorized
+### 1.1 Process
 
-### Step 3: Repository Fetch
+1. Read `default.yml` configuration
+2. Checkout the source repository at specified branch
+3. Verify each dockerfile and makefile path exists
+4. Collect file contents for next step
 
-Deterministic fetch of repository content:
+### 1.2 Input
 
-1. **Credential Retrieval**: Read GitHub credential from Key Vault via Managed Identity
-2. **API Request**: Authenticated `GET` to GitHub API for `owner/repo@ref:path`
-3. **Caching**: Use `If-None-Match` header if ETag is known
-4. **Success (200)**: Decode content and proceed to skill execution
-5. **Failure (404/unreachable)**: Trigger auth fallback
+```yaml
+repository: owner/repo/branch
+dockerfiles:
+  - Dockerfile
+makefiles:
+  - Makefile
+```
 
-### Step 4: Auth Fallback (When Repo Unreachable)
+### 1.3 Output
 
-Return structured response to CLI requesting authorization:
+```yaml
+# filepath.yml
+dockerfiles:
+  - Dockerfile
+makefiles:
+  - Makefile
+```
 
-#### Option A: Interactive OAuth
+### 1.4 Error Handling
+
+- If required paths are missing, log warning and proceed with available files
+- If repository is unreachable, retry with backoff authorization, then skip this cycle
+
+---
+
+## Step 2: Populate
+
+**Purpose**: Use an LLM agent to fill non-deterministic values in the DALEC spec structure.
+
+### 2.1 Process
+
+1. Load discovered dockerfile and makefile contents
+2. Provide the DALEC spec struct template to the agent
+3. Agent analyzes build files and populates:
+   - Package name and version
+   - Build dependencies
+   - Runtime dependencies
+   - Build commands
+   - Environment variables
+   - Labels and metadata
+
+### 2.2 Input
 
 ```json
 {
-  "status": "auth_required",
-  "method": "oauth",
-  "auth_url": "https://auth.example.com/github/authorize?session=abc123",
-  "instructions": "Visit the URL to grant read access to the repository"
+  "skill": "<SKILL.md content>",
+  "parameters": {
+    "dockerfiles": ["<content>"],
+    "makefiles": ["<content>"],
+    "spec_struct": "<DALEC spec template>"
+  }
 }
 ```
 
-- User completes GitHub OAuth flow
-- Function receives callback
-- Short-lived token stored in Key Vault for session
+### 2.3 Output
 
-After authorization, retry fetch and proceed.
-
-### Step 5: Skill Execution
-
-The agent executes the process defined in [`generator/skills/dalec-spec-generator/SKILL.md`](generator/skills/dalec-spec-generator/SKILL.md):
-
-- Skill file loaded as system prompt
-- Repository context provided as user input
-- Azure OpenAI processes the request
-- Step-by-step instructions followed to generate spec
-
-### Step 6: Output Storage
-
-Generated spec file is stored in Azure Blob Storage:
-
-1. **Upload**: Function uploads generated spec to Blob storage
-2. **SAS Token**: Short-lived SAS URL generated for user download
-3. **Audit**: Metadata logged for tracking
-
-### Step 7: Response
-
-Function responds to CLI:
-
-```json
-{
-  "status": "success",
-  "spec": "<generated DALEC spec content>",
-  "artifacts": {
-    "spec_url": "https://storage.blob.core.windows.net/specs/abc123.yaml"
-  },
-  "audit_id": "abc123"
-}
+```yaml
+# populated-values.yml
+name: package-name
+version: 1.2.3
+description: "Extracted from Dockerfile"
+dependencies:
+  build:
+    - gcc
+    - make
+  runtime:
+    - libc
+build:
+  commands:
+    - make build
+    - make install
 ```
 
-## Output Handling
+### Agent Skill
 
-### Successful Generation
+Located at: `generator/skills/non-deterministic-setup/SKILL.md`
 
-- Completed spec file returned to user
-- Artifacts stored in audit store
-- Logs available for review
+---
 
-### Issues Encountered
+## Step 3: Generate
 
-If the spec file has problems or user wants modifications:
+**Purpose**: Transform populated values into the final DALEC spec format.
 
-1. **Review COMMANDS.md**: Check available commands for spec manipulation
-2. **Direct Modification**: Edit the spec file directly
-3. **Re-run Generation**: Invoke CLI again with adjusted parameters
+### 3.1 Process
 
-## Security Architecture
+1. Load populated values from Step 2
+2. Apply generator transformer logic
+3. Validate generated spec against DALEC schema
+4. Output final spec file
+
+### 3.2 Transformer
+
+See: `generator/transformer/` for transformation logic
+
+### 3.3 Input
+
+```yaml
+# populated-values.yml
+name: package-name
+version: 1.2.3
+# ... populated fields
+```
+
+### 3.4 Output
+
+```yaml
+# final DALEC spec
+name: package-name
+version: 1.2.3
+targets:
+  mariner2:
+    image: mcr.microsoft.com/cbl-mariner/base/core:2.0
+dependencies:
+  build:
+    - gcc
+    - make
+  runtime:
+    - libc
+build:
+  steps:
+    - command: make build
+    - command: make install
+```
+
+---
+
+## Optional: CVE Patching
+
+**Purpose**: Apply security patches for known vulnerabilities.
+
+> ⚠️ Implementation not yet determined
+
+### Potential Process
+
+1. Scan generated spec for known vulnerable dependencies
+2. Query CVE database for applicable patches
+3. Inject patch steps into build process
+4. Update dependency versions where applicable
+
+---
+
+## Final Step: Update Private Repository
+
+**Purpose**: Commit the generated spec to the private branch.
+
+### Target Repository
+
+[azure-management-and-platforms/aks-dalec-build-defs](https://github.com/azure-management-and-platforms/aks-dalec-build-defs)
+
+---
+
+## Scheduling
+
+| Trigger    | Frequency | Description                          |
+| ---------- | --------- | ------------------------------------ |
+| Scheduled  | Every 24h | Process all onboarded `default.yml`  |
+| On-demand  | Manual    | Trigger for specific team/package    |
+
+---
+
+## Component Map
 
 ```bash
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                          SECURITY LAYERS                                    │
+│                            COMPONENTS                                       │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐                      │
-│  │   Azure AD  │───►│  Key Vault  │───►│  GitHub API │                      │
-│  │   Auth      │    │  Secrets    │    │  Auth       │                      │
-│  └─────────────┘    └─────────────┘    └─────────────┘                      │
+│  ┌─────────────────┐                                                        │
+│  │  Scheduler      │  Triggers daily workflow                               │
+│  └────────┬────────┘                                                        │
+│           │                                                                 │
+│           ▼                                                                 │
+│  ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐        │
+│  │  tool/          │     │  generator/     │     │  generator/     │        │
+│  │  discover.go    │────►│  skills/        │────►│  transformer/   │        │
+│  │                 │     │  SKILL.md       │     │                 │        │
+│  └─────────────────┘     └─────────────────┘     └─────────────────┘        │
 │                                                                             │
-│  • Bearer token validation          • Managed Identity access               │
-│  • Caller allowlist                 • Short-lived SAS tokens                │
-│  • Repo allowlist                   • TLS encryption                        │
+│  ┌─────────────────┐                                                        │
+│  │  Azure OpenAI   │  LLM for non-deterministic population                  │
+│  └─────────────────┘                                                        │
+│                                                                             │
+│  ┌─────────────────┐                                                        │
+│  │  GitHub API     │  Source repo access & spec commit                      │
+│  └─────────────────┘                                                        │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Components
-
-| Component          | Description                           | Location                                         |
-| ------------------ | ------------------------------------- | ------------------------------------------------ |
-| CLI Adapter        | Local CLI for user interaction        | `adapter/app.py`                                 |
-| Agent Function     | Azure Function for request processing | Azure Functions                                  |
-| Skill Definition   | Agent instructions and process        | `generator/skills/dalec-spec-generator/SKILL.md` |
-| Commands Reference | Available spec manipulation commands  | `COMMANDS.md`                                    |
-| Key Vault          | Secure credential storage             | Azure Key Vault                                  |
-| Blob Storage       | Artifact and output storage           | Azure Blob Storage                               |
-
-## Environment Variables
-
-```bash
-# Azure OpenAI
-AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
-AZURE_OPENAI_KEY=<your-key>
-AZURE_OPENAI_DEPLOYMENT=gpt-4
-
-# GitHub (for private repos)
-GITHUB_TOKEN=<pat-or-oauth-token>
-
-# Azure Resources
-AZURE_KEYVAULT_URL=https://your-vault.vault.azure.net/
-AZURE_STORAGE_ACCOUNT=<storage-account-name>
-```
+---
