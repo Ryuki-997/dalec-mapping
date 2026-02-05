@@ -14,10 +14,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const resultBaseDir = "result"
+var resultBaseDir = filepath.Join("..", "result")
 
 func main() {
 	cliOptions := cli.DefineFlags()
+	github.Init()
 
 	fmt.Println("🚀 Dalec Spec Generator")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -36,12 +37,18 @@ func main() {
 }
 
 func getResultDir(repoPath string) string {
+	// Remove protocol prefix if present
+	repoPath = strings.TrimPrefix(repoPath, "https://")
+	repoPath = strings.TrimPrefix(repoPath, "http://")
+	repoPath = strings.TrimPrefix(repoPath, "github.com/")
+
 	// Parse repo path to extract repo name and subdirectory
 	parts := strings.Split(repoPath, "/")
 	if len(parts) < 2 {
 		return filepath.Join(resultBaseDir, "unknown")
 	}
 
+	// parts[0] = owner, parts[1] = repo
 	repo := parts[1]
 
 	// Check for subdirectory (e.g., owner/repo/tree/branch/subdir)
@@ -53,7 +60,10 @@ func getResultDir(repoPath string) string {
 		}
 	}
 
-	return filepath.Join(resultBaseDir, repo)
+	path := filepath.Join(resultBaseDir, repo)
+	fmt.Printf("Result directory: %s\n", path)
+
+	return path
 }
 
 func runDiscoverMode(cliOptions cli.CLIOptions, resultDir string) {
@@ -78,6 +88,8 @@ func runDiscoverMode(cliOptions cli.CLIOptions, resultDir string) {
 		fmt.Printf("❌ Error discovering build files: %v\n", err)
 		os.Exit(1)
 	}
+
+	fmt.Printf("path result: %+v\n", pathResult)
 
 	// Write filepath.yml to result directory
 	crawler := &github.GitHubCrawler{}
@@ -283,14 +295,18 @@ func fetchPreviousYAMLInfo(filepath string) (transformer.PreviousDalecSpec, erro
 
 func writeOutput(dalecSpec transformer.DalecSpec, cliOptions cli.CLIOptions) error {
 	writer := &transformer.DalecSpecWriter{}
-	yamlContent, err := writer.WriteYAML(dalecSpec, cliOptions.OutputPath)
+
+	repoName := strings.Split(cliOptions.RepoPath, "/")[1]+"/output.yml"
+	outputPath := filepath.Join("..", "result", repoName)
+
+	yamlContent, err := writer.WriteYAML(dalecSpec, outputPath)
 	if err != nil {
 		return fmt.Errorf("❌ Error generating YAML: %v\n", err)
 	}
 
-	err = os.WriteFile(cliOptions.OutputPath, []byte(yamlContent), 0644)
+	err = os.WriteFile(outputPath, []byte(yamlContent), 0644)
 	if err != nil {
-		return fmt.Errorf("❌ Error writing %s: %v\n", cliOptions.OutputPath, err)
+		return fmt.Errorf("❌ Error writing %s: %v\n", outputPath, err)
 	}
 
 	return nil

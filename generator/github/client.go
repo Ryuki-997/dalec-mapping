@@ -2,8 +2,14 @@ package github
 
 import (
 	"fmt"
+	"os"
 	"strings"
 )
+
+// githubToken holds the authentication token for API requests
+var githubToken string
+
+
 
 type SourceGenerator string
 
@@ -24,6 +30,14 @@ type RepoInfo struct {
 	License      string
 	LatestCommit string
 	Generator    SourceGenerator
+}
+
+func Init() {
+	// Try to load token from environment
+	githubToken = os.Getenv("GITHUB_TOKEN")
+	if githubToken == "" {
+		githubToken = os.Getenv("GH_TOKEN")
+	}
 }
 
 // FetchRepoInfo fetches repository metadata from GitHub API

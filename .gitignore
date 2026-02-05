@@ -1,6 +1,7 @@
-.venv
 .env
+.vscode
 
-generator/result
+result/
+onboard.yml
 
 TODO.md

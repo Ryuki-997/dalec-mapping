@@ -5,82 +5,83 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
-// HELPER FUNCTIONS
+const OnboardFilePath = "onboard.yml"
+
+type OnboardingInfo struct {
+	Repository string `yaml:"repository"`
+}
+
+// ParseOnboardFile reads and parses the onboard.yml file
+func ParseOnboardFile(path string, info *OnboardingInfo) error {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to read onboard file %s: %w", path, err)
+	}
+
+	if err := yaml.Unmarshal(content, info); err != nil {
+		return fmt.Errorf("failed to parse onboard file: %w", err)
+	}
+
+	if info.Repository == "" {
+		return fmt.Errorf("repository field is empty in onboard file")
+	}
+
+	return nil
+}
 
 // getGeneratorPath returns the absolute path to the generator directory
 func getGeneratorPath() (string, error) {
-	// Try relative path first
-	if _, err := os.Stat(GeneratorDir); err == nil {
-		absPath, _ := filepath.Abs(GeneratorDir)
-		return absPath, nil
-	}
-
-	// Try from current working directory
-	wd, err := os.Getwd()
+	// Get current working directory
+	cwd, err := os.Getwd()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to get working directory: %w", err)
 	}
 
-	genPath := filepath.Join(wd, GeneratorDir)
-	if _, err := os.Stat(genPath); err == nil {
-		return genPath, nil
-	}
-
-	// Try parent directory (in case running from subdirectory)
-	parentGen := filepath.Join(wd, "..", GeneratorDir)
-	if _, err := os.Stat(parentGen); err == nil {
-		absPath, _ := filepath.Abs(parentGen)
+	// Try relative to cwd
+	generatorPath := filepath.Join(cwd, "generator")
+	if info, err := os.Stat(generatorPath); err == nil && info.IsDir() {
+		absPath, _ := filepath.Abs(generatorPath)
 		return absPath, nil
 	}
 
-	return "", fmt.Errorf("generator directory not found (tried: %s, %s, %s)",
-		GeneratorDir, genPath, parentGen)
+	// Try if we're already in the generator directory
+	if info, err := os.Stat(filepath.Join(cwd, "main.go")); err == nil && !info.IsDir() {
+		// Check if this looks like the generator directory
+		if _, err := os.Stat(filepath.Join(cwd, "cli")); err == nil {
+			absPath, _ := filepath.Abs(cwd)
+			return absPath, nil
+		}
+	}
+
+	// Try parent directory
+	parentPath := filepath.Join(cwd, "..", "generator")
+	if info, err := os.Stat(parentPath); err == nil && info.IsDir() {
+		absPath, _ := filepath.Abs(parentPath)
+		return absPath, nil
+	}
+
+	return "", fmt.Errorf("generator directory not found (cwd: %s)", cwd)
 }
 
-// extractRepoName extracts the repo name from owner/repo format
+// extractRepoName extracts the repository name from a GitHub URL or path
 func extractRepoName(repo string) string {
+	// Remove protocol and domain
+	repo = strings.TrimSuffix(repo, ".git")
+	repo = strings.TrimPrefix(repo, "https://")
+	repo = strings.TrimPrefix(repo, "http://")
+	repo = strings.TrimPrefix(repo, "github.com/")
+
+	// Split by / and get repo name (owner/repo -> repo)
 	parts := strings.Split(repo, "/")
 	if len(parts) >= 2 {
-		return parts[1]
+		return parts[1] // Return repo name (second part after owner)
+	}
+	if len(parts) == 1 {
+		return parts[0]
 	}
 	return repo
-}
-
-// parseFilepathYmlArrays parses filepath.yml and returns arrays of full paths
-func parseFilepathYmlArrays(content string, resultPath string) (dockerfiles, makefiles []string) {
-	lines := strings.Split(content, "\n")
-	inDockerfiles := false
-	inMakefiles := false
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-
-		if trimmed == "dockerfiles:" {
-			inDockerfiles = true
-			inMakefiles = false
-			continue
-		}
-		if trimmed == "makefiles:" {
-			inDockerfiles = false
-			inMakefiles = true
-			continue
-		}
-
-		if strings.HasPrefix(trimmed, "- ") {
-			path := strings.TrimPrefix(trimmed, "- ")
-			// Remove quotes if present
-			path = strings.Trim(path, "\"'")
-			fullPath := filepath.Join(resultPath, path)
-			if inDockerfiles {
-				dockerfiles = append(dockerfiles, fullPath)
-			}
-			if inMakefiles {
-				makefiles = append(makefiles, fullPath)
-			}
-		}
-	}
-
-	return dockerfiles, makefiles
 }
