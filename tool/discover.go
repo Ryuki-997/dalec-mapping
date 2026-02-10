@@ -1,54 +1,62 @@
 package tool
 
 import (
-	"context"
 	"fmt"
-	"log"
 	"os"
-	"os/exec"
-	"path/filepath"
+
+	"dalec-mapping/github"
+	"dalec-mapping/global"
 )
 
-type FilePathResult struct {
-	Dockerfiles []string `yaml:"dockerfiles"`
-	Makefiles   []string `yaml:"makefiles"`
-}
-
 // Discover runs the discovery step to find all Dockerfiles and Makefiles
-func Discover(ctx context.Context, repo string) (string, error) {
-	log.Printf("Running discovery for repo: %s", repo)
+func Discover(onboard *global.OnboardingInfo, fileContents *global.InstructionContents) error {
+	fmt.Println("=== DISCOVER MODE ===")
 
-	generatorPath, err := getGeneratorPath()
-	if err != nil {
-		return "", fmt.Errorf("failed to find generator directory: %w", err)
+	// Clear result directory for fresh start
+	if err := github.ClearResultDirectory(global.ResultDir) ; err != nil {
+		fmt.Printf("⚠️  Warning: %v\n", err)
 	}
 
-	log.Printf("Generator path: %s", generatorPath)
+	// // Parse repo info (just need owner, repo, branch)
+	// repoInfo, err := fetchGitHubRepoInfo(onboard.Repository, onboard.Tag)
+	// if err != nil {
+	// 	fmt.Printf("❌ Error fetching repository info: %v\n", err)
+	// 	os.Exit(1)
+	// }
 
-	// Run the generator CLI in discover mode
-	cmd := exec.CommandContext(ctx, "go", "run", ".", "-repo", repo, "--discover")
-	cmd.Dir = generatorPath
-	cmd.Env = append(os.Environ(), "GITHUB_TOKEN="+os.Getenv("GITHUB_TOKEN"))
+	// Run DFS to find all Dockerfiles and Makefiles if not provided in onboarding info
+	root := onboard.Repository
+	
 
-	log.Printf("Running command: go run . -repo %s --discover (in %s)", repo, generatorPath)
-
-	err = cmd.Run()
+	err := github.FindFiles(root, fileContents)
 	if err != nil {
-		return "", fmt.Errorf("discovery failed: %w", err)
+		fmt.Printf("❌ Error discovering build files: %v\n", err)
+		os.Exit(1)
 	}
 
-	// Read the generated filepath.yml
-	repoName := extractRepoName(repo)
-	resultPath := filepath.Join(generatorPath, "..", "result", repoName)
-	filepathYml := filepath.Join(resultPath, "filepath.yml")
-
-	log.Printf("Looking for filepath.yml at: %s", filepathYml)
-
-	content, err := os.ReadFile(filepathYml)
-	if err != nil {
-		return "", fmt.Errorf("failed to read filepath.yml at %s: %w", filepathYml, err)
-	}
-
-	return string(content), nil
+	return nil
 }
 
+func fetchGitHubRepoInfo(repoPath, tag string) (*global.RepoInfo, error) {
+	// Fetch GitHub repository information
+	fmt.Println("=== FETCHING GITHUB METADATA ===")
+	repoInfo, err := github.FetchRepoInfo(repoPath)
+	if err != nil {
+		fmt.Printf("❌ Error fetching repository info: %v\n", err)
+		return nil, err
+	}
+
+	// If tag is specified, fetch that tag's commit SHA
+	if tag != "" {
+		fmt.Printf("Fetching tag: %s\n", tag)
+		err = github.FetchTagInfo(repoInfo, tag)
+		if err != nil {
+			fmt.Printf("❌ Error fetching tag info: %v\n", err)
+			return nil, err
+		}
+	}
+
+	github.PrintRepoInfo(repoInfo)
+
+	return repoInfo, nil
+}

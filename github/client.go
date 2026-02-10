@@ -2,54 +2,18 @@ package github
 
 import (
 	"fmt"
-	"os"
 	"strings"
+
+	"dalec-mapping/global"
 )
-
-// githubToken holds the authentication token for API requests
-var githubToken string
-
-
-
-type SourceGenerator string
-
-const (
-	GoModGenerator     SourceGenerator = "gomod"
-	CargoHomeGenerator SourceGenerator = "cargohome"
-	PipGenerator       SourceGenerator = "pip"
-)
-
-// RepoInfo contains metadata about a GitHub repository
-type RepoInfo struct {
-	Owner        string
-	Repo         string
-	Branch       string
-	GitURL       string
-	Description  string
-	Version      string
-	License      string
-	LatestCommit string
-	Generator    SourceGenerator
-}
-
-func Init() {
-	// Try to load token from environment
-	githubToken = os.Getenv("GITHUB_TOKEN")
-	if githubToken == "" {
-		githubToken = os.Getenv("GH_TOKEN")
-	}
-}
 
 // FetchRepoInfo fetches repository metadata from GitHub API
-func FetchRepoInfo(repoPath string) (*RepoInfo, error) {
-	owner, repo, branch, err := parseRepoPath(repoPath)
-	if err != nil {
-		return nil, err
-	}
+func FetchRepoInfo(repoPath string) (*global.RepoInfo, error) {
+	owner, repo, branch, _ := global.ExtractRepositorySegments(repoPath)
 
 	fmt.Printf("Parsed - Owner: %s, Repo: %s, Branch: %s\n", owner, repo, branch)
 
-	info := &RepoInfo{
+	info := &global.RepoInfo{
 		Owner:  owner,
 		Repo:   repo,
 		Branch: branch,
@@ -74,48 +38,11 @@ func FetchRepoInfo(repoPath string) (*RepoInfo, error) {
 	return info, nil
 }
 
-// parseRepoPath extracts owner and repo from various formats
-// Supports:
-// - "owner/repo"
-// - "https://github.com/owner/repo"
-// - "github.com/owner/repo/tree/branch"
-// - "github.com/owner/repo/tree/branch/subdirectory/path"
-func parseRepoPath(path string) (owner, repo, branch string, err error) {
-	// Remove trailing slash
-	path = strings.TrimSuffix(path, "/")
-
-	// Remove protocol if present
-	path = strings.TrimPrefix(path, "https://")
-	path = strings.TrimPrefix(path, "http://")
-	path = strings.TrimPrefix(path, "github.com/")
-
-	// Split by /
-	parts := strings.SplitN(path, "/", 4)
-	n := len(parts)
-
-	if n < 2 {
-		return "", "", "", fmt.Errorf("invalid repository path: %s (expected format: owner/repo)", path)
-	}
-
-	owner, repo = parts[0], parts[1]
-
-	// Check if there's a branch specification
-	if n >= 4 && parts[2] == "tree" {
-		branch = parts[3]
-	} else if n == 2 {
-		branch = "" // Will be fetched from API
-	} else {
-		return "", "", "", fmt.Errorf("invalid repository path: %s (expected format: owner/repo or owner/repo/tree/branch)", path)
-	}
-
-	return owner, repo, branch, nil
-}
-
 // Acquire default metadata
-func fetchRepoMetadata(info *RepoInfo) error {
+func fetchRepoMetadata(info *global.RepoInfo) error {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s", info.Owner, info.Repo)
 
-	data, err := makeGitHubMapRequest(url)
+	data, err := global.MakeGitHubRequest[map[string]interface{}](url)
 	if err != nil {
 		return err
 	}
@@ -151,10 +78,10 @@ func fetchRepoMetadata(info *RepoInfo) error {
 }
 
 // Acquire release metadata
-func fetchReleaseMetadata(info *RepoInfo) error {
+func fetchReleaseMetadata(info *global.RepoInfo) error {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", info.Owner, info.Repo)
 
-	data, err := makeGitHubMapRequest(url)
+	data, err := global.MakeGitHubRequest[map[string]interface{}](url)
 	if err != nil {
 		return err
 	}
@@ -173,7 +100,7 @@ func fetchReleaseMetadata(info *RepoInfo) error {
 
 	// Fetch the commit SHA for this release tag
 	url = fmt.Sprintf("https://api.github.com/repos/%s/%s/commits/%s", info.Owner, info.Repo, tag)
-	data, err = makeGitHubMapRequest(url)
+	data, err = global.MakeGitHubRequest[map[string]interface{}](url)
 	if err != nil {
 		return err
 	}
@@ -185,7 +112,7 @@ func fetchReleaseMetadata(info *RepoInfo) error {
 	return nil
 }
 
-func fetchSourceGenerator(info *RepoInfo) error {
+func fetchSourceGenerator(info *global.RepoInfo) error {
 	// Check if branch contains a subdirectory path (e.g., "master/addon-resizer")
 	subdir := ""
 	if strings.Contains(info.Branch, "/") {
@@ -210,7 +137,7 @@ func fetchSourceGenerator(info *RepoInfo) error {
 	cargoFile := map[string]bool{"Cargo.toml": true, "Cargo.lock": true}
 	pipFile := map[string]bool{"requirements.txt": true, "setup.py": true, "Pipfile": true}
 
-	data, err := makeGitHubArrayRequest(url)
+	data, err := global.MakeGitHubRequest[[]interface{}](url)
 	if err != nil {
 		return err
 	}
@@ -230,23 +157,23 @@ func fetchSourceGenerator(info *RepoInfo) error {
 
 		// Check for Go files
 		if goFile[name] {
-			info.Generator = GoModGenerator
+			info.Generator = global.GoModGenerator
 			return nil
 		}
 
 		// Check for Go directories (Godeps, vendor)
 		if itemType == "dir" && goDir[name] {
-			info.Generator = GoModGenerator
+			info.Generator = global.GoModGenerator
 			return nil
 		}
 
 		if cargoFile[name] {
-			info.Generator = CargoHomeGenerator
+			info.Generator = global.CargoHomeGenerator
 			return nil
 		}
 
 		if pipFile[name] {
-			info.Generator = PipGenerator
+			info.Generator = global.PipGenerator
 			return nil
 		}
 	}
@@ -259,11 +186,11 @@ func fetchSourceGenerator(info *RepoInfo) error {
 }
 
 // FetchTagInfo fetches commit SHA for a specific tag
-func FetchTagInfo(info *RepoInfo, tag string) error {
+func FetchTagInfo(info *global.RepoInfo, tag string) error {
 	// Try fetching tag as a release first
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/ref/tags/%s", info.Owner, info.Repo, tag)
 
-	data, err := makeGitHubMapRequest(url)
+	data, err := global.MakeGitHubRequest[map[string]interface{}](url)
 	if err != nil {
 		return err
 	}
@@ -281,7 +208,7 @@ func FetchTagInfo(info *RepoInfo, tag string) error {
 }
 
 // PrintRepoInfo displays repository information
-func PrintRepoInfo(info *RepoInfo) {
+func PrintRepoInfo(info *global.RepoInfo) {
 	fmt.Println("📦 Repository Information")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Printf("  Owner: %s\n", info.Owner)

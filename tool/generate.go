@@ -1,41 +1,54 @@
 package tool
 
 import (
-	"context"
 	"fmt"
-	"log"
 	"os"
-	"os/exec"
-	"path/filepath"
+
+	"dalec-mapping/global"
+	"dalec-mapping/parser"
+	"dalec-mapping/transformer"
 )
 
 // Generate runs the generation step to create dalec specs
-func Generate(ctx context.Context, repo string) (string, error) {
-	log.Printf("Running generation for repo: %s", repo)
+func Generate(onboard *global.OnboardingInfo, fileContents *global.InstructionContents, agentResponse []byte) error {
+	fmt.Println("=== GENERATE MODE ===")
 
-	generatorPath, err := getGeneratorPath()
+	// Fetch GitHub repository info
+	repoInfo, err := fetchGitHubRepoInfo(onboard.Repository, onboard.Tag)
 	if err != nil {
-		return "", fmt.Errorf("failed to find generator directory: %w", err)
+		fmt.Printf("❌ Error fetching repository info: %v\n", err)
+		os.Exit(1)
 	}
 
-	// Run the generator CLI in generate mode
-	cmd := exec.CommandContext(ctx, "go", "run", "main.go", "-repo", repo)
-	cmd.Dir = generatorPath
-	cmd.Env = append(os.Environ(), "GITHUB_TOKEN="+os.Getenv("GITHUB_TOKEN"))
+	specFilePath := fmt.Sprintf("%s/spec.yaml", global.ResultDir)
 
-	output, err := cmd.CombinedOutput()
+	// Parse Dockerfile if path provided
+	dockerfileInfo, makefileInfo, nonDeterministicInfo, previousDalecSpecInfo, err := parser.ParseOptionalFileInfo(fileContents.Dockerfiles, fileContents.Makefiles, specFilePath, agentResponse)
 	if err != nil {
-		return "", fmt.Errorf("generation failed: %w\nOutput: %s", err, string(output))
+		fmt.Printf("❌ Error parsing optional files: %v\n", err)
+		os.Exit(1)
 	}
 
-	// Read the generated dalec spec
-	repoName := extractRepoName(repo)
-	resultPath := filepath.Join(generatorPath, "..", "result", repoName)
-	specYml := filepath.Join(resultPath, "output.yml")
-	content, err := os.ReadFile(specYml)
+	// Transform to Dalec spec with repository metadata
+	fmt.Println("=== TRANSFORMING TO DALEC SPEC ===")
+
+	defaultSpec := transformer.InitDefaultSpec(repoInfo, &dockerfileInfo, previousDalecSpecInfo)
+
+	fmt.Println("=== DOCKER FILE INFO ===")
+	transformer.PrintDockerfileInfo(defaultSpec)
+
+	dalecSpec := transformer.TransformToDalec(defaultSpec, &makefileInfo, nonDeterministicInfo)
+
+	// Write to output file
+	fmt.Println("=== WRITING OUTPUT YAML FILE ===")
+
+	err = parser.WriteOutput(dalecSpec)
 	if err != nil {
-		return "", fmt.Errorf("failed to read output.yml: %w", err)
+		fmt.Printf("❌ Error writing output YAML file: %v\n", err)
+		os.Exit(1)
 	}
 
-	return string(content), nil
+	fmt.Printf("✅ Successfully generated %s\n\n", global.ResultDir)
+
+	return nil
 }

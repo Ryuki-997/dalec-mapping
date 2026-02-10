@@ -6,9 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"dalec/cli"
-	"dalec/github"
-	"dalec/parser"
+	"dalec-mapping/global"
 )
 
 // DalecSpec represents a Dalec specification using flexible maps for dynamic keys
@@ -16,14 +14,14 @@ type DalecSpec map[string]interface{}
 
 // DefaultSpec combines GitHub repo info, parsed Dockerfile info, and Makefile info
 type DefaultSpec struct {
-	github.RepoInfo
-	parser.DockerfileInfo
+	global.RepoInfo
+	global.DockerfileInfo
 
 	Revision     int
-	BuildTargets []cli.BuildTarget
+	BuildTargets []global.BuildTarget
 }
 
-func InitDefaultSpec(repoInfo *github.RepoInfo, dockerfileInfo *parser.DockerfileInfo, previousDalecSpecInfo PreviousDalecSpec) *DefaultSpec {
+func InitDefaultSpec(repoInfo *global.RepoInfo, dockerfileInfo *global.DockerfileInfo, previousDalecSpecInfo PreviousDalecSpec) *DefaultSpec {
 	defaultSpec := &DefaultSpec{}
 	defaultSpec.RepoInfo = *repoInfo
 
@@ -37,17 +35,17 @@ func InitDefaultSpec(repoInfo *github.RepoInfo, dockerfileInfo *parser.Dockerfil
 		defaultSpec.Revision = previousDalecSpecInfo.Args.Revision + 1
 	}
 
-	defaultSpec.BuildTargets = []cli.BuildTarget{
-		cli.AzLinux3Container, // Primary container image target
-		cli.AzLinux3Rpm,       // RPM package target
-		cli.NobleDeb,          // Ubuntu/Debian package target
+	defaultSpec.BuildTargets = []global.BuildTarget{
+		global.AzLinux3Container, // Primary container image target
+		global.AzLinux3Rpm,       // RPM package target
+		global.NobleDeb,          // Ubuntu/Debian package target
 	}
 
 	return defaultSpec
 }
 
 // TransformToDalec converts parsed Dockerfile info to Dalec spec format
-func TransformToDalec(defaultSpec *DefaultSpec, makefileInfo *parser.MakefileInfo, nonDeterministicValues *parser.NonDeterministicValues) DalecSpec {
+func TransformToDalec(defaultSpec *DefaultSpec, makefileInfo *global.MakefileInfo, nonDeterministicValues *global.NonDeterministicValues) DalecSpec {
 	spec := make(DalecSpec)
 
 	// Add syntax header (special comment format)
@@ -62,7 +60,7 @@ func TransformToDalec(defaultSpec *DefaultSpec, makefileInfo *parser.MakefileInf
 
 	// Transform Dockerfile content to Dalec sections
 	spec["sources"] = extractSources(defaultSpec)
-	spec["dependencies"] = extractDependencies(defaultSpec, nonDeterministicValues)
+	spec["dependencies"] = extractDependencies(nonDeterministicValues)
 	spec["targets"] = extractTargets(defaultSpec)
 	buildSection := extractBuildSection(defaultSpec, nonDeterministicValues)
 	spec["build"] = buildSection
@@ -174,7 +172,7 @@ func extractTargets(defaultSpec *DefaultSpec) map[string]interface{} {
 }
 
 // extractArtifacts identifies build artifacts (uses nonDeterministicValues if available)
-func extractArtifacts(defaultSpec *DefaultSpec, nonDeterministicValues *parser.NonDeterministicValues) map[string]interface{} {
+func extractArtifacts(defaultSpec *DefaultSpec, nonDeterministicValues *global.NonDeterministicValues) map[string]interface{} {
 	artifacts := make(map[string]interface{})
 	binaries := make(map[string]interface{})
 
@@ -197,7 +195,7 @@ func extractArtifacts(defaultSpec *DefaultSpec, nonDeterministicValues *parser.N
 }
 
 // extractImageConfig extracts final image configuration (uses nonDeterministicValues if available)
-func extractImageConfig(defaultSpec *DefaultSpec, nonDeterministicValues *parser.NonDeterministicValues) map[string]interface{} {
+func extractImageConfig(defaultSpec *DefaultSpec, nonDeterministicValues *global.NonDeterministicValues) map[string]interface{} {
 	image := make(map[string]interface{})
 
 	var entrypoint string
@@ -229,7 +227,7 @@ func extractImageConfig(defaultSpec *DefaultSpec, nonDeterministicValues *parser
 }
 
 // createSymlinks creates symlink configuration for binaries
-func createSymlinks(stage *parser.Stage) map[string]interface{} {
+func createSymlinks(stage *global.Stage) map[string]interface{} {
 	post := make(map[string]interface{})
 	symlinks := make(map[string]interface{})
 
@@ -264,7 +262,7 @@ func createSymlinks(stage *parser.Stage) map[string]interface{} {
 }
 
 // appendTests creates test specifications
-func appendTests(defaultSpec *DefaultSpec, nonDeterministicValues *parser.NonDeterministicValues) []map[string]interface{} {
+func appendTests(defaultSpec *DefaultSpec, nonDeterministicValues *global.NonDeterministicValues) []map[string]interface{} {
 	tests := make([]map[string]interface{}, 0)
 
 	// Use binary name from NonDeterministicValues if available, otherwise fall back to repo name

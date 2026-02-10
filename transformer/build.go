@@ -1,12 +1,13 @@
 package transformer
 
 import (
-	"dalec/parser"
 	"fmt"
+
+	"dalec-mapping/global"
 )
 
 // extractBuildSteps converts RUN commands to Dalec build steps (uses nonDeterministicValues if available)
-func extractBuildSection(defaultSpec *DefaultSpec, nonDeterministicValues *parser.NonDeterministicValues) map[string]interface{} {
+func extractBuildSection(defaultSpec *DefaultSpec, nonDeterministicValues *global.NonDeterministicValues) map[string]interface{} {
 	build := make(map[string]interface{})
 	env := make(map[string]interface{})
 
@@ -71,7 +72,7 @@ func extractBuildSection(defaultSpec *DefaultSpec, nonDeterministicValues *parse
 	return build
 }
 
-func extractBuildSteps(nonDeterministicValues *parser.NonDeterministicValues) string {
+func extractBuildSteps(nonDeterministicValues *global.NonDeterministicValues) string {
 	command := ""
 
 	if nonDeterministicValues == nil {

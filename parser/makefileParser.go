@@ -2,26 +2,19 @@ package parser
 
 import (
 	"bufio"
+	"dalec-mapping/global"
 	"os"
 	"strings"
 )
 
-type MakefileInfo struct {
-	Variables map[string]string
-	Targets   map[string][]string
-}
 
-func ParseMakefile(filepath string) (*MakefileInfo, error) {
+
+func ParseMakefile(filepath string, info *global.MakefileInfo) (*global.MakefileInfo, error) {
 	file, err := os.Open(filepath)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
-
-	info := &MakefileInfo{
-		Variables: make(map[string]string),
-		// Some other fields in the future
-	}
 
 	scanner := bufio.NewScanner(file)
 
@@ -39,7 +32,7 @@ func ParseMakefile(filepath string) (*MakefileInfo, error) {
 	return info, nil
 }
 
-func parseVariable(line string, info *MakefileInfo) {
+func parseVariable(line string, info *global.MakefileInfo) {
 	var key, value string
 
 	if index := strings.Index(line, "="); index != -1 {
@@ -59,7 +52,7 @@ func parseVariable(line string, info *MakefileInfo) {
 	}
 }
 
-func GetVariable(info *MakefileInfo, key string) (string, bool) {
+func GetVariable(info *global.MakefileInfo, key string) (string, bool) {
 	value, exists := info.Variables[key]
 	return value, exists
 }

@@ -1,25 +1,19 @@
 package main
 
 import (
-	"azure-spec-generation/tool"
 	"context"
-	"fmt"
 	"log"
 	"os"
 	"time"
 
 	"github.com/joho/godotenv"
+
+	"dalec-mapping/global"
+	"dalec-mapping/tool"
 )
 
-type Config struct {
-	Repo                  string
-	GitHubToken           string
-	AzureOpenAIEndpoint   string
-	AzureOpenAIKey        string
-	AzureOpenAIDeployment string
-}
-
 func main() {
+	ctx := context.Background()
 	wd, _ := os.Getwd()
 	log.Printf("Working directory: %s", wd)
 	
@@ -33,29 +27,25 @@ func main() {
 	log.Printf("Started at: %s", time.Now().Format(time.RFC3339))
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-	ctx := context.Background()
-
-	onboard := &tool.OnboardingInfo{}
-	log.Printf("Looking for onboard file at: %s", tool.OnboardFilePath)
-	err = tool.ParseOnboardFile(tool.OnboardFilePath, onboard)
+	onboard := &global.OnboardingInfo{}
+	err = global.LoadFile(onboard, global.OnboardFilePath)
 	if err != nil {
 		log.Fatalf("❌ Failed to parse onboard file: %v", err)
 	}
 
-	fmt.Printf("Repository mounted: %v\n", onboard.Repository)
-
 	// Step 1: Discover build files
+	fileContents := &global.InstructionContents{}
 	log.Println("\n=== Step 1: Discover Build Files ===")
-	filepaths, err := tool.Discover(ctx, onboard.Repository)
+	err = tool.Discover(onboard, fileContents)
 	if err != nil {
 		log.Fatalf("❌ Step 1 failed: %v", err)
 	}
 
-	log.Printf("✅ Build files discovered: %+v", filepaths)
+	log.Printf("✅ Build files discovered: %+v", onboard)
 
 	// Step 2: Populate non-deterministic fields using LLM
 	log.Println("\n=== Step 2: Populate Non-Deterministic Fields ===")
-	err = tool.Populate(ctx, onboard.Repository)
+	agentResponse, err := tool.Populate(ctx, onboard, fileContents)
 	if err != nil {
 		log.Fatalf("❌ Step 2 failed: %v", err)
 		os.Exit(1)
@@ -63,11 +53,10 @@ func main() {
 
 	// Step 3: Generate Dalec spec
 	log.Println("\n=== Step 3: Generate Dalec Spec ===")
-	specPath, err := tool.Generate(ctx, onboard.Repository)
+	err = tool.Generate(onboard, fileContents, agentResponse)
 	if err != nil {
 		log.Fatalf("❌ Step 3 failed: %v", err)
 	}
-	log.Printf("✅ Dalec spec generated: %s", specPath)
 
 	log.Println("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	log.Printf("✅ Generation Complete at %s", time.Now().Format(time.RFC3339))

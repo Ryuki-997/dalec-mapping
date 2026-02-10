@@ -1,9 +1,9 @@
 package transformer
 
-import "dalec/parser"
+import "dalec-mapping/global"
 
 // extractDependencies extracts build and runtime dependencies (uses nonDeterministicValues if available)
-func extractDependencies(defaultSpec *DefaultSpec, nonDeterministicValues *parser.NonDeterministicValues) map[string]interface{} {
+func extractDependencies(nonDeterministicValues *global.NonDeterministicValues) map[string]interface{} {
 	deps := make(map[string]interface{})
 	buildDeps := make(map[string]interface{})
 	runtimeDeps := make(map[string]interface{})
