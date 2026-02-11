@@ -18,23 +18,20 @@ import (
 const skillPath = "skills/non-deterministic-setup/SKILL.md"
 
 type ChatRequest struct {
-	Messages    []ChatMessage `json:"messages"`
-	MaxTokens   int           `json:"max_tokens,omitempty"`
-	Temperature float64       `json:"temperature,omitempty"`
-	Model       string        `json:"model,omitempty"`
-}
-
-type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Input       string  `json:"input"`
+	MaxTokens   int     `json:"max_tokens,omitempty"`
+	Temperature float64 `json:"temperature,omitempty"`
+	Model       string  `json:"model,omitempty"`
 }
 
 type ChatResponse struct {
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	} `json:"choices"`
+	Output []struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		Role string `json:"role"`
+	} `json:"output"`
 	Error *struct {
 		Message string `json:"message"`
 		Code    string `json:"code"`
@@ -51,9 +48,9 @@ func Populate(ctx context.Context, onboard *global.OnboardingInfo, fileContents 
 	resultPath := filepath.Join("result", repoName)
 
 	// Read skill.md
-	skillContent, err := os.ReadFile(skillPath)
+	skillContent, err := os.ReadFile(global.Skillpath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read SKILL.md at %s: %w", skillPath, err)
+		return nil, fmt.Errorf("failed to read SKILL.md at %s: %w", global.Skillpath, err)
 	}
 
 	// Build user prompt
@@ -68,6 +65,9 @@ func Populate(ctx context.Context, onboard *global.OnboardingInfo, fileContents 
 
 	// Save result
 	outputPath := filepath.Join(resultPath, "NonDeterministicValues.yml")
+	if err := os.MkdirAll(resultPath, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create result directory: %w", err)
+	}
 	if err := os.WriteFile(outputPath, []byte(response), 0644); err != nil {
 		return nil, fmt.Errorf("failed to write NonDeterministicValues.yml: %w", err)
 	}
@@ -153,18 +153,15 @@ func callAzureAPI(ctx context.Context, systemPrompt, userPrompt string) (string,
 	endpoint := os.Getenv("AZURE_OPENAI_ENDPOINT")
 	apiKey := os.Getenv("AZURE_OPENAI_KEY")
 	deployment := os.Getenv("AZURE_OPENAI_DEPLOYMENT")
+	version := os.Getenv("AZURE_OPENAI_VERSION")
 
 	if endpoint == "" || apiKey == "" || deployment == "" {
 		return "", fmt.Errorf("missing Azure OpenAI config: AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_KEY, or AZURE_OPENAI_DEPLOYMENT")
 	}
 
+	combinedPrompt := fmt.Sprintf("%s\n\n%s", systemPrompt, userPrompt)
 	requestBody := ChatRequest{
-		Messages: []ChatMessage{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: userPrompt},
-		},
-		MaxTokens:   4000,
-		Temperature: 0.1,
+		Input:       combinedPrompt,
 		Model:       deployment,
 	}
 
@@ -174,8 +171,8 @@ func callAzureAPI(ctx context.Context, systemPrompt, userPrompt string) (string,
 	}
 
 	// Azure AI Foundry endpoint format
-    endpoint = strings.TrimSuffix(endpoint, "/")
-    url := fmt.Sprintf("%s/openai/deployments/%s/chat/completions?api-version=2025-01-01-preview", endpoint, deployment)
+	endpoint = strings.TrimSuffix(endpoint, "/")
+	url := fmt.Sprintf("%s/openai/responses?api-version=%s", endpoint, version)
 
 	log.Printf("Calling: %s", url)
 
@@ -211,9 +208,9 @@ func callAzureAPI(ctx context.Context, systemPrompt, userPrompt string) (string,
 		return "", fmt.Errorf("API error: %s (code: %s)", response.Error.Message, response.Error.Code)
 	}
 
-	if len(response.Choices) == 0 {
+	if len(response.Output) == 0 || len(response.Output[0].Content) == 0 {
 		return "", fmt.Errorf("no response from Azure OpenAI")
 	}
 
-	return response.Choices[0].Message.Content, nil
+	return response.Output[0].Content[0].Text, nil
 }
