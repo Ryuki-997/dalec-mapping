@@ -2,9 +2,9 @@ package global
 
 type OnboardingInfo struct {
 	Repository  string   `yaml:"repository"`
-	Tag         string   `yaml:"tag,omitempty"`
-	DockerfilePaths []string `yaml:"dockerfiles"`
-	MakefilePaths   []string `yaml:"makefiles"`
+	Tag         string   `yaml:"tag"`
+	Dockerfile []string `yaml:"dockerfiles"`
+	Makefile   []string `yaml:"makefiles"`
 }
 
 // ExternalTool represents external binaries downloaded via curl/wget

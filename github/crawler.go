@@ -12,9 +12,28 @@ import (
 
 type GitHubCrawler struct{}
 
-// FindFiles searches for files under a root directory matching struct field names
-// The struct should have fields with names corresponding to files (e.g., Dockerfiles, Makefiles, OnboardYml)
-// Each field should be a []string slice to hold found file contents (not paths)
+// ClearResultDirectory removes all contents from the result directory
+func ClearResultDirectory(resultDir string) error {
+	// Check if directory exists
+	if _, err := os.Stat(resultDir); os.IsNotExist(err) {
+		// Directory doesn't exist, nothing to clear
+		return nil
+	}
+
+	// Remove all contents
+	err := os.RemoveAll(resultDir)
+	if err != nil {
+		return fmt.Errorf("failed to clear result directory: %w", err)
+	}
+
+	fmt.Printf("🗑️  Cleared result directory: %s\n", resultDir)
+	return nil
+}
+
+// FindFiles searches for files under a root directory matching struct field tags or names.
+// The struct should have []string fields with yaml/json tags corresponding to filenames
+// (e.g., `yaml:"Dockerfile"`, `yaml:"onboard.yml"`). Tag values fall back to field names.
+// Each field holds the found file contents (not paths).
 func FindFiles(root string, result interface{}) error {
 	if result == nil {
 		return fmt.Errorf("result struct cannot be nil")
@@ -30,30 +49,30 @@ func FindFiles(root string, result interface{}) error {
 		return fmt.Errorf("result must be a pointer to a struct")
 	}
 
-	targetFiles := make(map[string]string) 
+	// Build map of lowercase tag values (or field names) to field names
+	targetFiles := make(map[string]string)
 	for i := 0; i < resultVal.NumField(); i++ {
 		field := resultVal.Type().Field(i)
-		fieldType := field.Type
-		
-		// Check if field is a []string slice
-		if fieldType.Kind() != reflect.Slice || fieldType.Elem().Kind() != reflect.String {
+		if field.Type.Kind() != reflect.Slice || field.Type.Elem().Kind() != reflect.String {
 			continue
 		}
-
-		// Convert field name to lowercase for file matching
-		lowerFieldName := strings.ToLower(field.Name)
-		targetFiles[lowerFieldName] = field.Name
+		
+		matchKey := strings.ToLower(resolveFieldTagKey(field))
+		if matchKey == "" {
+			continue
+		}
+		targetFiles[matchKey] = field.Name
 	}
-
+	
 	if len(targetFiles) == 0 {
-		return fmt.Errorf("struct has no []string fields to populate")
+		return fmt.Errorf("struct has no []string fields with yaml/json tags")
 	}
-
+	
 	owner, repo, branch, subdir := global.ExtractRepositorySegments(root)
 
 	// Get the tree SHA for the branch
 	branchURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, branch)
-	
+
 	data, err := global.MakeGitHubRequest[map[string]interface{}](branchURL)
 	if err != nil {
 		return fmt.Errorf("failed to fetch tree: %w", err)
@@ -123,11 +142,21 @@ func FindFiles(root string, result interface{}) error {
 		fileName := pathParts[len(pathParts)-1]
 		lowerName := strings.ToLower(fileName)
 
-		// Check if this file matches any of our search criteria
+		// Match filename against target files (handling special cases like dockerfile/makefile)
 		var matchedFieldName string
 		for targetFile, fieldName := range targetFiles {
-			// Match exact filename or handle special cases like dockerfile
-			if lowerName == targetFile || (targetFile == "dockerfile" && (lowerName == "dockerfile" || strings.HasSuffix(lowerName, ".dockerfile"))) || (targetFile == "makefile" && lowerName == "makefile") {
+			// Exact match or special handling for dockerfile/makefile
+			if lowerName == targetFile {
+				matchedFieldName = fieldName
+				break
+			}
+			// Handle dockerfile(s) tag matching Dockerfile files
+			if strings.Contains(targetFile, "dockerfile") && (lowerName == "dockerfile" || strings.HasSuffix(lowerName, ".dockerfile")) {
+				matchedFieldName = fieldName
+				break
+			}
+			// Handle makefile(s) tag matching Makefile files  
+			if strings.Contains(targetFile, "makefile") && lowerName == "makefile" {
 				matchedFieldName = fieldName
 				break
 			}
@@ -137,17 +166,13 @@ func FindFiles(root string, result interface{}) error {
 			continue
 		}
 
-		// Fetch content from GitHub
 		content, err := fetchFileContent(owner, repo, branch, path)
 		if err != nil {
 			fmt.Printf("  ⚠️  Warning: failed to fetch content of %s: %v\n", path, err)
 			continue
 		}
-
-		// Append content to the struct field
 		field := resultVal.FieldByName(matchedFieldName)
 		field.Set(reflect.Append(field, reflect.ValueOf(content)))
-		fmt.Printf("  📄 Found %s: %s (%d bytes)\n", matchedFieldName, path, len(content))
 	}
 
 	return nil
@@ -184,20 +209,14 @@ func fetchFileContent(owner, repo, branch, path string) (string, error) {
 	return string(body), nil
 }
 
-// ClearResultDirectory removes all contents from the result directory
-func ClearResultDirectory(resultDir string) error {
-	// Check if directory exists
-	if _, err := os.Stat(resultDir); os.IsNotExist(err) {
-		// Directory doesn't exist, nothing to clear
-		return nil
+// resolveFieldTagKey returns the yaml/json tag value or falls back to field name
+func resolveFieldTagKey(field reflect.StructField) string {
+	tag := field.Tag.Get("yaml")
+
+	if tag != "" && tag != "-" {
+		parts := strings.Split(tag, ",")
+		return strings.TrimSpace(parts[0])
 	}
 
-	// Remove all contents
-	err := os.RemoveAll(resultDir)
-	if err != nil {
-		return fmt.Errorf("failed to clear result directory: %w", err)
-	}
-
-	fmt.Printf("🗑️  Cleared result directory: %s\n", resultDir)
-	return nil
+	return field.Name
 }

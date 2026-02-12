@@ -38,8 +38,6 @@ type ChatResponse struct {
 	} `json:"error,omitempty"`
 }
 
-
-
 // Populate analyzes dockerfiles and makefiles using LLM to extract non-deterministic values
 func Populate(ctx context.Context, onboard *global.OnboardingInfo, fileContents *global.InstructionContents) ([]byte, error) {
 	log.Printf("Running populate for repo: %s", onboard.Repository)
@@ -212,5 +210,10 @@ func callAzureAPI(ctx context.Context, systemPrompt, userPrompt string) (string,
 		return "", fmt.Errorf("no response from Azure OpenAI")
 	}
 
-	return response.Output[0].Content[0].Text, nil
+	responseText := response.Output[0].Content[0].Text
+	responseText = strings.TrimSpace(responseText)
+	responseText = strings.TrimPrefix(responseText, "```yaml")
+	responseText = strings.TrimSuffix(responseText, "```")
+
+	return responseText, nil
 }

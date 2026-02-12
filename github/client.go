@@ -8,7 +8,7 @@ import (
 )
 
 // FetchRepoInfo fetches repository metadata from GitHub API
-func FetchRepoInfo(repoPath string) (*global.RepoInfo, error) {
+func FetchRepoInfo(repoPath, tag string) (*global.RepoInfo, error) {
 	owner, repo, branch, _ := global.ExtractRepositorySegments(repoPath)
 
 	fmt.Printf("Parsed - Owner: %s, Repo: %s, Branch: %s\n", owner, repo, branch)
@@ -33,6 +33,11 @@ func FetchRepoInfo(repoPath string) (*global.RepoInfo, error) {
 	// Fetch source generator
 	if err := fetchSourceGenerator(info); err != nil {
 		return nil, fmt.Errorf("failed to fetch source generator: %w", err)
+	}
+
+	// Fetch specified tag
+	if err := fetchTagInfo(info, tag); err != nil {
+		return nil, fmt.Errorf("failed to fetch tag when tag is provided: %w", err)
 	}
 
 	return info, nil
@@ -185,9 +190,12 @@ func fetchSourceGenerator(info *global.RepoInfo) error {
 	return fmt.Errorf("❌ Unexpected error in determining source generator")
 }
 
-// FetchTagInfo fetches commit SHA for a specific tag
-func FetchTagInfo(info *global.RepoInfo, tag string) error {
-	// Try fetching tag as a release first
+// fetchTagInfo fetches commit SHA for a specific tag
+func fetchTagInfo(info *global.RepoInfo, tag string) error {
+	if tag == "" {
+		return nil
+	}
+
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/ref/tags/%s", info.Owner, info.Repo, tag)
 
 	data, err := global.MakeGitHubRequest[map[string]interface{}](url)

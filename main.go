@@ -13,7 +13,6 @@ import (
 )
 
 func main() {
-	ctx := context.Background()
 	wd, _ := os.Getwd()
 	log.Printf("Working directory: %s", wd)
 	
@@ -34,14 +33,20 @@ func main() {
 	}
 
 	// Step 1: Discover build files
-	fileContents := &global.InstructionContents{}
+	fileContents := &global.InstructionContents{
+		Dockerfiles: []string{},
+		Makefiles:   []string{},
+	}
+	repositoryInfo := &global.RepoInfo{}
 	log.Println("\n=== Step 1: Discover Build Files ===")
-	err = tool.Discover(onboard, fileContents)
+	err = tool.Discover(onboard, fileContents, repositoryInfo)
 	if err != nil {
 		log.Fatalf("❌ Step 1 failed: %v", err)
 	}
 
-	log.Printf("✅ Build files discovered: %+v", onboard)
+	log.Printf("✅ Build files discovered: Dockerfiles=%d, Makefiles=%d", len(fileContents.Dockerfiles), len(fileContents.Makefiles))
+
+	ctx := context.Background()
 
 	// Step 2: Populate non-deterministic fields using LLM
 	log.Println("\n=== Step 2: Populate Non-Deterministic Fields ===")
@@ -50,6 +55,8 @@ func main() {
 		log.Fatalf("❌ Step 2 failed: %v", err)
 		os.Exit(1)
 	} 
+
+	log.Printf("✅ Non-deterministic values populated and saved to result directory")
 
 	// Step 3: Generate Dalec spec
 	log.Println("\n=== Step 3: Generate Dalec Spec ===")

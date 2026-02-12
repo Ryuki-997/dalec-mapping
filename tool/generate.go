@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"dalec-mapping/github"
 	"dalec-mapping/global"
 	"dalec-mapping/parser"
 	"dalec-mapping/transformer"
@@ -14,13 +15,14 @@ func Generate(onboard *global.OnboardingInfo, fileContents *global.InstructionCo
 	fmt.Println("=== GENERATE MODE ===")
 
 	// Fetch GitHub repository info
-	repoInfo, err := fetchGitHubRepoInfo(onboard.Repository, onboard.Tag)
+	repoInfo, err := github.FetchRepoInfo(onboard.Repository, onboard.Tag)
 	if err != nil {
 		fmt.Printf("❌ Error fetching repository info: %v\n", err)
 		os.Exit(1)
 	}
 
-	specFilePath := fmt.Sprintf("%s/spec.yaml", global.ResultDir)
+	// TODO: later
+	specFilePath := ""
 
 	// Parse Dockerfile if path provided
 	dockerfileInfo, makefileInfo, nonDeterministicInfo, previousDalecSpecInfo, err := parser.ParseOptionalFileInfo(fileContents.Dockerfiles, fileContents.Makefiles, specFilePath, agentResponse)

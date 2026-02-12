@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"dalec-mapping/global"
+	"dalec-mapping/test"
 )
 
 // DalecSpec represents a Dalec specification using flexible maps for dynamic keys
@@ -271,7 +272,7 @@ func appendTests(defaultSpec *DefaultSpec, nonDeterministicValues *global.NonDet
 		binaryName = nonDeterministicValues.BinaryName
 	}
 
-	tests = append(tests, TestCheckFiles(binaryName, 0755))
+	tests = append(tests, test.TestCheckFiles(binaryName, 0755))
 
 	return tests
 }
