@@ -1,5 +1,5 @@
 ---
-name: Dalec Spec Generator
+name: dalec-spec-generator
 description: Agent skill for generating Dalec specification files from GitHub repositories with deterministic workflow
 ---
 

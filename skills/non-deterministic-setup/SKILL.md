@@ -1,18 +1,17 @@
 ---
-name: Non-Deterministic Setup
-description: Agent skill for extracting variable values from Dockerfile and Makefile before Dalec spec generation
+name: non-deterministic-setup
+description: LLM skill for parsing Dockerfile and Makefile into NonDeterministicValues YAML format
 ---
 
-# Non-Deterministic Setup - Agent Skill
+# Non-Deterministic Setup - LLM Skill
 
-Before any parsing or algorithm runs, the agent must extract variable values that cannot be determined by fixed rules. These values populate the `NonDeterministicValues` struct in `transformer/agent.go` and are later used by `main.go` to fill the Dalec spec.
+This skill enables LLMs to systematically parse Dockerfile and Makefile content into a structured `NonDeterministicValues` format. Variable values that cannot be determined by fixed rules are extracted and formatted as YAML.
 
-**Prerequisite:** The dalec-spec-generator Step 0 must have completed, downloading available files to:
+**Input:** Dockerfile and Makefile content provided directly via LLM prompts
 
-- `examples/{repo-name}/Dockerfile` (if exists in repo)
-- `examples/{repo-name}/Makefile` (if exists in repo)
+**Output:** NonDeterministicValues YAML structure written to `result/{repo-name}/NonDeterministicValues.yml`
 
-This skill reads from these downloaded files to extract non-deterministic values.
+These extracted values populate the `NonDeterministicValues` struct in `transformer/agent.go` and are later used by `main.go` to fill the Dalec spec.
 
 ---
 
@@ -62,13 +61,13 @@ type Binary struct {
 
 ### Output Location
 
-The agent must write the extracted values to:
+The LLM must generate and return the extracted values as YAML in the following format:
 
 ```bash
-examples/{repo-name}/NonDeterministicValues.yml
+result/{repo-name}/NonDeterministicValues.yml
 ```
 
-Where `{repo-name}` is the repository name (e.g., `blob-csi-driver`). This ensures the file is co-located with the downloaded Dockerfile and Makefile.
+Where `{repo-name}` is the repository name (e.g., `kubelogin`, `blob-csi-driver`). The YAML output is then persisted to this location in the result directory.
 
 ---
 
@@ -76,12 +75,12 @@ Where `{repo-name}` is the repository name (e.g., `blob-csi-driver`). This ensur
 
 ### Task 1: Binary Output Extraction
 
-**Input:** Downloaded files from `examples/{repo-name}/` directory:
+**Input:** Makefile and Dockerfile content provided in prompt
 
-- `examples/{repo-name}/Makefile` - Search for build commands  
-- `examples/{repo-name}/Dockerfile` - Search for COPY and ENTRYPOINT instructions
+- Makefile content - Search for build commands  
+- Dockerfile content - Search for COPY and ENTRYPOINT instructions
 
-**Output:** `BinaryName`, `BinaryOutputPath`, `Binaries`
+**Output:** `BinaryName`, `BinaryOutputPath`, `Binaries` (YAML fields in output)
 
 #### 1.1 Extraction Checklist
 
@@ -115,8 +114,8 @@ go build ./cmd/myapp
 
 ### Task 2: Entrypoint & Symlink
 
-**Input:** `examples/{repo-name}/Dockerfile` (downloaded file)  
-**Output:** `Entrypoint`, `Symlink`
+**Input:** Dockerfile content provided in prompt  
+**Output:** `Entrypoint`, `Symlink` (YAML fields in output)
 
 #### 2.1 Extraction Checklist
 
@@ -149,12 +148,12 @@ ENTRYPOINT ["/app", "--config", "/etc/app.conf"]
 
 ### Task 3: Dependencies Extraction
 
-**Input:** Downloaded files from `examples/{repo-name}/` directory:  
+**Input:** Dockerfile and Makefile content provided in prompt
 
-- `examples/{repo-name}/Dockerfile` - Search for apt/yum install commands  
-- `examples/{repo-name}/Makefile` - Search for image references
+- Dockerfile content - Search for apt/yum install commands  
+- Makefile content - Search for image references
 
-**Output:** `BuildDeps`, `RuntimeDeps`, `ExternalTools`
+**Output:** `BuildDeps`, `RuntimeDeps`, `ExternalTools` (YAML fields in output)
 
 #### 3.1 Build Dependencies Checklist
 
@@ -212,8 +211,8 @@ RUN curl -Ls https://github.com/Azure/azcopy/releases/.../azcopy.tar.gz | tar xz
 
 ### Task 4: Build Command Translation
 
-**Input:** `examples/{repo-name}/Makefile` (downloaded file)  
-**Output:** `BuildCommand`, `LdFlags`
+**Input:** Makefile content provided in prompt  
+**Output:** `BuildCommand`, `LdFlags` (YAML fields in output)
 
 #### 4.1 Extraction Checklist
 
@@ -299,29 +298,33 @@ func ValidateExtraction(values *NonDeterministicValues) (warnings []string, conf
 
 ---
 
-## Agent Tool Interface
+## LLM Tool Interface
+
+This skill defines the systematic parsing functions that LLMs implement:
 
 ```go
-// transformer/agent.go
+// transformer/agent.go - LLM-based extraction functions
 
-// ExtractBinaryOutput finds -o flag in go build commands
+// ExtractBinaryOutput parses go build commands from Makefile
 func ExtractBinaryOutput(makefileContent string) (primary string, path string, auxiliaries []string, err error)
 
 // ExtractEntrypoint parses ENTRYPOINT/CMD from Dockerfile
 func ExtractEntrypoint(dockerfileContent string) (entrypoint string, symlink string, err error)
 
-// ExtractDependencies separates build vs runtime deps
+// ExtractDependencies identifies build vs runtime dependencies from Dockerfile and Makefile
 func ExtractDependencies(dockerfileContent, makefileContent string) (build []string, runtime []string, external []ExternalTool, err error)
 
-// ExtractBuildCommand translates Makefile target to Dalec build steps
+// ExtractBuildCommand translates Makefile build target to Dalec format
 func ExtractBuildCommand(makefileContent string) (command string, ldflags string, env map[string]string, err error)
 
-// ValidateExtraction checks consistency and assigns confidence
+// ValidateExtraction checks consistency and assigns confidence score
 func ValidateExtraction(values *NonDeterministicValues) (warnings []string, confidence float64)
 
-// FillNonDeterministicValues orchestrates all extractions
+// FillNonDeterministicValues orchestrates all LLM extractions
 func FillNonDeterministicValues(dockerfileContent, makefileContent string) (*NonDeterministicValues, error)
 ```
+
+**Note:** LLMs implement these functions by parsing the provided Dockerfile and Makefile content (via prompt) and returning structured YAML output.
 
 ---
 
@@ -329,30 +332,30 @@ func FillNonDeterministicValues(dockerfileContent, makefileContent string) (*Non
 
 ```bash
 ┌─────────────────────────────────────────────────────────────────┐
-│                     main.go Entry Point                         │
+│                   LLM Processing Pipeline                       │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Step 0: Non-Deterministic Setup (Agent Pre-Processing)         │
+│  Step 1: LLM-based Non-Deterministic Setup                      │
 │  ─────────────────────────────────────────────────────────────  │
-│  1. Read raw Dockerfile and Makefile content                    │
-│  2. Call FillNonDeterministicValues()                           │
+│  Input: Dockerfile and Makefile content via prompt              │
+│  Process:                                                       │
 │     ├── ExtractBinaryOutput()                                   │
 │     ├── ExtractEntrypoint()                                     │
 │     ├── ExtractDependencies()                                   │
 │     ├── ExtractBuildCommand()                                   │
 │     └── ValidateExtraction()                                    │
-│  3. Log warnings for human review                               │
-│  4. If confidence < 0.8, prompt for manual verification         │
-│  Output: NonDeterministicValues struct                          │
+│  Output: NonDeterministicValues YAML structure                  │
+│  Location: result/{repo-name}/NonDeterministicValues.yml        │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Steps 1-6: Deterministic Workflow (dalec-spec-generator)       │
+│  Step 2: Deterministic Workflow (dalec-spec-generator)          │
 │  ─────────────────────────────────────────────────────────────  │
-│  Uses NonDeterministicValues to populate:                       │
+│  Input: NonDeterministicValues.yml from result/                 │
+│  Uses values to populate:                                       │
 │  - artifacts.binaries (from BinaryName, BinaryOutputPath)       │
 │  - image.entrypoint (from Entrypoint)                           │
 │  - image.post.symlinks (from Symlink)                           │
@@ -360,7 +363,7 @@ func FillNonDeterministicValues(dockerfileContent, makefileContent string) (*Non
 │  - dependencies.runtime (from RuntimeDeps)                      │
 │  - build.steps (from binary BuildCommand, LdFlags)              │
 │  CLI fills remaining deterministic fields (license, version)    │
-│  Generates final Dalec YAML spec                                │
+│  Output: Final Dalec YAML spec (result/output.yml)              │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -387,9 +390,9 @@ After agent extraction, verify:
 
 ## Example Extraction
 
-### Input Files
+### Input Files (Provided via LLM Prompt)
 
-**Makefile:**
+**Makefile content:**
 
 ```makefile
 PKG = sigs.k8s.io/blob-csi-driver
@@ -405,7 +408,7 @@ blobfuse-proxy:
     CGO_ENABLED=1 go build -o _output/${ARCH}/blobfuse-proxy ./pkg/blobfuse-proxy
 ```
 
-**Dockerfile:**
+**Dockerfile content:**
 
 ```dockerfile
 FROM golang:1.21 AS builder
@@ -417,12 +420,12 @@ COPY _output/${ARCH}/blobplugin /blobplugin
 ENTRYPOINT ["/blobplugin"]
 ```
 
-### Extracted Values
+### Extracted Values (YAML Output)
 
-**IMPORTANT:** YAML keys must be **camelCase** to match Go struct tags in `parser/agentValues.go`.
+**IMPORTANT:** YAML keys must be **camelCase** to match Go struct tags.
 
 ```yaml
-# examples/{repo-name}/NonDeterministicValues.yml
+# Output: result/{repo-name}/NonDeterministicValues.yml
 # YAML keys are camelCase (not PascalCase)
 
 binaryName: "blobplugin"
