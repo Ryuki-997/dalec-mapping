@@ -47,7 +47,7 @@ func FetchRepoInfo(repoPath, tag string) (*global.RepoInfo, error) {
 func fetchRepoMetadata(info *global.RepoInfo) error {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s", info.Owner, info.Repo)
 
-	data, err := global.MakeGitHubRequest[map[string]interface{}](url)
+	data, err := global.MakeGitHubRequest[map[string]interface{}](global.GithubRequest{URL: url})
 	if err != nil {
 		return err
 	}
@@ -86,7 +86,7 @@ func fetchRepoMetadata(info *global.RepoInfo) error {
 func fetchReleaseMetadata(info *global.RepoInfo) error {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", info.Owner, info.Repo)
 
-	data, err := global.MakeGitHubRequest[map[string]interface{}](url)
+	data, err := global.MakeGitHubRequest[map[string]interface{}](global.GithubRequest{URL: url})
 	if err != nil {
 		return err
 	}
@@ -105,7 +105,7 @@ func fetchReleaseMetadata(info *global.RepoInfo) error {
 
 	// Fetch the commit SHA for this release tag
 	url = fmt.Sprintf("https://api.github.com/repos/%s/%s/commits/%s", info.Owner, info.Repo, tag)
-	data, err = global.MakeGitHubRequest[map[string]interface{}](url)
+	data, err = global.MakeGitHubRequest[map[string]interface{}](global.GithubRequest{URL: url})
 	if err != nil {
 		return err
 	}
@@ -142,7 +142,7 @@ func fetchSourceGenerator(info *global.RepoInfo) error {
 	cargoFile := map[string]bool{"Cargo.toml": true, "Cargo.lock": true}
 	pipFile := map[string]bool{"requirements.txt": true, "setup.py": true, "Pipfile": true}
 
-	data, err := global.MakeGitHubRequest[[]interface{}](url)
+	data, err := global.MakeGitHubRequest[[]interface{}](global.GithubRequest{URL: url})
 	if err != nil {
 		return err
 	}
@@ -198,7 +198,7 @@ func fetchTagInfo(info *global.RepoInfo, tag string) error {
 
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/ref/tags/%s", info.Owner, info.Repo, tag)
 
-	data, err := global.MakeGitHubRequest[map[string]interface{}](url)
+	data, err := global.MakeGitHubRequest[map[string]interface{}](global.GithubRequest{URL: url})
 	if err != nil {
 		return err
 	}

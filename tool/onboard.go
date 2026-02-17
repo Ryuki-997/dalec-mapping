@@ -11,7 +11,7 @@ import (
 func Fetch(onboardFiles *[]global.OnboardingInfo) error {
 	url := global.OnboardDirectory
 
-	data, err := global.MakeGitHubRequest[map[string]interface{}](url)
+	data, err := global.MakeGitHubRequest[map[string]interface{}](global.GithubRequest{URL: url})
 	if err != nil {
 		return fmt.Errorf("failed to fetch onboard data: %w", err)
 	}

@@ -1,6 +1,7 @@
 package global
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,20 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 )
-
-// // parse file content into a struct of type T
-// func LoadFile[T any](content *T, path string) error {
-// 	data, err := os.ReadFile(path)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to read file %s: %w", path, err)
-// 	}
-
-// 	if err := yaml.Unmarshal(data, content); err != nil {
-// 		return fmt.Errorf("failed to parse file %s: %w", path, err)
-// 	}
-
-// 	return nil
-// }
 
 // GetGeneratorPath returns the absolute path to the generator directory
 func GetGeneratorPath() (string, error) {
@@ -64,7 +51,7 @@ func ExtractRepositorySegments(repo string) (owner, name, branch, subdir string)
 	parts := strings.Split(repo, "/")
 	if len(parts) == 2 {
 		url := fmt.Sprintf("https://api.github.com/repos/%s/%s/branches", parts[0], parts[1])
-		branches, err := MakeGitHubRequest[[]map[string]interface{}](url)
+		branches, err := MakeGitHubRequest[[]map[string]interface{}](GithubRequest{URL: url})
 		if err != nil {
 			log.Printf("Error: failed to fetch branches for %s: %v\n", repo, err)
 			os.Exit(1)
@@ -92,15 +79,33 @@ func ExtractRepositorySegments(repo string) (owner, name, branch, subdir string)
 	return "", "", "", ""
 }
 
-// MakeGitHubRequest makes an authenticated HTTP request to the GitHub API
-func MakeGitHubRequest[T any](url string) (T, error) {
+// MakeGitHubRequest makes an authenticated HTTP request to the GitHub API.
+func MakeGitHubRequest[T any](request GithubRequest) (T, error) {
 	var result T
-	req, err := http.NewRequest("GET", url, nil)
+
+	// Build request body for methods that need one
+	var bodyReader io.Reader
+	if request.Payload != nil && (request.Method == POST || request.Method == PUT) {
+		jsonBody, err := json.Marshal(request.Payload)
+		if err != nil {
+			return result, fmt.Errorf("failed to marshal request body: %w", err)
+		}
+		bodyReader = bytes.NewReader(jsonBody)
+	}
+
+	method := request.Method
+	if method == "" {
+		method = GET
+	}
+
+	req, err := http.NewRequest(string(method), request.URL, bodyReader)
 	if err != nil {
 		return result, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 
 	githubToken := os.Getenv("GH_TOKEN")
 	req.Header.Set("Authorization", "token "+githubToken)
@@ -116,7 +121,7 @@ func MakeGitHubRequest[T any](url string) (T, error) {
 		return result, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return result, fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
