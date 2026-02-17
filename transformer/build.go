@@ -85,6 +85,11 @@ func extractBuildSteps(nonDeterministicValues *global.NonDeterministicValues) st
 			continue
 		}
 
+		// Order matters!!
+		global.ClearEnvVariables("LdFlags", &aux.LdFlags)
+		global.ClearEnvVariables("OutputPath", &aux.OutputPath)
+		global.ClearEnvVariables("BuildCommand", &aux.BuildCommand)
+
 		if aux.BuildCommand != "" {
 			// Use explicit build command if provided
 			command += "\n" + aux.BuildCommand

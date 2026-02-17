@@ -9,23 +9,21 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 )
 
-// parse file content into a struct of type T
-func LoadFile[T any](content *T, path string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("failed to read file %s: %w", path, err)
-	}
+// // parse file content into a struct of type T
+// func LoadFile[T any](content *T, path string) error {
+// 	data, err := os.ReadFile(path)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to read file %s: %w", path, err)
+// 	}
 
-	if err := yaml.Unmarshal(data, content); err != nil {
-		return fmt.Errorf("failed to parse file %s: %w", path, err)
-	}
+// 	if err := yaml.Unmarshal(data, content); err != nil {
+// 		return fmt.Errorf("failed to parse file %s: %w", path, err)
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
 // GetGeneratorPath returns the absolute path to the generator directory
 func GetGeneratorPath() (string, error) {
@@ -127,4 +125,53 @@ func MakeGitHubRequest[T any](url string) (T, error) {
 	}
 
 	return result, nil
+}
+
+// FetchRawContent fetches raw content from a URL (e.g. raw.githubusercontent.com)
+func FetchRawContent(url string) ([]byte, error) {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	githubToken := os.Getenv("GH_TOKEN")
+	if githubToken != "" {
+		req.Header.Set("Authorization", "token "+githubToken)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	return body, nil
+}
+
+func ClearEnvVariables(key string, command *string) {
+	if command == nil || *command == "" {
+		return
+	}
+
+	removeFlags := map[string]string{
+		"'":              "\"",
+		"`":              "\"",
+		"CGO_ENABLED=0 ": "",
+		"CGO_ENABLED=1 ": "",
+		"GOOS=linux ":    "",
+		"GOARCH=amd64 ":  "",
+	}
+  
+	for old, new := range removeFlags {
+		*command = strings.ReplaceAll(*command, old, new)
+	}
 }

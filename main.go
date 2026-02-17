@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"time"
@@ -22,15 +23,27 @@ func main() {
 		os.Exit(1)
 	} 
 
+	onboardFiles := []global.OnboardingInfo{}
+
+	err = tool.Fetch(&onboardFiles)
+	if err != nil {
+		log.Fatalf("❌ Failed to fetch onboard data: %v", err)
+	}
+
+	fmt.Printf("Onboard Files: %v\n", onboardFiles)
+
+	for _, onboard := range onboardFiles {
+		fmt.Printf("Onboard Documents: %v\n", onboard)
+		generateSpec(&onboard)
+	}
+
+	// TODO: return shell comma separated list variable paths.
+}
+
+func generateSpec(onboard *global.OnboardingInfo) {
 	log.Println("Dalec Spec Generator - Scheduled Job")
 	log.Printf("Started at: %s", time.Now().Format(time.RFC3339))
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-
-	onboard := &global.OnboardingInfo{}
-	err = global.LoadFile(onboard, global.OnboardFilePath)
-	if err != nil {
-		log.Fatalf("❌ Failed to parse onboard file: %v", err)
-	}
 
 	// Step 1: Discover build files
 	fileContents := &global.InstructionContents{
@@ -39,7 +52,7 @@ func main() {
 	}
 	repositoryInfo := &global.RepoInfo{}
 	log.Println("\n=== Step 1: Discover Build Files ===")
-	err = tool.Discover(onboard, fileContents, repositoryInfo)
+	err := tool.Discover(onboard, fileContents, repositoryInfo)
 	if err != nil {
 		log.Fatalf("❌ Step 1 failed: %v", err)
 	}
@@ -67,4 +80,7 @@ func main() {
 
 	log.Println("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	log.Printf("✅ Generation Complete at %s", time.Now().Format(time.RFC3339))
+
+	// Step 4: Create PR with generated spec
+	// tool.CreatePR(onboard)
 }
