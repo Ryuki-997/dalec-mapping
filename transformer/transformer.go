@@ -179,9 +179,20 @@ func extractArtifacts(defaultSpec *DefaultSpec, nonDeterministicValues *global.N
 
 	// Use agent-extracted binary name if available
 	if nonDeterministicValues != nil {
-		// Add additional binaries
 		for _, aux := range nonDeterministicValues.Binaries {
-			artifact := defaultSpec.Repo + "/" + aux.OutputPath
+			outputPath := aux.OutputPath
+			global.ClearEnvVariables("OutputPath", &outputPath)
+			
+			if outputPath == "" {
+				outputPath = aux.Name
+			}
+			if !strings.Contains(outputPath, "/") {
+				outputPath = fmt.Sprintf("bin/%s", outputPath)
+			} else if !strings.HasPrefix(outputPath, "bin/") {
+				outputPath = "bin/" + outputPath
+			}
+			
+			artifact := defaultSpec.Repo + "/" + outputPath
 			binaries[artifact] = map[string]interface{}{}
 			fmt.Printf("ARTIFACTS: %v\n", artifact)
 		}

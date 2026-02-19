@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -162,21 +163,67 @@ func FetchRawContent(url string) ([]byte, error) {
 	return body, nil
 }
 
+// Helper function to clean output paths
+func cleanOutputPath(outputPath string) string {
+	// Remove build environment variables but keep others like ${VERSION}
+	// Handle complex nested syntax like ${GOARM:+v${GOARM}} and simple ${OS}_${ARCH}
+	
+	// First pass: remove complex conditional patterns
+	complexPattern := regexp.MustCompile(`\$\{GOARM:[^}]*\$\{GOARM\}[^}]*\}`)
+	cleaned := complexPattern.ReplaceAllString(outputPath, "")
+	
+	// Second pass: remove simple environment variables
+	simplePattern := regexp.MustCompile(`\$\{(OS|ARCH|GOARM)\}`)
+	cleaned = simplePattern.ReplaceAllString(cleaned, "")
+	
+	nonAlphanumericOnlyPattern := regexp.MustCompile(`^[^a-zA-Z0-9]+$`)
+	
+	// Remove any remaining artifacts like underscores, slashes from env var removal
+	cleaned = regexp.MustCompile(`_+`).ReplaceAllString(cleaned, "")
+	cleaned = regexp.MustCompile(`/+`).ReplaceAllString(cleaned, "/")
+	cleaned = regexp.MustCompile(`^/+|/+$`).ReplaceAllString(cleaned, "")
+	
+	if nonAlphanumericOnlyPattern.MatchString(cleaned) {
+		return ""
+	}
+	
+	return cleaned
+}
+
+// Helper function to clean ldflags
+func cleanLdFlags(ldflags string) string {
+	// Only clean quotes, preserve all env variables including ${VERSION}
+	cleaned := strings.Trim(ldflags, `"'`)
+	return cleaned
+}
+
+// Global cache for cleaned values
+var cleanedCache = CleanedValuesCache{}
+
 func ClearEnvVariables(key string, command *string) {
 	if command == nil || *command == "" {
 		return
 	}
 
-	removeFlags := map[string]string{
-		"'":              "\"",
-		"`":              "\"",
-		"CGO_ENABLED=0 ": "",
-		"CGO_ENABLED=1 ": "",
-		"GOOS=linux ":    "",
-		"GOARCH=amd64 ":  "",
-	}
-  
-	for old, new := range removeFlags {
-		*command = strings.ReplaceAll(*command, old, new)
+	switch key {
+	case "OutputPath":
+		cleanedCache.OutputPath = cleanOutputPath(*command)
+		*command = cleanedCache.OutputPath
+
+	case "LdFlags":
+		cleanedCache.LdFlags = cleanLdFlags(*command)
+		*command = cleanedCache.LdFlags
+
+	case "BuildCommand":
+		binaryName := filepath.Base(cleanedCache.OutputPath)
+		envPathPattern := regexp.MustCompile(`[^\s]+\$[\{\(][^\}\)]+[\}\)][^\s]*` + binaryName)
+		*command = envPathPattern.ReplaceAllString(*command, cleanedCache.OutputPath)
+		
+		ldFlagsVarPattern := regexp.MustCompile(`\$\{LDFLAGS\}`)
+		*command = ldFlagsVarPattern.ReplaceAllString(*command, cleanedCache.LdFlags)
+
+	default:
+		fmt.Printf("Warning: unrecognized key for ClearEnvVariables: %s\n", key)
+		return 
 	}
 }

@@ -1,5 +1,11 @@
 package global
 
+// CleanedValuesCache stores cleaned versions of OutputPath and LdFlags
+type CleanedValuesCache struct {
+	OutputPath string
+	LdFlags    string
+}
+
 type OnboardingInfo struct {
 	Repository  string   `yaml:"repository"`
 	Tag         string   `yaml:"tag"`

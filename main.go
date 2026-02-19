@@ -40,7 +40,7 @@ func main() {
 		shellVar = append(shellVar, remotePath)
 	}
 
-	// TODO: return shell comma separated list variable paths.
+	// TODO: return shell comma separated list variable paths
 }
 
 func generateSpec(onboard *global.OnboardingInfo) {
@@ -85,10 +85,10 @@ func generateSpec(onboard *global.OnboardingInfo) {
 	log.Printf("✅ Generation Complete at %s", time.Now().Format(time.RFC3339))
 
 	// Step 4: Create PR with generated spec
-	err = tool.GitPush(onboard.Repository, onboard.Tag)
-	if err != nil {
-		log.Fatalf("❌ Step 4 failed: %v", err)
-	}
+	// err = tool.GitPush(onboard.Repository, onboard.Tag)
+	// if err != nil {
+	// 	log.Fatalf("❌ Step 4 failed: %v", err)
+	// }
 
 	log.Printf("✅ Spec created successfully for repository %s", onboard.Repository)
 }

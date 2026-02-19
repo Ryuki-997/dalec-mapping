@@ -2,6 +2,7 @@ package transformer
 
 import (
 	"fmt"
+	"strings"
 
 	"dalec-mapping/global"
 )
@@ -48,7 +49,7 @@ func extractBuildSection(defaultSpec *DefaultSpec, nonDeterministicValues *globa
 	build["env"] = env
 
 	// Extract build steps
-	command := extractBuildSteps(nonDeterministicValues)
+	command := extractBuildSteps(nonDeterministicValues, defaultSpec.Repo)
 
 	buildCommand := "cd " + defaultSpec.Repo + "\n"
 
@@ -72,7 +73,7 @@ func extractBuildSection(defaultSpec *DefaultSpec, nonDeterministicValues *globa
 	return build
 }
 
-func extractBuildSteps(nonDeterministicValues *global.NonDeterministicValues) string {
+func extractBuildSteps(nonDeterministicValues *global.NonDeterministicValues, repoName string) string {
 	command := ""
 
 	if nonDeterministicValues == nil {
@@ -91,14 +92,19 @@ func extractBuildSteps(nonDeterministicValues *global.NonDeterministicValues) st
 		global.ClearEnvVariables("BuildCommand", &aux.BuildCommand)
 
 		if aux.BuildCommand != "" {
-			// Use explicit build command if provided
 			command += "\n" + aux.BuildCommand
 			fmt.Printf("Current Command: %v\n", command)
 		} else if aux.LdFlags != "" {
-			command += "\ngo build -ldflags \"" + aux.LdFlags + "\" -o " + aux.OutputPath + " ./pkg/" + aux.Name
-		} else {
-			command += "\ngo build -o " + aux.OutputPath + " ./pkg/" + aux.Name
-		}
+			// Format output path as reponame/bin/binaryname
+			outputPath := aux.OutputPath
+			if outputPath == "" {
+				outputPath = aux.Name
+			}
+			if !strings.Contains(outputPath, "/") {
+				outputPath = fmt.Sprintf("%s/bin/%s", repoName, outputPath)
+			}
+			command += "\ngo build -ldflags \"" + aux.LdFlags + "\" -o " + outputPath + " ./pkg/" + aux.Name
+		} 
 	}
 
 	return command
