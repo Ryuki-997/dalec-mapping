@@ -4,16 +4,16 @@ import (
 	"fmt"
 	"strings"
 
-	"dalec-mapping/global"
+	"dalec-mapping/domain/repository"
 )
 
 // FetchRepoInfo fetches repository metadata from GitHub API
-func FetchRepoInfo(repoPath, tag string) (*global.RepoInfo, error) {
-	owner, repo, branch, _ := global.ExtractRepositorySegments(repoPath)
+func FetchRepoInfo(repoPath, tag string) (*repository.RepoInfo, error) {
+	owner, repo, branch, _ := ExtractRepositorySegments(repoPath)
 
 	fmt.Printf("Parsed - Owner: %s, Repo: %s, Branch: %s\n", owner, repo, branch)
 
-	info := &global.RepoInfo{
+	info := &repository.RepoInfo{
 		Owner:  owner,
 		Repo:   repo,
 		Branch: branch,
@@ -44,10 +44,10 @@ func FetchRepoInfo(repoPath, tag string) (*global.RepoInfo, error) {
 }
 
 // Acquire default metadata
-func fetchRepoMetadata(info *global.RepoInfo) error {
+func fetchRepoMetadata(info *repository.RepoInfo) error {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s", info.Owner, info.Repo)
 
-	data, err := global.MakeGitHubRequest[map[string]interface{}](global.GithubRequest{URL: url})
+	data, err := MakeGitHubRequest[map[string]interface{}](repository.GithubRequest{URL: url})
 	if err != nil {
 		return err
 	}
@@ -83,10 +83,10 @@ func fetchRepoMetadata(info *global.RepoInfo) error {
 }
 
 // Acquire release metadata
-func fetchReleaseMetadata(info *global.RepoInfo) error {
+func fetchReleaseMetadata(info *repository.RepoInfo) error {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", info.Owner, info.Repo)
 
-	data, err := global.MakeGitHubRequest[map[string]interface{}](global.GithubRequest{URL: url})
+	data, err := MakeGitHubRequest[map[string]interface{}](repository.GithubRequest{URL: url})
 	if err != nil {
 		return err
 	}
@@ -105,7 +105,7 @@ func fetchReleaseMetadata(info *global.RepoInfo) error {
 
 	// Fetch the commit SHA for this release tag
 	url = fmt.Sprintf("https://api.github.com/repos/%s/%s/commits/%s", info.Owner, info.Repo, tag)
-	data, err = global.MakeGitHubRequest[map[string]interface{}](global.GithubRequest{URL: url})
+	data, err = MakeGitHubRequest[map[string]interface{}](repository.GithubRequest{URL: url})
 	if err != nil {
 		return err
 	}
@@ -117,7 +117,7 @@ func fetchReleaseMetadata(info *global.RepoInfo) error {
 	return nil
 }
 
-func fetchSourceGenerator(info *global.RepoInfo) error {
+func fetchSourceGenerator(info *repository.RepoInfo) error {
 	// Check if branch contains a subdirectory path (e.g., "master/addon-resizer")
 	subdir := ""
 	if strings.Contains(info.Branch, "/") {
@@ -142,7 +142,7 @@ func fetchSourceGenerator(info *global.RepoInfo) error {
 	cargoFile := map[string]bool{"Cargo.toml": true, "Cargo.lock": true}
 	pipFile := map[string]bool{"requirements.txt": true, "setup.py": true, "Pipfile": true}
 
-	data, err := global.MakeGitHubRequest[[]interface{}](global.GithubRequest{URL: url})
+	data, err := MakeGitHubRequest[[]interface{}](repository.GithubRequest{URL: url})
 	if err != nil {
 		return err
 	}
@@ -162,23 +162,23 @@ func fetchSourceGenerator(info *global.RepoInfo) error {
 
 		// Check for Go files
 		if goFile[name] {
-			info.Generator = global.GoModGenerator
+			info.Generator = repository.GoModGenerator
 			return nil
 		}
 
 		// Check for Go directories (Godeps, vendor)
 		if itemType == "dir" && goDir[name] {
-			info.Generator = global.GoModGenerator
+			info.Generator = repository.GoModGenerator
 			return nil
 		}
 
 		if cargoFile[name] {
-			info.Generator = global.CargoHomeGenerator
+			info.Generator = repository.CargoHomeGenerator
 			return nil
 		}
 
 		if pipFile[name] {
-			info.Generator = global.PipGenerator
+			info.Generator = repository.PipGenerator
 			return nil
 		}
 	}
@@ -191,14 +191,14 @@ func fetchSourceGenerator(info *global.RepoInfo) error {
 }
 
 // fetchTagInfo fetches commit SHA for a specific tag
-func fetchTagInfo(info *global.RepoInfo, tag string) error {
+func fetchTagInfo(info *repository.RepoInfo, tag string) error {
 	if tag == "" {
 		return fmt.Errorf("Tag must be specified")
 	}
 
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/ref/tags/%s", info.Owner, info.Repo, tag)
 
-	data, err := global.MakeGitHubRequest[map[string]interface{}](global.GithubRequest{URL: url})
+	data, err := MakeGitHubRequest[map[string]interface{}](repository.GithubRequest{URL: url})
 	if err != nil {
 		return err
 	}

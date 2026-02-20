@@ -4,11 +4,12 @@ import (
 	"fmt"
 	"strings"
 
-	"dalec-mapping/global"
+	"dalec-mapping/domain/llm"
+	"dalec-mapping/infrastructure/github"
 )
 
 // extractBuildSteps converts RUN commands to Dalec build steps (uses nonDeterministicValues if available)
-func extractBuildSection(defaultSpec *DefaultSpec, nonDeterministicValues *global.NonDeterministicValues) map[string]interface{} {
+func extractBuildSection(defaultSpec *DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
 	build := make(map[string]interface{})
 	env := make(map[string]interface{})
 
@@ -73,7 +74,7 @@ func extractBuildSection(defaultSpec *DefaultSpec, nonDeterministicValues *globa
 	return build
 }
 
-func extractBuildSteps(nonDeterministicValues *global.NonDeterministicValues, repoName string) string {
+func extractBuildSteps(nonDeterministicValues *llm.NonDeterministicValues, repoName string) string {
 	command := ""
 
 	if nonDeterministicValues == nil {
@@ -87,9 +88,9 @@ func extractBuildSteps(nonDeterministicValues *global.NonDeterministicValues, re
 		}
 
 		// Order matters!!
-		global.ClearEnvVariables("LdFlags", &aux.LdFlags)
-		global.ClearEnvVariables("OutputPath", &aux.OutputPath)
-		global.ClearEnvVariables("BuildCommand", &aux.BuildCommand)
+		github.ClearEnvVariables("LdFlags", &aux.LdFlags)
+		github.ClearEnvVariables("OutputPath", &aux.OutputPath)
+		github.ClearEnvVariables("BuildCommand", &aux.BuildCommand)
 
 		if aux.BuildCommand != "" {
 			command += "\n" + aux.BuildCommand

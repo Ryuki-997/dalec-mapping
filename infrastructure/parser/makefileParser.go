@@ -2,14 +2,12 @@ package parser
 
 import (
 	"bufio"
-	"dalec-mapping/global"
+	"dalec-mapping/domain/contents"
 	"os"
 	"strings"
 )
 
-
-
-func ParseMakefile(filepath string, info *global.MakefileInfo) (*global.MakefileInfo, error) {
+func ParseMakefile(filepath string, info *contents.MakefileInfo) (*contents.MakefileInfo, error) {
 	file, err := os.Open(filepath)
 	if err != nil {
 		return nil, err
@@ -32,7 +30,7 @@ func ParseMakefile(filepath string, info *global.MakefileInfo) (*global.Makefile
 	return info, nil
 }
 
-func parseVariable(line string, info *global.MakefileInfo) {
+func parseVariable(line string, info *contents.MakefileInfo) {
 	var key, value string
 
 	if index := strings.Index(line, "="); index != -1 {
@@ -52,7 +50,7 @@ func parseVariable(line string, info *global.MakefileInfo) {
 	}
 }
 
-func GetVariable(info *global.MakefileInfo, key string) (string, bool) {
+func GetVariable(info *contents.MakefileInfo, key string) (string, bool) {
 	value, exists := info.Variables[key]
 	return value, exists
 }

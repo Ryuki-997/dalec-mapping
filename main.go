@@ -2,15 +2,16 @@ package main
 
 import (
 	"context"
+	"dalec-mapping/domain/llm"
+	"dalec-mapping/domain/onboarding"
+	"dalec-mapping/domain/repository"
+	tool "dalec-mapping/workflow"
 	"fmt"
 	"log"
 	"os"
 	"time"
 
 	"github.com/joho/godotenv"
-
-	"dalec-mapping/global"
-	"dalec-mapping/tool"
 )
 
 func main() {
@@ -23,7 +24,7 @@ func main() {
 		os.Exit(1)
 	} 
 
-	onboardFiles := []global.OnboardingInfo{}
+	onboardFiles := []onboarding.OnboardingInfo{}
 
 	err = tool.FetchOnboardFiles(&onboardFiles)
 	if err != nil {
@@ -41,17 +42,17 @@ func main() {
 	// TODO: return shell comma separated list variable paths
 }
 
-func generateSpec(onboard *global.OnboardingInfo) {
+func generateSpec(onboard *onboarding.OnboardingInfo) {
 	log.Println("Dalec Spec Generator - Scheduled Job")
 	log.Printf("Started at: %s", time.Now().Format(time.RFC3339))
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 	// Step 1: Discover build files
-	fileContents := &global.InstructionContents{
+	fileContents := &llm.InstructionContents{
 		Dockerfiles: []string{},
 		Makefiles:   []string{},
 	}
-	repositoryInfo := &global.RepoInfo{}
+	repositoryInfo := &repository.RepoInfo{}
 	log.Println("\n=== Step 1: Discover Build Files ===")
 	err := tool.Discover(onboard, fileContents, repositoryInfo)
 	if err != nil {

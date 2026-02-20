@@ -1,9 +1,9 @@
 package transformer
 
-import "dalec-mapping/global"
+import "dalec-mapping/domain/llm"
 
 // extractDependencies extracts build and runtime dependencies (uses nonDeterministicValues if available)
-func extractDependencies(nonDeterministicValues *global.NonDeterministicValues) map[string]interface{} {
+func extractDependencies(nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
 	deps := make(map[string]interface{})
 	buildDeps := make(map[string]interface{})
 	runtimeDeps := make(map[string]interface{})

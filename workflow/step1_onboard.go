@@ -1,18 +1,22 @@
 package tool
 
 import (
-	"dalec-mapping/global"
 	"encoding/base64"
 	"fmt"
 	"strings"
 
+	"dalec-mapping/domain/onboarding"
+	"dalec-mapping/domain/repository"
+	"dalec-mapping/infrastructure/github"
+	"dalec-mapping/utils"
+
 	"gopkg.in/yaml.v3"
 )
 
-func FetchOnboardFiles(onboardFiles *[]global.OnboardingInfo) error {
-	url := global.OnboardDirectory
+func FetchOnboardFiles(onboardFiles *[]onboarding.OnboardingInfo) error {
+	url := utils.OnboardDirectory
 
-	data, err := global.MakeGitHubRequest[map[string]interface{}](global.GithubRequest{URL: url})
+	data, err := github.MakeGitHubRequest[map[string]interface{}](repository.GithubRequest{URL: url})
 	if err != nil {
 		return fmt.Errorf("failed to fetch onboard data: %w", err)
 	}
@@ -41,7 +45,7 @@ func FetchOnboardFiles(onboardFiles *[]global.OnboardingInfo) error {
 
 	contentsURL := fmt.Sprintf("https://api.github.com/repos/azure-management-and-platforms/aks-dalec-build-defs/contents/%s?ref=ksehgal/fix-publish-poc", path)
 
-	fileData, err := global.MakeGitHubRequest[map[string]interface{}](global.GithubRequest{URL: contentsURL})
+	fileData, err := github.MakeGitHubRequest[map[string]interface{}](repository.GithubRequest{URL: contentsURL})
 	if err != nil {
 		return fmt.Errorf("failed to fetch onboard file %s: %w", path, err)
 	}
@@ -55,7 +59,7 @@ func FetchOnboardFiles(onboardFiles *[]global.OnboardingInfo) error {
 		return fmt.Errorf("failed to decode base64 content: %w", err)
 		}
 
-		onboard := global.OnboardingInfo{
+		onboard := onboarding.OnboardingInfo{
 			Repository: "",
 			Tag:        []string{},
 			Dockerfile: []string{},

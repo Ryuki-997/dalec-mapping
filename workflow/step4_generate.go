@@ -4,14 +4,16 @@ import (
 	"fmt"
 	"os"
 
-	"dalec-mapping/github"
-	"dalec-mapping/global"
-	"dalec-mapping/parser"
-	"dalec-mapping/transformer"
+	"dalec-mapping/domain/llm"
+	"dalec-mapping/domain/onboarding"
+	"dalec-mapping/infrastructure/github"
+	"dalec-mapping/infrastructure/parser"
+	"dalec-mapping/infrastructure/transformer"
+	"dalec-mapping/utils"
 )
 
 // Generate runs the generation step to create dalec specs
-func Generate(onboard *global.OnboardingInfo, fileContents *global.InstructionContents, agentResponse []byte) error {
+func Generate(onboard *onboarding.OnboardingInfo, fileContents *llm.InstructionContents, agentResponse []byte) error {
 	fmt.Println("=== GENERATE MODE ===")
 
 	// Fetch GitHub repository info
@@ -54,7 +56,7 @@ func Generate(onboard *global.OnboardingInfo, fileContents *global.InstructionCo
 		os.Exit(1)
 	}
 
-	fmt.Printf("✅ Successfully generated %s\n\n", global.ResultDir)
+	fmt.Printf("✅ Successfully generated %s\n\n", utils.ResultDir)
 
 	return nil
 }

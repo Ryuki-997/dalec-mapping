@@ -1,24 +1,26 @@
 package parser
 
 import (
-	"dalec-mapping/global"
-	"dalec-mapping/transformer"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"dalec-mapping/domain/contents"
+	"dalec-mapping/domain/llm"
+	"dalec-mapping/infrastructure/transformer"
+
 	"gopkg.in/yaml.v3"
 )
 
-func ParseOptionalFileInfo(dockerfiles, makefiles []string, specFilePath string, agentResponse []byte) (global.DockerfileInfo, global.MakefileInfo, *global.NonDeterministicValues, transformer.PreviousDalecSpec, error) {
-	dockerfileInfo := global.DockerfileInfo{
+func ParseOptionalFileInfo(dockerfiles, makefiles []string, specFilePath string, agentResponse []byte) (contents.DockerfileInfo, contents.MakefileInfo, *llm.NonDeterministicValues, transformer.PreviousDalecSpec, error) {
+	dockerfileInfo := contents.DockerfileInfo{
 		Args:   make(map[string]string),
 		Labels: make(map[string]string),
-		Stages: []global.Stage{},
+		Stages: []contents.Stage{},
 	}
 
-	makefileInfo := global.MakefileInfo{
+	makefileInfo := contents.MakefileInfo{
 		Variables: make(map[string]string),
 		Targets:  make(map[string][]string),
 	}
@@ -85,12 +87,12 @@ func WriteOutput(dalecSpec transformer.DalecSpec) error {
 	return nil
 }
 
-func fetchNonDeterministicValue(agentResponse []byte) (*global.NonDeterministicValues, error) {
+func fetchNonDeterministicValue(agentResponse []byte) (*llm.NonDeterministicValues, error) {
 	if len(agentResponse) == 0 {
 		return nil, nil
 	}
 
-	var nonDeterministicValues global.NonDeterministicValues
+	var nonDeterministicValues llm.NonDeterministicValues
 	err := yaml.Unmarshal(agentResponse, &nonDeterministicValues)
 	if err != nil {
 		fmt.Printf("❌ Error parsing NonDeterministicValues.yml file: %v\n", err)

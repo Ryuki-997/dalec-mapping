@@ -1,13 +1,16 @@
 package transformer
 
 import (
+	"dalec-mapping/domain/contents"
+	"dalec-mapping/domain/llm"
+	"dalec-mapping/domain/repository"
+	"dalec-mapping/infrastructure/github"
+	"dalec-mapping/infrastructure/test"
+
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"dalec-mapping/global"
-	"dalec-mapping/test"
 )
 
 // DalecSpec represents a Dalec specification using flexible maps for dynamic keys
@@ -15,14 +18,14 @@ type DalecSpec map[string]interface{}
 
 // DefaultSpec combines GitHub repo info, parsed Dockerfile info, and Makefile info
 type DefaultSpec struct {
-	global.RepoInfo
-	global.DockerfileInfo
+	repository.RepoInfo
+	contents.DockerfileInfo
 
 	Revision     int
-	BuildTargets []global.BuildTarget
+	BuildTargets []contents.BuildTarget
 }
 
-func InitDefaultSpec(repoInfo *global.RepoInfo, dockerfileInfo *global.DockerfileInfo, previousDalecSpecInfo PreviousDalecSpec) *DefaultSpec {
+func InitDefaultSpec(repoInfo *repository.RepoInfo, dockerfileInfo *contents.DockerfileInfo, previousDalecSpecInfo PreviousDalecSpec) *DefaultSpec {
 	defaultSpec := &DefaultSpec{}
 	defaultSpec.RepoInfo = *repoInfo
 
@@ -36,17 +39,17 @@ func InitDefaultSpec(repoInfo *global.RepoInfo, dockerfileInfo *global.Dockerfil
 		defaultSpec.Revision = previousDalecSpecInfo.Args.Revision + 1
 	}
 
-	defaultSpec.BuildTargets = []global.BuildTarget{
-		global.AzLinux3Container, // Primary container image target
-		global.AzLinux3Rpm,       // RPM package target
-		global.NobleDeb,          // Ubuntu/Debian package target
+	defaultSpec.BuildTargets = []contents.BuildTarget{
+		contents.AzLinux3Container, // Primary container image target
+		contents.AzLinux3Rpm,       // RPM package target
+		contents.NobleDeb,          // Ubuntu/Debian package target
 	}
 
 	return defaultSpec
 }
 
 // TransformToDalec converts parsed Dockerfile info to Dalec spec format
-func TransformToDalec(defaultSpec *DefaultSpec, makefileInfo *global.MakefileInfo, nonDeterministicValues *global.NonDeterministicValues) DalecSpec {
+func TransformToDalec(defaultSpec *DefaultSpec, makefileInfo *contents.MakefileInfo, nonDeterministicValues *llm.NonDeterministicValues) DalecSpec {
 	spec := make(DalecSpec)
 
 	// Add syntax header (special comment format)
@@ -173,7 +176,7 @@ func extractTargets(defaultSpec *DefaultSpec) map[string]interface{} {
 }
 
 // extractArtifacts identifies build artifacts (uses nonDeterministicValues if available)
-func extractArtifacts(defaultSpec *DefaultSpec, nonDeterministicValues *global.NonDeterministicValues) map[string]interface{} {
+func extractArtifacts(defaultSpec *DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
 	artifacts := make(map[string]interface{})
 	binaries := make(map[string]interface{})
 
@@ -181,7 +184,7 @@ func extractArtifacts(defaultSpec *DefaultSpec, nonDeterministicValues *global.N
 	if nonDeterministicValues != nil {
 		for _, aux := range nonDeterministicValues.Binaries {
 			outputPath := aux.OutputPath
-			global.ClearEnvVariables("OutputPath", &outputPath)
+			github.ClearEnvVariables("OutputPath", &outputPath)
 			
 			if outputPath == "" {
 				outputPath = aux.Name
@@ -207,7 +210,7 @@ func extractArtifacts(defaultSpec *DefaultSpec, nonDeterministicValues *global.N
 }
 
 // extractImageConfig extracts final image configuration (uses nonDeterministicValues if available)
-func extractImageConfig(defaultSpec *DefaultSpec, nonDeterministicValues *global.NonDeterministicValues) map[string]interface{} {
+func extractImageConfig(defaultSpec *DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
 	image := make(map[string]interface{})
 
 	var entrypoint string
@@ -239,7 +242,7 @@ func extractImageConfig(defaultSpec *DefaultSpec, nonDeterministicValues *global
 }
 
 // createSymlinks creates symlink configuration for binaries
-func createSymlinks(stage *global.Stage) map[string]interface{} {
+func createSymlinks(stage *contents.Stage) map[string]interface{} {
 	post := make(map[string]interface{})
 	symlinks := make(map[string]interface{})
 
@@ -274,7 +277,7 @@ func createSymlinks(stage *global.Stage) map[string]interface{} {
 }
 
 // appendTests creates test specifications
-func appendTests(defaultSpec *DefaultSpec, nonDeterministicValues *global.NonDeterministicValues) []map[string]interface{} {
+func appendTests(defaultSpec *DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) []map[string]interface{} {
 	tests := make([]map[string]interface{}, 0)
 
 	// Use binary name from NonDeterministicValues if available, otherwise fall back to repo name

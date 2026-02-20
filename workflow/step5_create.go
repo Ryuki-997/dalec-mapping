@@ -1,28 +1,31 @@
 package tool
 
 import (
-	"dalec-mapping/global"
 	"encoding/base64"
 	"fmt"
 	"os"
 	"strings"
+
+	"dalec-mapping/domain/repository"
+	"dalec-mapping/infrastructure/github"
+	"dalec-mapping/utils"
 )
 
 const (
-	targetOwner      = "azure-management-and-platforms"
-	targetRepo = "aks-dalec-build-defs"
-	targetBranch = "ksehgal/fix-publish-poc"
+	targetOwner      	= "azure-management-and-platforms"
+	targetRepo 				= "aks-dalec-build-defs"
+	targetBranch 			= "ksehgal/fix-publish-poc"
 )
 
 // GitPush commits the spec file directly to the base branch.
 func GitPush(repo, tag string) error {
 	// 1. Read the local spec file content
-	specContent, err := os.ReadFile(global.SpecPath)
+	specContent, err := os.ReadFile(utils.SpecPath)
 	if err != nil {
 		return fmt.Errorf("failed to read spec file: %w", err)
 	}
 
-	_, repoName, _, _ := global.ExtractRepositorySegments(repo)
+	_, repoName, _, _ := github.ExtractRepositorySegments(repo)
 	tag = strings.TrimPrefix(tag, "v")
 
 	encoded := base64.StdEncoding.EncodeToString(specContent)
@@ -42,7 +45,7 @@ func GitPush(repo, tag string) error {
 	}
 
 	// Try to get existing file SHA
-	existingFile, err := global.MakeGitHubRequest[map[string]interface{}](global.GithubRequest{
+	existingFile, err := github.MakeGitHubRequest[map[string]interface{}](repository.GithubRequest{
 		URL: fmt.Sprintf("%s?ref=%s", contentsURL, targetBranch),
 	})
 
@@ -54,9 +57,9 @@ func GitPush(repo, tag string) error {
 	}
 
 	// 3. Commit the file  
-	_, err = global.MakeGitHubRequest[map[string]interface{}](global.GithubRequest{
+	_, err = github.MakeGitHubRequest[map[string]interface{}](repository.GithubRequest{
 		URL:     contentsURL,
-		Method:  global.PUT,
+		Method:  repository.PUT,
 		Payload: putPayload,
 	})
 	if err != nil {

@@ -3,7 +3,10 @@ package tool
 import (
 	"bytes"
 	"context"
-	"dalec-mapping/global"
+	"dalec-mapping/domain/llm"
+	"dalec-mapping/domain/onboarding"
+	"dalec-mapping/infrastructure/github"
+	"dalec-mapping/utils"
 
 	"encoding/json"
 	"fmt"
@@ -15,7 +18,6 @@ import (
 	"strings"
 )
 
-const skillPath = "skills/non-deterministic-setup/SKILL.md"
 
 type ChatRequest struct {
 	Input       string  `json:"input"`
@@ -39,16 +41,16 @@ type ChatResponse struct {
 }
 
 // Populate analyzes dockerfiles and makefiles using LLM to extract non-deterministic values
-func Populate(ctx context.Context, onboard *global.OnboardingInfo, fileContents *global.InstructionContents) ([]byte, error) {
+func Populate(ctx context.Context, onboard *onboarding.OnboardingInfo, fileContents *llm.InstructionContents) ([]byte, error) {
 	log.Printf("Running populate for repo: %s", onboard.Repository)
 
-	_, repoName, _, _ := global.ExtractRepositorySegments(onboard.Repository)
+	_, repoName, _, _ := github.ExtractRepositorySegments(onboard.Repository)
 	resultPath := filepath.Join("result", repoName)
 
 	// Read skill.md
-	skillContent, err := os.ReadFile(global.Skillpath)
+	skillContent, err := os.ReadFile(utils.Skillpath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read SKILL.md at %s: %w", global.Skillpath, err)
+		return nil, fmt.Errorf("failed to read SKILL.md at %s: %w", utils.Skillpath, err)
 	}
 
 	// Build user prompt
@@ -75,10 +77,10 @@ func Populate(ctx context.Context, onboard *global.OnboardingInfo, fileContents 
 }
 
 // fetchFileContents fetches file contents from GitHub
-func fetchFileContents(onboard *global.OnboardingInfo, paths []string) (map[string]string, error) {
+func fetchFileContents(onboard *onboarding.OnboardingInfo, paths []string) (map[string]string, error) {
 	contents := make(map[string]string)
 
-	owner, repoName, branch, _ := global.ExtractRepositorySegments(onboard.Repository)
+	owner, repoName, branch, _ := github.ExtractRepositorySegments(onboard.Repository)
 
 	for _, path := range paths {
 		url := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", owner, repoName, branch, path)

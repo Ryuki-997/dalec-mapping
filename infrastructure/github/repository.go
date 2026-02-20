@@ -1,7 +1,9 @@
-package global
+package github
 
 import (
 	"bytes"
+	"dalec-mapping/domain/llm"
+	"dalec-mapping/domain/repository"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -52,7 +54,7 @@ func ExtractRepositorySegments(repo string) (owner, name, branch, subdir string)
 	parts := strings.Split(repo, "/")
 	if len(parts) == 2 {
 		url := fmt.Sprintf("https://api.github.com/repos/%s/%s/branches", parts[0], parts[1])
-		branches, err := MakeGitHubRequest[[]map[string]interface{}](GithubRequest{URL: url})
+		branches, err := MakeGitHubRequest[[]map[string]interface{}](repository.GithubRequest{URL: url})
 		if err != nil {
 			log.Printf("Error: failed to fetch branches for %s: %v\n", repo, err)
 			os.Exit(1)
@@ -81,12 +83,12 @@ func ExtractRepositorySegments(repo string) (owner, name, branch, subdir string)
 }
 
 // MakeGitHubRequest makes an authenticated HTTP request to the GitHub API.
-func MakeGitHubRequest[T any](request GithubRequest) (T, error) {
+func MakeGitHubRequest[T any](request repository.GithubRequest) (T, error) {
 	var result T
 
 	// Build request body for methods that need one
 	var bodyReader io.Reader
-	if request.Payload != nil && (request.Method == POST || request.Method == PUT) {
+	if request.Payload != nil && (request.Method == repository.POST || request.Method == repository.PUT) {
 		jsonBody, err := json.Marshal(request.Payload)
 		if err != nil {
 			return result, fmt.Errorf("failed to marshal request body: %w", err)
@@ -96,7 +98,7 @@ func MakeGitHubRequest[T any](request GithubRequest) (T, error) {
 
 	method := request.Method
 	if method == "" {
-		method = GET
+		method = repository.GET
 	}
 
 	req, err := http.NewRequest(string(method), request.URL, bodyReader)
@@ -198,7 +200,7 @@ func cleanLdFlags(ldflags string) string {
 }
 
 // Global cache for cleaned values
-var cleanedCache = CleanedValuesCache{}
+var cleanedCache = llm.CleanedValuesCache{}
 
 func ClearEnvVariables(key string, command *string) {
 	if command == nil || *command == "" {

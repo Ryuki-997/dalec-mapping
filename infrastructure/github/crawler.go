@@ -1,7 +1,7 @@
 package github
 
 import (
-	"dalec-mapping/global"
+	"dalec-mapping/domain/repository"
 	"fmt"
 	"io"
 	"net/http"
@@ -68,12 +68,12 @@ func FindFiles(root string, result interface{}) error {
 		return fmt.Errorf("struct has no []string fields with yaml/json tags")
 	}
 	
-	owner, repo, branch, subdir := global.ExtractRepositorySegments(root)
+	owner, repo, branch, subdir := ExtractRepositorySegments(root)
 
 	// Get the tree SHA for the branch
 	branchURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, branch)
 
-	data, err := global.MakeGitHubRequest[map[string]interface{}](global.GithubRequest{URL: branchURL})
+	data, err := MakeGitHubRequest[map[string]interface{}](repository.GithubRequest{URL: branchURL})
 	if err != nil {
 		return fmt.Errorf("failed to fetch tree: %w", err)
 	}

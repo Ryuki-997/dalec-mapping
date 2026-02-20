@@ -1,14 +1,13 @@
 package transformer
 
 import (
+	"dalec-mapping/domain/contents"
 	"fmt"
 	"os"
 	"strings"
-
-	"dalec-mapping/global"
 )
 
-func populateArgs(defaultSpec *DefaultSpec, makefileInfo *global.MakefileInfo) map[string]interface{} {
+func populateArgs(defaultSpec *DefaultSpec, makefileInfo *contents.MakefileInfo) map[string]interface{} {
 	args := make(map[string]interface{})
 	args["REVISION"] = defaultSpec.Revision
 	args["VERSION"] = defaultSpec.Version
@@ -21,7 +20,7 @@ func populateArgs(defaultSpec *DefaultSpec, makefileInfo *global.MakefileInfo) m
 
 	// Initialize empty MakefileInfo if nil
 	if makefileInfo == nil {
-		makefileInfo = &global.MakefileInfo{
+		makefileInfo = &contents.MakefileInfo{
 			Variables: make(map[string]string),
 		}
 	}
@@ -48,7 +47,7 @@ func populateArgs(defaultSpec *DefaultSpec, makefileInfo *global.MakefileInfo) m
 	return args
 }
 
-func NestedValueReplacement(defaultSpec *DefaultSpec, makefileInfo *global.MakefileInfo, value string) string {
+func NestedValueReplacement(defaultSpec *DefaultSpec, makefileInfo *contents.MakefileInfo, value string) string {
 
 	fmt.Printf("Before: %s\n", value)
 

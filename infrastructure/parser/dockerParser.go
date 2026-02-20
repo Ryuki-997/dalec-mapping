@@ -1,7 +1,7 @@
 package parser
 
 import (
-	"dalec-mapping/global"
+	"dalec-mapping/domain/contents"
 	"fmt"
 	"os"
 	"strings"
@@ -38,7 +38,7 @@ Example:
 
 // ParseDockerfile uses buildkit parser to parse a Dockerfile
 // The buildkit parser handles all the complex parsing for us
-func ParseDockerfile(filepath string, info *global.DockerfileInfo) (*global.DockerfileInfo, error) {
+func ParseDockerfile(filepath string, info *contents.DockerfileInfo) (*contents.DockerfileInfo, error) {
 	f, err := os.Open(filepath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open Dockerfile: %w", err)
@@ -51,7 +51,7 @@ func ParseDockerfile(filepath string, info *global.DockerfileInfo) (*global.Dock
 		return nil, fmt.Errorf("failed to parse Dockerfile: %w", err)
 	}
 
-	var currentStage *global.Stage
+	var currentStage *contents.Stage
 
 	// Walk the AST - each child is a Dockerfile instruction
 	for _, node := range result.AST.Children {
@@ -59,7 +59,7 @@ func ParseDockerfile(filepath string, info *global.DockerfileInfo) (*global.Dock
 
 		// Add raw instruction to current stage if it exists
 		if currentStage != nil {
-			rawInst := global.RawInstruction{
+			rawInst := contents.RawInstruction{
 				Type:  instruction,
 				Args:  []string{},
 				Flags: make(map[string]string),
@@ -151,14 +151,14 @@ func ParseDockerfile(filepath string, info *global.DockerfileInfo) (*global.Dock
 
 // parseFromInstruction extracts information from a FROM instruction
 // Example: FROM --platform=linux/amd64 golang:1.21 AS builder
-func parseFromInstruction(node *parser.Node) *global.Stage {
-	stage := &global.Stage{
+func parseFromInstruction(node *parser.Node) *contents.Stage {
+	stage := &contents.Stage{
 		Args:         make(map[string]string),
 		Env:          make(map[string]string),
-		Copies:       []global.CopyInstruction{},
+		Copies:       []contents.CopyInstruction{},
 		Runs:         []string{},
 		Expose:       []string{},
-		Instructions: []global.RawInstruction{},
+		Instructions: []contents.RawInstruction{},
 	}
 
 	// Check for flags (buildkit already parsed them)
@@ -186,8 +186,8 @@ func parseFromInstruction(node *parser.Node) *global.Stage {
 
 // parseCopyInstruction extracts COPY/ADD instruction details
 // Example: COPY --from=builder /app/bin /usr/local/bin
-func parseCopyInstruction(node *parser.Node, instType string) global.CopyInstruction {
-	copy := global.CopyInstruction{
+func parseCopyInstruction(node *parser.Node, instType string) contents.CopyInstruction {
+	copy := contents.CopyInstruction{
 		Type:   instType,
 		Source: []string{},
 	}
@@ -268,7 +268,7 @@ func parseKeyValue(node *parser.Node) (string, string) {
 }
 
 // PrintDockerfileInfo displays parsed Dockerfile information
-func PrintDockerfileInfo(info *global.DockerfileInfo) {
+func PrintDockerfileInfo(info *contents.DockerfileInfo) {
 	fmt.Println("╔══════════════════════════════════════════╗")
 	fmt.Println("║     DOCKERFILE PARSING RESULTS           ║")
 	fmt.Println("╚══════════════════════════════════════════╝")
