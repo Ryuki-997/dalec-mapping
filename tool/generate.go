@@ -15,7 +15,11 @@ func Generate(onboard *global.OnboardingInfo, fileContents *global.InstructionCo
 	fmt.Println("=== GENERATE MODE ===")
 
 	// Fetch GitHub repository info
-	repoInfo, err := github.FetchRepoInfo(onboard.Repository, onboard.Tag)
+	tag := ""
+	if len(onboard.Tag) > 0 {
+		tag = onboard.Tag[0]
+	}
+	repoInfo, err := github.FetchRepoInfo(onboard.Repository, tag)
 	if err != nil {
 		fmt.Printf("❌ Error fetching repository info: %v\n", err)
 		os.Exit(1)

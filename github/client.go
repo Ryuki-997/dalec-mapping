@@ -193,7 +193,7 @@ func fetchSourceGenerator(info *global.RepoInfo) error {
 // fetchTagInfo fetches commit SHA for a specific tag
 func fetchTagInfo(info *global.RepoInfo, tag string) error {
 	if tag == "" {
-		return nil
+		return fmt.Errorf("Tag must be specified")
 	}
 
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/ref/tags/%s", info.Owner, info.Repo, tag)
@@ -213,20 +213,4 @@ func fetchTagInfo(info *global.RepoInfo, tag string) error {
 	}
 
 	return fmt.Errorf("failed to extract commit SHA from tag")
-}
-
-// PrintRepoInfo displays repository information
-func PrintRepoInfo(info *global.RepoInfo) {
-	fmt.Println("📦 Repository Information")
-	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Printf("  Owner: %s\n", info.Owner)
-	fmt.Printf("  Repo: %s\n", info.Repo)
-	fmt.Printf("  Default Branch: %s\n", info.Branch)
-	fmt.Printf("  Git URL: %s\n", info.GitURL)
-	fmt.Printf("  Description: %s\n", info.Description)
-	fmt.Printf("  Version: %s\n", info.Version)
-	fmt.Printf("  License: %s\n", info.License)
-	fmt.Printf("  Latest Commit: %s\n", info.LatestCommit)
-	fmt.Printf("  Source Generator: %s\n", info.Generator)
-	fmt.Println()
 }

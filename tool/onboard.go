@@ -1,7 +1,6 @@
 package tool
 
 import (
-	"dalec-mapping/github"
 	"dalec-mapping/global"
 	"encoding/base64"
 	"fmt"
@@ -10,7 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func Fetch(onboardFiles *[]global.OnboardingInfo) error {
+func FetchOnboardFiles(onboardFiles *[]global.OnboardingInfo) error {
 	url := global.OnboardDirectory
 
 	data, err := global.MakeGitHubRequest[map[string]interface{}](global.GithubRequest{URL: url})
@@ -19,7 +18,6 @@ func Fetch(onboardFiles *[]global.OnboardingInfo) error {
 	}
 
 	onboardItems, ok := data["tree"].([]interface{})
-
 	if !ok {
 		return fmt.Errorf("unexpected response format: 'tree' field is missing or not an array")
 	}
@@ -59,7 +57,7 @@ func Fetch(onboardFiles *[]global.OnboardingInfo) error {
 
 		onboard := global.OnboardingInfo{
 			Repository: "",
-			Tag:        "",
+			Tag:        []string{},
 			Dockerfile: []string{},
 			Makefile:   []string{},
 		}
@@ -69,17 +67,27 @@ func Fetch(onboardFiles *[]global.OnboardingInfo) error {
 		if err := yaml.Unmarshal(content, &onboard); err != nil {
 			return fmt.Errorf("failed to unmarshal onboard data: %w", err)
 		}
+		
+		if onboard.Tag == nil {
+			onboard.Tag = append(onboard.Tag, "latest")
+		}
 
-		if onboard.Tag == "" {
-			repoInfo, err := github.FetchRepoInfo(onboard.Repository, "")
-			if err == nil && repoInfo.Version != "" {
-				onboard.Tag = repoInfo.Version
-				fmt.Printf("Using latest release tag: %s\n", onboard.Tag)
-			}
+		resolvedTags, err := resolveOnboardTags(onboard.Repository, onboard.Tag)
+		if err != nil {
+			fmt.Printf("⚠️  Failed to resolve tags for %s: %v\n", onboard.Repository, err)
+			continue
+		}
+
+		if len(resolvedTags) > 0 {
+			onboard.Tag = resolvedTags
+			*onboardFiles = append(*onboardFiles, onboard)
 		}
 
 		fmt.Printf("Onboard Data: %v\n", onboard)
-		*onboardFiles = append(*onboardFiles, onboard)
 	}
 	return nil
+}
+
+func resolveOnboardTags(repo string, tags []string) ([]string, error) {
+	return tags, nil
 }

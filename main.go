@@ -25,12 +25,10 @@ func main() {
 
 	onboardFiles := []global.OnboardingInfo{}
 
-	err = tool.Fetch(&onboardFiles)
+	err = tool.FetchOnboardFiles(&onboardFiles)
 	if err != nil {
 		log.Fatalf("❌ Failed to fetch onboard data: %v", err)
 	}
-
-	fmt.Printf("Onboard Files: %v\n", onboardFiles)
 
 	shellVar := []string{}
 	for _, onboard := range onboardFiles {
@@ -84,11 +82,13 @@ func generateSpec(onboard *global.OnboardingInfo) {
 	log.Println("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	log.Printf("✅ Generation Complete at %s", time.Now().Format(time.RFC3339))
 
-	// Step 4: Create PR with generated spec
-	// err = tool.GitPush(onboard.Repository, onboard.Tag)
-	// if err != nil {
-	// 	log.Fatalf("❌ Step 4 failed: %v", err)
-	// }
+	for _, tag := range onboard.Tag {
+		// Step 4: Create PR with generated spec
+		err = tool.GitPush(onboard.Repository, tag)
+		if err != nil {
+			log.Fatalf("❌ Step 4 failed: %v", err)
+		}
+	}
 
 	log.Printf("✅ Spec created successfully for repository %s", onboard.Repository)
 }

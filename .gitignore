@@ -4,6 +4,6 @@
 
 result/
 onboard.yml
-script.go
+tmp.go
 
 TODO.md
