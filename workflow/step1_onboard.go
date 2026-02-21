@@ -1,4 +1,4 @@
-package tool
+package workflow
 
 import (
 	"encoding/base64"
@@ -14,7 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func FetchOnboardFiles(onboardFiles *[]onboarding.OnboardingInfo) error {
+func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo) error {
 	url := utils.OnboardDirectory
 
 	data, err := github.MakeGitHubRequest[map[string]interface{}](repository.GithubRequest{URL: url})
@@ -44,6 +44,17 @@ func FetchOnboardFiles(onboardFiles *[]onboarding.OnboardingInfo) error {
 			continue
 		}
 
+		var specRepository, specImageName string
+
+		switch n {
+		case 4: 
+			specRepository, specImageName = parts[0], parts[1]
+		case 3: 
+			specRepository, specImageName = "", parts[1]
+		default:
+			return fmt.Errorf("unexpected file path format: %s", path)
+		}
+
 	contentsURL := fmt.Sprintf("https://api.github.com/repos/azure-management-and-platforms/aks-dalec-build-defs/contents/%s?ref=ksehgal/fix-publish-poc", path)
 
 	fileData, err := github.MakeGitHubRequest[map[string]interface{}](repository.GithubRequest{URL: contentsURL})
@@ -71,6 +82,8 @@ func FetchOnboardFiles(onboardFiles *[]onboarding.OnboardingInfo) error {
 			Tag:        []string{},
 			Dockerfile: "",
 			Makefile:   "",
+			SpecImageName: specImageName,
+			SpecRepository: specRepository,
 		}
 
 		fmt.Printf("Data: %s\n", string(content))
@@ -91,7 +104,7 @@ func FetchOnboardFiles(onboardFiles *[]onboarding.OnboardingInfo) error {
 
 		if len(resolvedTags) > 0 {
 			onboard.Tag = resolvedTags
-			*onboardFiles = append(*onboardFiles, onboard)
+			*onboardImages = append(*onboardImages, onboard)
 		}
 
 		fmt.Printf("Onboard Data: %v\n", onboard)

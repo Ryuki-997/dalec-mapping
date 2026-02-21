@@ -88,11 +88,11 @@ func generateSpec(onboard *onboarding.OnboardingInfo) {
 	log.Println("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	log.Printf("✅ Generation Complete at %s", time.Now().Format(time.RFC3339))
 
-	// Step 4: Create PR with generated spec
-	err = tool.GitPush(onboard.Repository, onboard.Tag[0])
-	if err != nil {
-		log.Fatalf("❌ Step 4 failed: %v", err)
-	}
+	// // Step 4: Create PR with generated spec
+	// err = tool.GitPush(onboard.Repository, onboard.Tag[0])
+	// if err != nil {
+	// 	log.Fatalf("❌ Step 4 failed: %v", err)
+	// }
 
 	log.Printf("✅ Spec created successfully for repository %s @ %s", onboard.Repository, onboard.Tag[0])
 }

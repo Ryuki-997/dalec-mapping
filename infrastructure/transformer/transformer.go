@@ -3,6 +3,7 @@ package transformer
 import (
 	"dalec-mapping/domain/contents"
 	"dalec-mapping/domain/llm"
+	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/github"
 	"dalec-mapping/infrastructure/test"
@@ -20,14 +21,17 @@ type DalecSpec map[string]interface{}
 type DefaultSpec struct {
 	repository.RepoInfo
 	contents.DockerfileInfo
+	onboarding.OnboardingInfo
 
 	Revision     int
 	BuildTargets []contents.BuildTarget
 }
 
-func InitDefaultSpec(repoInfo *repository.RepoInfo, dockerfileInfo *contents.DockerfileInfo, previousDalecSpecInfo PreviousDalecSpec) *DefaultSpec {
+func InitDefaultSpec(onboardInfo *onboarding.OnboardingInfo, repoInfo *repository.RepoInfo, dockerfileInfo *contents.DockerfileInfo, previousDalecSpecInfo PreviousDalecSpec) *DefaultSpec {
 	defaultSpec := &DefaultSpec{}
 	defaultSpec.RepoInfo = *repoInfo
+
+	defaultSpec.OnboardingInfo = *onboardInfo
 
 	if dockerfileInfo != nil {
 		defaultSpec.DockerfileInfo = *dockerfileInfo
@@ -78,8 +82,8 @@ func TransformToDalec(defaultSpec *DefaultSpec, makefileInfo *contents.MakefileI
 // buildExtensions creates the x-build-extensions section
 func buildExtensions(defaultSpec *DefaultSpec) map[string]interface{} {
 	ext := make(map[string]interface{})
-	ext["image-name"] = strings.ToLower(defaultSpec.Repo)
-	ext["repository"] = "azure"
+	ext["image-name"] = defaultSpec.SpecImageName
+	ext["repository"] = defaultSpec.SpecRepository
 
 	// Set default build target(s)
 	ext["build-targets"] = defaultSpec.BuildTargets

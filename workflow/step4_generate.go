@@ -1,4 +1,4 @@
-package tool
+package workflow
 
 import (
 	"fmt"
@@ -40,7 +40,7 @@ func Generate(onboard *onboarding.OnboardingInfo, fileContents *llm.InstructionC
 	// Transform to Dalec spec with repository metadata
 	fmt.Println("=== TRANSFORMING TO DALEC SPEC ===")
 
-	defaultSpec := transformer.InitDefaultSpec(repoInfo, &dockerfileInfo, previousDalecSpecInfo)
+	defaultSpec := transformer.InitDefaultSpec(onboard, repoInfo, &dockerfileInfo, previousDalecSpecInfo)
 
 	fmt.Println("=== DOCKER FILE INFO ===")
 	transformer.PrintDockerfileInfo(defaultSpec)
