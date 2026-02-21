@@ -34,9 +34,14 @@ func main() {
 	shellVar := []string{}
 	for _, onboard := range onboardFiles {
 		fmt.Printf("Onboard Documents: %v\n", onboard)
-		generateSpec(&onboard)
-		remotePath := ""
-		shellVar = append(shellVar, remotePath)
+		for _, tag := range onboard.Tag {
+			tagOnboard := onboard
+			tagOnboard.Tag = []string{tag}
+			fmt.Printf("▶ Running pipeline for %s @ %s\n", onboard.Repository, tag)
+			generateSpec(&tagOnboard)
+			remotePath := ""
+			shellVar = append(shellVar, remotePath)
+		}
 	}
 
 	// TODO: return shell comma separated list variable paths
@@ -83,13 +88,11 @@ func generateSpec(onboard *onboarding.OnboardingInfo) {
 	log.Println("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	log.Printf("✅ Generation Complete at %s", time.Now().Format(time.RFC3339))
 
-	for _, tag := range onboard.Tag {
-		// Step 4: Create PR with generated spec
-		err = tool.GitPush(onboard.Repository, tag)
-		if err != nil {
-			log.Fatalf("❌ Step 4 failed: %v", err)
-		}
+	// Step 4: Create PR with generated spec
+	err = tool.GitPush(onboard.Repository, onboard.Tag[0])
+	if err != nil {
+		log.Fatalf("❌ Step 4 failed: %v", err)
 	}
 
-	log.Printf("✅ Spec created successfully for repository %s", onboard.Repository)
+	log.Printf("✅ Spec created successfully for repository %s @ %s", onboard.Repository, onboard.Tag[0])
 }

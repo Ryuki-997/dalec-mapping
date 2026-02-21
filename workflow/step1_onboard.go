@@ -8,6 +8,7 @@ import (
 	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/github"
+	"dalec-mapping/infrastructure/semver"
 	"dalec-mapping/utils"
 
 	"gopkg.in/yaml.v3"
@@ -54,6 +55,12 @@ func FetchOnboardFiles(onboardFiles *[]onboarding.OnboardingInfo) error {
 	if !ok {
 		return fmt.Errorf("unexpected response: missing or invalid content field")
 	}
+
+	if len(contentStr) == 0 {
+		fmt.Printf("⚠️  Skipping empty onboard file: %s\n", path)
+		continue
+	}
+
 	content, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(contentStr, "\n", ""))
 	if err != nil {
 		return fmt.Errorf("failed to decode base64 content: %w", err)
@@ -62,8 +69,8 @@ func FetchOnboardFiles(onboardFiles *[]onboarding.OnboardingInfo) error {
 		onboard := onboarding.OnboardingInfo{
 			Repository: "",
 			Tag:        []string{},
-			Dockerfile: []string{},
-			Makefile:   []string{},
+			Dockerfile: "",
+			Makefile:   "",
 		}
 
 		fmt.Printf("Data: %s\n", string(content))
@@ -76,7 +83,7 @@ func FetchOnboardFiles(onboardFiles *[]onboarding.OnboardingInfo) error {
 			onboard.Tag = append(onboard.Tag, "latest")
 		}
 
-		resolvedTags, err := resolveOnboardTags(onboard.Repository, onboard.Tag)
+		resolvedTags, err := semver.ResolveOnboardTags(onboard.Repository, onboard.Tag)
 		if err != nil {
 			fmt.Printf("⚠️  Failed to resolve tags for %s: %v\n", onboard.Repository, err)
 			continue
@@ -90,8 +97,4 @@ func FetchOnboardFiles(onboardFiles *[]onboarding.OnboardingInfo) error {
 		fmt.Printf("Onboard Data: %v\n", onboard)
 	}
 	return nil
-}
-
-func resolveOnboardTags(repo string, tags []string) ([]string, error) {
-	return tags, nil
 }

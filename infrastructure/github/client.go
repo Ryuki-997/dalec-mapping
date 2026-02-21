@@ -214,3 +214,23 @@ func fetchTagInfo(info *repository.RepoInfo, tag string) error {
 
 	return fmt.Errorf("failed to extract commit SHA from tag")
 }
+
+// fetchAllTags fetches all tags for a repository in a single API call.
+func FetchAllTags(owner, repo string) ([]string, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/refs/tags", owner, repo)
+	data, err := MakeGitHubRequest[[]map[string]interface{}](repository.GithubRequest{URL: url})
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch tags for %s/%s: %w", owner, repo, err)
+	}
+
+	tags := make([]string, 0, len(data))
+	for _, item := range data {
+		ref, ok := item["ref"].(string)
+		if !ok {
+			continue
+		}
+		ref = strings.TrimPrefix(ref, "refs/tags/")
+		tags = append(tags, ref)
+	}
+	return tags, nil
+}
