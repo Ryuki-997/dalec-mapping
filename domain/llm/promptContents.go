@@ -1,6 +1,6 @@
 package llm
 
 type InstructionContents struct {
-	Dockerfiles []string `yaml:"dockerfiles"`
-	Makefiles   []string `yaml:"makefiles"`
+	Dockerfile []byte `yaml:"dockerfile"`
+	Makefile   []byte `yaml:"makefile"`
 }

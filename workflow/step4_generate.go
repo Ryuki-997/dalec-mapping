@@ -31,7 +31,7 @@ func Generate(onboard *onboarding.OnboardingInfo, fileContents *llm.InstructionC
 	specFilePath := ""
 
 	// Parse Dockerfile if path provided
-	dockerfileInfo, makefileInfo, nonDeterministicInfo, previousDalecSpecInfo, err := parser.ParseOptionalFileInfo(fileContents.Dockerfiles, fileContents.Makefiles, specFilePath, agentResponse)
+	dockerfileInfo, makefileInfo, nonDeterministicInfo, previousDalecSpecInfo, err := parser.ParseOptionalFileInfo(fileContents.Dockerfile, fileContents.Makefile, specFilePath, agentResponse)
 	if err != nil {
 		fmt.Printf("❌ Error parsing optional files: %v\n", err)
 		os.Exit(1)

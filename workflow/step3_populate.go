@@ -54,7 +54,7 @@ func Populate(ctx context.Context, onboard *onboarding.OnboardingInfo, fileConte
 	}
 
 	// Build user prompt
-	userPrompt := buildPrompt(fileContents.Dockerfiles, fileContents.Makefiles)
+	userPrompt := buildPrompt(fileContents.Dockerfile, fileContents.Makefile)
 
 	// Call Azure Foundry API
 	log.Println("Calling Azure OpenAI API...")
@@ -120,27 +120,23 @@ func fetchFileContents(onboard *onboarding.OnboardingInfo, paths []string) (map[
 }
 
 // buildPrompt constructs the user prompt with dockerfile and makefile contents
-func buildPrompt(dockerfiles, makefiles []string) string {
+func buildPrompt(dockerfile, makefile []byte) string {
 	var sb strings.Builder
 
 	sb.WriteString("Analyze the following build files and extract non-deterministic values.\n\n")
 
 	sb.WriteString("## Dockerfiles\n")
-	if len(dockerfiles) == 0 {
-		sb.WriteString("(No Dockerfiles found)\n\n")
+	if dockerfile == nil {
+		sb.WriteString("(No Dockerfile found)\n\n")
 	} else {
-		for path, content := range dockerfiles {
-			sb.WriteString(fmt.Sprintf("### %v\n```dockerfile\n%s\n```\n\n", path, content))
-		}
+		sb.WriteString(fmt.Sprintf("### Dockerfile\n```dockerfile\n%s\n```\n\n", string(dockerfile)))
 	}
 
 	sb.WriteString("## Makefiles\n")
-	if len(makefiles) == 0 {
-		sb.WriteString("(No Makefiles found)\n\n")
+	if makefile == nil {
+		sb.WriteString("(No Makefile found)\n\n")
 	} else {
-		for path, content := range makefiles {
-			sb.WriteString(fmt.Sprintf("### %v\n```makefile\n%s\n```\n\n", path, content))
-		}
+		sb.WriteString(fmt.Sprintf("### Makefile\n```makefile\n%s\n```\n\n", string(makefile)))
 	}
 
 	sb.WriteString("\nReturn the output in the exact YAML format specified in the skill document.")

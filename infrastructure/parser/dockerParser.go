@@ -38,15 +38,27 @@ Example:
 
 // ParseDockerfile uses buildkit parser to parse a Dockerfile
 // The buildkit parser handles all the complex parsing for us
-func ParseDockerfile(filepath string, info *contents.DockerfileInfo) (*contents.DockerfileInfo, error) {
-	f, err := os.Open(filepath)
+func ParseDockerfile(dockerfile []byte, info *contents.DockerfileInfo) (*contents.DockerfileInfo, error) {
+	// Create a temporary file to store the Dockerfile content
+	tmpFile, err := os.CreateTemp("", "Dockerfile")
 	if err != nil {
-		return nil, fmt.Errorf("failed to open Dockerfile: %w", err)
+		return nil, fmt.Errorf("failed to create temporary file: %w", err)
 	}
-	defer f.Close()
+	defer os.Remove(tmpFile.Name())
+	defer tmpFile.Close()
+
+	// Write the dockerfile content to the temporary file
+	if _, err := tmpFile.Write(dockerfile); err != nil {
+		return nil, fmt.Errorf("failed to write to temporary file: %w", err)
+	}
+
+	// Reset file pointer to the beginning
+	if _, err := tmpFile.Seek(0, 0); err != nil {
+		return nil, fmt.Errorf("failed to seek in temporary file: %w", err)
+	}
 
 	// Docker buildkit parses the entire Dockerfile and returns an AST
-	result, err := parser.Parse(f)
+	result, err := parser.Parse(tmpFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse Dockerfile: %w", err)
 	}

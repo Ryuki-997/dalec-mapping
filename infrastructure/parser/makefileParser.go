@@ -3,18 +3,11 @@ package parser
 import (
 	"bufio"
 	"dalec-mapping/domain/contents"
-	"os"
 	"strings"
 )
 
-func ParseMakefile(filepath string, info *contents.MakefileInfo) (*contents.MakefileInfo, error) {
-	file, err := os.Open(filepath)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
+func ParseMakefile(makefile []byte, info *contents.MakefileInfo) (*contents.MakefileInfo, error) {
+	scanner := bufio.NewScanner(strings.NewReader(string(makefile)))
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())

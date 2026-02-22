@@ -54,8 +54,8 @@ func generateSpec(onboard *onboarding.OnboardingInfo) {
 
 	// Step 1: Discover build files
 	fileContents := &llm.InstructionContents{
-		Dockerfiles: []string{},
-		Makefiles:   []string{},
+		Dockerfile: []byte{},
+		Makefile:   []byte{},
 	}
 	repositoryInfo := &repository.RepoInfo{}
 	log.Println("\n=== Step 1: Discover Build Files ===")
@@ -63,8 +63,6 @@ func generateSpec(onboard *onboarding.OnboardingInfo) {
 	if err != nil {
 		log.Fatalf("❌ Step 1 failed: %v", err)
 	}
-
-	log.Printf("✅ Build files discovered: Dockerfiles=%d, Makefiles=%d", len(fileContents.Dockerfiles), len(fileContents.Makefiles))
 
 	ctx := context.Background()
 

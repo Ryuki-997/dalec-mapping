@@ -33,12 +33,22 @@ func Discover(onboard *onboarding.OnboardingInfo, fileContents *llm.InstructionC
 
 	// Run DFS to find all Dockerfiles and Makefiles if not provided in onboarding info
 	root := onboard.Repository
-
-	err = github.FindFiles(root, fileContents)
+	owner, repo, branch, subdirectory := github.ExtractRepositorySegments(root)
+	path := fmt.Sprintf("%s/%s/%s/%s", owner, repo, branch, subdirectory)
+	dockerfileURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s", path, onboard.Dockerfile)
+	dockerfileContent, err := github.FetchRawContent(dockerfileURL)
 	if err != nil {
-		fmt.Printf("❌ Error discovering build files: %v\n", err)
-		os.Exit(1)
+		fmt.Printf("⚠️  Warning: failed to fetch Dockerfile from %s: %v\n", dockerfileURL, err)
 	}
+
+	makefileURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s", path, onboard.Makefile)
+	makefileContent, err := github.FetchRawContent(makefileURL)
+	if err != nil {
+		fmt.Printf("⚠️  Warning: failed to fetch Makefile from %s: %v\n", makefileURL, err)
+	}
+
+	fileContents.Dockerfile = dockerfileContent
+	fileContents.Makefile = makefileContent
 
 	return nil
 }

@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func ParseOptionalFileInfo(dockerfiles, makefiles []string, specFilePath string, agentResponse []byte) (contents.DockerfileInfo, contents.MakefileInfo, *llm.NonDeterministicValues, transformer.PreviousDalecSpec, error) {
+func ParseOptionalFileInfo(dockerfile, makefile []byte, specFilePath string, agentResponse []byte) (contents.DockerfileInfo, contents.MakefileInfo, *llm.NonDeterministicValues, transformer.PreviousDalecSpec, error) {
 	dockerfileInfo := contents.DockerfileInfo{
 		Args:   make(map[string]string),
 		Labels: make(map[string]string),
@@ -25,13 +25,8 @@ func ParseOptionalFileInfo(dockerfiles, makefiles []string, specFilePath string,
 		Targets:  make(map[string][]string),
 	}
 
-	for _, dockerfile := range dockerfiles {
-		ParseDockerfile(dockerfile, &dockerfileInfo)
-	}
-
-	for _, makefile := range makefiles {
-		ParseMakefile(makefile, &makefileInfo)
-	}
+	ParseDockerfile(dockerfile, &dockerfileInfo)
+	ParseMakefile(makefile, &makefileInfo)
 
 	previousDalecSpecInfo, err := fetchPreviousYAMLInfo(specFilePath)
 	if err != nil {
