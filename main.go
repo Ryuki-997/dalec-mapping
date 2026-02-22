@@ -5,10 +5,11 @@ import (
 	"dalec-mapping/domain/llm"
 	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/domain/repository"
-	tool "dalec-mapping/workflow"
+	"dalec-mapping/workflow"
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -26,7 +27,7 @@ func main() {
 
 	onboardFiles := []onboarding.OnboardingInfo{}
 
-	err = tool.FetchOnboardFiles(&onboardFiles)
+	err = workflow.FetchOnboardFiles(&onboardFiles)
 	if err != nil {
 		log.Fatalf("❌ Failed to fetch onboard data: %v", err)
 	}
@@ -35,19 +36,17 @@ func main() {
 	for _, onboard := range onboardFiles {
 		fmt.Printf("Onboard Documents: %v\n", onboard)
 		for _, tag := range onboard.Tag {
-			tagOnboard := onboard
-			tagOnboard.Tag = []string{tag}
 			fmt.Printf("▶ Running pipeline for %s @ %s\n", onboard.Repository, tag)
-			generateSpec(&tagOnboard)
-			remotePath := ""
+			remotePath := generateSpec(&onboard, tag)
 			shellVar = append(shellVar, remotePath)
 		}
 	}
 
 	// TODO: return shell comma separated list variable paths
+	fmt.Printf("specPaths=%s\n", strings.Join(shellVar, ","))
 }
 
-func generateSpec(onboard *onboarding.OnboardingInfo) {
+func generateSpec(onboard *onboarding.OnboardingInfo, tag string) string {
 	log.Println("Dalec Spec Generator - Scheduled Job")
 	log.Printf("Started at: %s", time.Now().Format(time.RFC3339))
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -59,7 +58,7 @@ func generateSpec(onboard *onboarding.OnboardingInfo) {
 	}
 	repositoryInfo := &repository.RepoInfo{}
 	log.Println("\n=== Step 1: Discover Build Files ===")
-	err := tool.Discover(onboard, fileContents, repositoryInfo)
+	err := workflow.Discover(onboard, fileContents, repositoryInfo)
 	if err != nil {
 		log.Fatalf("❌ Step 1 failed: %v", err)
 	}
@@ -68,7 +67,7 @@ func generateSpec(onboard *onboarding.OnboardingInfo) {
 
 	// Step 2: Populate non-deterministic fields using LLM
 	log.Println("\n=== Step 2: Populate Non-Deterministic Fields ===")
-	agentResponse, err := tool.Populate(ctx, onboard, fileContents)
+	agentResponse, err := workflow.Populate(ctx, onboard, fileContents)
 	if err != nil {
 		log.Fatalf("❌ Step 2 failed: %v", err)
 		os.Exit(1)
@@ -78,7 +77,7 @@ func generateSpec(onboard *onboarding.OnboardingInfo) {
 
 	// Step 3: Generate Dalec spec
 	log.Println("\n=== Step 3: Generate Dalec Spec ===")
-	err = tool.Generate(onboard, fileContents, agentResponse)
+	err = workflow.Generate(onboard, fileContents, agentResponse)
 	if err != nil {
 		log.Fatalf("❌ Step 3 failed: %v", err)
 	}
@@ -87,10 +86,17 @@ func generateSpec(onboard *onboarding.OnboardingInfo) {
 	log.Printf("✅ Generation Complete at %s", time.Now().Format(time.RFC3339))
 
 	// // Step 4: Create PR with generated spec
-	// err = tool.GitPush(onboard.Repository, onboard.Tag[0])
+	// err = workflow.GitPush(onboard.Repository, onboard.Tag[0])
 	// if err != nil {
 	// 	log.Fatalf("❌ Step 4 failed: %v", err)
 	// }
 
-	log.Printf("✅ Spec created successfully for repository %s @ %s", onboard.Repository, onboard.Tag[0])
+	log.Printf("✅ Spec created successfully for repository %s @ %s", onboard.Repository, onboard.Tag)
+
+	// // Step 5: Output a shell variable consist of a list of remote generated spec path separated by comma for CI integration
+	// // specs/{repository}/{image}/{image}-{tag}-specfile.yml
+	if onboard.SpecRepository == "" {
+		return fmt.Sprintf("specs/%s/%s-%s-specfile.yml", onboard.SpecImageName, onboard.SpecImageName, tag)
+	} 
+	return fmt.Sprintf("specs/%s/%s/%s-%s-specfile.yml", onboard.SpecRepository, onboard.SpecImageName, onboard.SpecImageName, tag)
 }
