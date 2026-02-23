@@ -276,10 +276,10 @@ func createSymlinks(stage *contents.Stage) map[string]interface{} {
 func appendTests(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) []map[string]interface{} {
 	tests := make([]map[string]interface{}, 0)
 
-	// Use binary name from NonDeterministicValues if available, otherwise fall back to repo name
+	// Use binary name from first binary in list if available, otherwise fall back to repo name
 	binaryName := defaultSpec.Repo
-	if nonDeterministicValues != nil && nonDeterministicValues.BinaryName != "" {
-		binaryName = nonDeterministicValues.BinaryName
+	if nonDeterministicValues != nil && len(nonDeterministicValues.Binaries) > 0 && nonDeterministicValues.Binaries[0].Name != "" {
+		binaryName = nonDeterministicValues.Binaries[0].Name
 	}
 
 	tests = append(tests, test.TestCheckFiles(binaryName, 0755))

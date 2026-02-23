@@ -25,8 +25,6 @@ The Go struct uses yaml tags that **require camelCase keys** in the YAML file:
 // parser/agentValues.go
 type NonDeterministicValues struct {
     // Build Artifacts
-    BinaryName        string            `yaml:"binaryName"`        // Primary binary name
-    BinaryOutputPath  string            `yaml:"binaryOutputPath"`  // Full output path
     Binaries []Binary `yaml:"binaries"` // All binaries
     
     // Image Configuration  
@@ -80,14 +78,14 @@ Where `{repo-name}` is the repository name (e.g., `kubelogin`, `blob-csi-driver`
 - Makefile content - Search for build commands  
 - Dockerfile content - Search for COPY and ENTRYPOINT instructions
 
-**Output:** `BinaryName`, `BinaryOutputPath`, `Binaries` (YAML fields in output)
+**Output:** `Binaries` (YAML fields in output)
 
 #### 1.1 Extraction Checklist
 
 - [ ] Find all `go build -o <path>` commands in Makefile
 - [ ] Extract binary name from `-o` flag path (last path segment)
 - [ ] If no `-o` flag, infer from `./cmd/<name>` package path
-- [ ] Add all binaries to binary list:
+- [ ] Add all binaries to binaries list:
   - [ ] Primary = matches Dockerfile ENTRYPOINT or repo name
 - [ ] Store full path for artifact mapping
 
@@ -96,18 +94,18 @@ Where `{repo-name}` is the repository name (e.g., `kubelogin`, `blob-csi-driver`
 ```makefile
 # Pattern A: Direct -o flag
 go build -o _output/${ARCH}/blobplugin ./pkg/blobplugin
-# → BinaryName: "blobplugin"
-# → BinaryOutputPath: "_output/${ARCH}/blobplugin"
+# → binaries[0].name: "blobplugin"
+# → binaries[0].outputPath: "_output/${ARCH}/blobplugin"
 
 # Pattern B: Variable reference
 go build -o $(TEMP_DIR)/pod_nanny main.go
-# → BinaryName: "pod_nanny"
-# → BinaryOutputPath: "$(TEMP_DIR)/pod_nanny"
+# → binaries[0].name: "pod_nanny"
+# → binaries[0].outputPath: "$(TEMP_DIR)/pod_nanny"
 
 # Pattern C: Implicit (no -o flag)
 go build ./cmd/myapp
-# → BinaryName: "myapp" (inferred from package)
-# → BinaryOutputPath: "myapp"
+# → binaries[0].name: "myapp" (inferred from package)
+# → binaries[0].outputPath: "myapp"
 ```
 
 ---
@@ -356,7 +354,7 @@ func FillNonDeterministicValues(dockerfileContent, makefileContent string) (*Non
 │  ─────────────────────────────────────────────────────────────  │
 │  Input: NonDeterministicValues.yml from result/                 │
 │  Uses values to populate:                                       │
-│  - artifacts.binaries (from BinaryName, BinaryOutputPath)       │
+│  - artifacts.binaries (from Binaries list)                       │
 │  - image.entrypoint (from Entrypoint)                           │
 │  - image.post.symlinks (from Symlink)                           │
 │  - dependencies.build (from BuildDeps)                          │
@@ -375,7 +373,7 @@ After agent extraction, verify:
 
 | # | Check | Status |
 | --- | ------- | -------- |
-| V1 | `BinaryName` matches Makefile `-o` output (not repo name) | [ ] |
+| V1 | `binaries[0].name` matches Makefile `-o` output (not repo name) | [ ] |
 | V2 | `Entrypoint` matches Dockerfile `ENTRYPOINT`/`CMD` | [ ] |
 | V3 | `Symlink` target matches `Entrypoint` path | [ ] |
 | V4 | `RuntimeDeps` excludes: `fi`, `then`, `;`, `install`, `dpkg` | [ ] |
@@ -428,8 +426,6 @@ ENTRYPOINT ["/blobplugin"]
 # Output: result/{repo-name}/NonDeterministicValues.yml
 # YAML keys are camelCase (not PascalCase)
 
-binaryName: "blobplugin"
-binaryOutputPath: "_output/${ARCH}/blobplugin"
 binaries:
   - name: "blobplugin"
     outputPath: "blobplugin"
@@ -460,9 +456,7 @@ Equivalent Go struct (for reference):
 
 ```go
 NonDeterministicValues{
-    BinaryName:        "blobplugin",
-    BinaryOutputPath:  "_output/${ARCH}/blobplugin", 
-    Binaries: []{{Name: "blobfuse-proxy", ...}},
+    Binaries: []{{Name: "blobplugin", OutputPath: "blobplugin", ...}, {Name: "blobfuse-proxy", ...}},
     
     Entrypoint:        "/blobplugin",
     Symlink:           "/usr/bin/blobplugin",

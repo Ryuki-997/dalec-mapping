@@ -18,9 +18,7 @@ type Binary struct {
 // NonDeterministicValues holds agent-extracted values from Dockerfile/Makefile
 type NonDeterministicValues struct {
 	// Build Artifacts
-	BinaryName       string   `yaml:"binaryName"`
-	BinaryOutputPath string   `yaml:"binaryOutputPath"`
-	Binaries         []Binary `yaml:"binaries"`
+	Binaries []Binary `yaml:"binaries"`
 
 	// Image Configuration
 	Entrypoint string `yaml:"entrypoint"`
