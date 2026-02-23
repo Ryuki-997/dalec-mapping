@@ -2,6 +2,7 @@ package transformer
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"dalec-mapping/domain/contents"
@@ -10,14 +11,13 @@ import (
 )
 
 // extractBuildSteps converts RUN commands to Dalec build steps (uses nonDeterministicValues if available)
-func extractBuildSection(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
+func extractBuildSection(defaultSpec *contents.DefaultSpec, makefileInfo *contents.MakefileInfo, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
 	build := make(map[string]interface{})
 	env := make(map[string]interface{})
 
 	// Add standard env vars (deterministic)
 	env["GOPROXY"] = "direct"
 	env["GOEXPERIMENT"] = "systemcrypto"
-	// env["CGO_ENABLED"] = "1"
 	env["VERSION"] = "${VERSION}"
 
 	// Set CGO_ENABLED: use LLM/parser value if provided, default to "1" for FIPS compliance
@@ -27,23 +27,8 @@ func extractBuildSection(defaultSpec *contents.DefaultSpec, nonDeterministicValu
 	}
 	env["CGO_ENABLED"] = cgoEnabled
 
-	skipArguments := map[string]bool{
-		"COMMIT":     true,
-		"VERSION":    true,
-		"REVISION":   true,
-		"ARCH":       true,
-		"OS":         true,
-		"OS_VERSION": true,
-		"GOARCH":     true,
-		"GOOS":       true,
-	}
-
-	for arg := range defaultSpec.Args {
-		if skipArguments[arg] {
-			continue
-		}
-		env[string(arg)] = fmt.Sprintf("${%s}", arg)
-	}
+	// Extract build steps first so we can scan them for variable references
+	command := extractBuildSteps(nonDeterministicValues, defaultSpec.Repo)
 
 	// Add LDFLAGS from NonDeterministicValues if available
 	if nonDeterministicValues != nil {
@@ -55,23 +40,46 @@ func extractBuildSection(defaultSpec *contents.DefaultSpec, nonDeterministicValu
 		}
 	}
 
-	build["env"] = env
-
-	// Extract build steps
-	command := extractBuildSteps(nonDeterministicValues, defaultSpec.Repo)
-
 	buildCommand := "cd " + defaultSpec.Repo + "\n"
-
-	fmt.Printf("COMMAND: %v\n", command)
 	if command == "" {
-		// Default: cd to repo and run go build
 		output := fmt.Sprintf("bin/%s", defaultSpec.Repo)
 		buildCommand += fmt.Sprintf("go build -o %s ./main.go", output)
 	} else {
 		buildCommand += command
 	}
 
-	fmt.Printf("BUILD COMMAND: %v\n", buildCommand)
+	// Collect all text to scan for variable references:
+	// build commands + LdFlags from env
+	var scanTexts []string
+	scanTexts = append(scanTexts, buildCommand)
+	if ldflags, ok := env["LDFLAGS"]; ok {
+		scanTexts = append(scanTexts, fmt.Sprintf("%v", ldflags))
+	}
+
+	// Find all ${VAR} and $(VAR) references in build commands and LdFlags
+	varRefPattern := regexp.MustCompile(`\$[{(]([A-Za-z_][A-Za-z0-9_]*)[})]`)
+	referencedVars := make(map[string]bool)
+	for _, text := range scanTexts {
+		for _, match := range varRefPattern.FindAllStringSubmatch(text, -1) {
+			referencedVars[match[1]] = true
+		}
+	}
+
+	// Only push Makefile variables that are actually referenced
+	if makefileInfo != nil {
+		for varName := range referencedVars {
+			// Skip vars already set in env or handled elsewhere
+			if _, alreadySet := env[varName]; alreadySet {
+				continue
+			}
+			// If Makefile defines this variable, add it as a reference
+			if _, exists := makefileInfo.Variables[varName]; exists {
+				env[varName] = fmt.Sprintf("${%s}", varName)
+			}
+		}
+	}
+
+	build["env"] = env
 
 	steps := []map[string]interface{}{
 		{"command": buildCommand},

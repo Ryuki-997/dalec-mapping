@@ -62,7 +62,7 @@ func TransformToDalec(defaultSpec *contents.DefaultSpec, makefileInfo *contents.
 	spec["sources"] = extractSources(defaultSpec)
 	spec["dependencies"] = extractDependencies(nonDeterministicValues)
 	spec["targets"] = extractTargets(defaultSpec)
-	buildSection := extractBuildSection(defaultSpec, nonDeterministicValues)
+	buildSection := extractBuildSection(defaultSpec, makefileInfo, nonDeterministicValues)
 	spec["build"] = buildSection
 	spec["artifacts"] = extractArtifacts(defaultSpec, nonDeterministicValues)
 	spec["image"] = extractImageConfig(defaultSpec, nonDeterministicValues)

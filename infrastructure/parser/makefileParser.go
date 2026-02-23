@@ -26,15 +26,15 @@ func ParseMakefile(makefile []byte, info *contents.MakefileInfo) (*contents.Make
 func parseVariable(line string, info *contents.MakefileInfo) {
 	var key, value string
 
-	if index := strings.Index(line, "="); index != -1 {
-		key = strings.TrimSpace(line[:index])
-		value = strings.TrimSpace(line[index+1:])
-	} else if index := strings.Index(line, ":="); index != -1 {
+	if index := strings.Index(line, ":="); index != -1 {
 		key = strings.TrimSpace(line[:index])
 		value = strings.TrimSpace(line[index+2:])
 	} else if index := strings.Index(line, "?="); index != -1 {
 		key = strings.TrimSpace(line[:index])
 		value = strings.TrimSpace(line[index+2:])
+	} else if index := strings.Index(line, "="); index != -1 {
+		key = strings.TrimSpace(line[:index])
+		value = strings.TrimSpace(line[index+1:])
 	}
 
 	if key != "" {
