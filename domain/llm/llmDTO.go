@@ -20,6 +20,9 @@ type NonDeterministicValues struct {
 	// Build Artifacts
 	Binaries []Binary `yaml:"binaries"`
 
+	// Build Configuration
+	CgoEnabled string `yaml:"cgoEnabled"` // "0" or "1"; defaults to "1" for FIPS if unset
+
 	// Image Configuration
 	Entrypoint string `yaml:"entrypoint"`
 	Symlink    string `yaml:"symlink"`

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"dalec-mapping/domain/contents"
@@ -97,13 +98,22 @@ func fetchNonDeterministicValue(agentResponse []byte) (*llm.NonDeterministicValu
 	removeFlags := map[string]string{
 		"'":              "\"",
 		"`":              "\"",
-		"CGO_ENABLED=0 ": "",
-		"CGO_ENABLED=1 ": "",
 		"GOOS=linux ":    "",
 		"GOARCH=amd64 ":  "",
 	}
 
+	// Extract CGO_ENABLED value from build commands before stripping
+	cgoPattern := regexp.MustCompile(`CGO_ENABLED=(\d)`)
+	for _, bin := range nonDeterministicValues.Binaries {
+		if m := cgoPattern.FindStringSubmatch(bin.BuildCommand); len(m) > 1 {
+			nonDeterministicValues.CgoEnabled = m[1]
+			break
+		}
+	}
+
 	for i := range nonDeterministicValues.Binaries {
+		// Strip CGO_ENABLED assignments from command (moved to build.env)
+		nonDeterministicValues.Binaries[i].BuildCommand = cgoPattern.ReplaceAllString(nonDeterministicValues.Binaries[i].BuildCommand, "")
 		for key, value := range removeFlags {
 			nonDeterministicValues.Binaries[i].BuildCommand = strings.ReplaceAll(nonDeterministicValues.Binaries[i].BuildCommand, key, value)
 		}
