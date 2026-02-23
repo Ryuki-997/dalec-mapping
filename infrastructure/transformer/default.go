@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-func populateArgs(defaultSpec *DefaultSpec, makefileInfo *contents.MakefileInfo) map[string]interface{} {
+func populateArgs(defaultSpec *contents.DefaultSpec, makefileInfo *contents.MakefileInfo) map[string]interface{} {
 	args := make(map[string]interface{})
 	args["REVISION"] = defaultSpec.Revision
 	args["VERSION"] = defaultSpec.Version
@@ -47,7 +47,7 @@ func populateArgs(defaultSpec *DefaultSpec, makefileInfo *contents.MakefileInfo)
 	return args
 }
 
-func NestedValueReplacement(defaultSpec *DefaultSpec, makefileInfo *contents.MakefileInfo, value string) string {
+func NestedValueReplacement(defaultSpec *contents.DefaultSpec, makefileInfo *contents.MakefileInfo, value string) string {
 
 	fmt.Printf("Before: %s\n", value)
 
@@ -107,7 +107,7 @@ func NestedValueReplacement(defaultSpec *DefaultSpec, makefileInfo *contents.Mak
 	return value
 }
 
-func populateMetadata(defaultSpec *DefaultSpec, spec DalecSpec) {
+func populateMetadata(defaultSpec *contents.DefaultSpec, spec map[string]interface{}) {
 	spec["name"] = strings.ToLower(defaultSpec.Repo)
 	spec["packager"] = "Azure Container Upstream"
 	spec["vendor"] = "Microsoft Corporation"

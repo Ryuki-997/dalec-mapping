@@ -48,7 +48,7 @@ func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo) error {
 
 		switch n {
 		case 4: 
-			specRepository, specImageName = parts[0], parts[1]
+			specRepository, specImageName = parts[1], parts[2]
 		case 3: 
 			specRepository, specImageName = "", parts[1]
 		default:

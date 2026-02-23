@@ -279,99 +279,31 @@ func parseKeyValue(node *parser.Node) (string, string) {
 	return fullValue, ""
 }
 
-// PrintDockerfileInfo displays parsed Dockerfile information
-func PrintDockerfileInfo(info *contents.DockerfileInfo) {
-	fmt.Println("╔══════════════════════════════════════════╗")
-	fmt.Println("║     DOCKERFILE PARSING RESULTS           ║")
-	fmt.Println("╚══════════════════════════════════════════╝")
+func PrintDockerfileInfo(defaultSpec *contents.DefaultSpec) {
+	fmt.Println("Parsed Dockerfile Stages:")
+	fmt.Println("")
 
-	if len(info.Args) > 0 {
-		fmt.Println("📋 Global ARGs:")
-		for k, v := range info.Args {
-			if v == "" {
-				fmt.Printf("   • %s (no default)\n", k)
-			} else {
-				fmt.Printf("   • %s = %s\n", k, v)
-			}
+	for _, stage := range defaultSpec.Stages {
+		fmt.Printf("Stage: %s (From: %s)\n", stage.Name, stage.From)
+		fmt.Println("  Env:")
+		for k, v := range stage.Env {
+			fmt.Printf("    %s=%s\n", k, v)
 		}
-		fmt.Println()
+		fmt.Println("  Runs:")
+		for _, run := range stage.Runs {
+			fmt.Printf("    %s\n", run)
+		}
+		fmt.Println("  Copies:")
+		for _, copy := range stage.Copies {
+			fmt.Printf("    From: %s, Source: %v, Dest: %s\n", copy.From, copy.Source, copy.Dest)
+		}
+		fmt.Println("")
 	}
 
-	if len(info.Labels) > 0 {
-		fmt.Println("🏷️  Labels:")
-		for k, v := range info.Labels {
-			fmt.Printf("   • %s = %s\n", k, v)
-		}
-		fmt.Println()
+	for k, v := range defaultSpec.Args {
+		fmt.Printf("Build Arg: %s=%s\n", k, v)
 	}
-
-	fmt.Printf("🏗️  Build Stages: %d\n\n", len(info.Stages))
-
-	for i, stage := range info.Stages {
-		stageName := stage.Name
-		if stageName == "" {
-			stageName = fmt.Sprintf("(unnamed stage %d)", i)
-		}
-
-		fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-		fmt.Printf("Stage %d: %s\n", i, stageName)
-		fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-		fmt.Printf("  📦 Base: %s\n", stage.From)
-
-		if stage.Platform != "" {
-			fmt.Printf("  🖥️  Platform: %s\n", stage.Platform)
-		}
-
-		if stage.Workdir != "" {
-			fmt.Printf("  📁 Workdir: %s\n", stage.Workdir)
-		}
-
-		if len(stage.Args) > 0 {
-			fmt.Println("  📋 ARGs:")
-			for k, v := range stage.Args {
-				fmt.Printf("     • %s = %s\n", k, v)
-			}
-		}
-
-		if len(stage.Env) > 0 {
-			fmt.Println("  🌍 ENV:")
-			for k, v := range stage.Env {
-				fmt.Printf("     • %s = %s\n", k, v)
-			}
-		}
-
-		if len(stage.Runs) > 0 {
-			fmt.Printf("  ⚙️  RUN commands: %d\n", len(stage.Runs))
-			for _, run := range stage.Runs {
-				fmt.Printf("     • %s\n", truncate(run, 70))
-			}
-		}
-
-		if len(stage.Copies) > 0 {
-			fmt.Printf("  📋 COPY/ADD: %d\n", len(stage.Copies))
-			for _, copy := range stage.Copies {
-				fromInfo := ""
-				if copy.From != "" {
-					fromInfo = fmt.Sprintf(" (from %s)", copy.From)
-				}
-				fmt.Printf("     • %s: %v → %s%s\n", copy.Type, copy.Source, copy.Dest, fromInfo)
-			}
-		}
-
-		if len(stage.Entrypoint) > 0 {
-			fmt.Printf("  🚀 Entrypoint: %v\n", stage.Entrypoint)
-		}
-
-		if len(stage.Cmd) > 0 {
-			fmt.Printf("  💻 Cmd: %v\n", stage.Cmd)
-		}
-
-		if len(stage.Expose) > 0 {
-			fmt.Printf("  🌐 Expose: %v\n", stage.Expose)
-		}
-
-		fmt.Println()
-	}
+	fmt.Println("")
 }
 
 func truncate(s string, maxLen int) string {

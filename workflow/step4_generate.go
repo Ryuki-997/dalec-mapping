@@ -43,7 +43,7 @@ func Generate(onboard *onboarding.OnboardingInfo, fileContents *llm.InstructionC
 	defaultSpec := transformer.InitDefaultSpec(onboard, repoInfo, &dockerfileInfo, previousDalecSpecInfo)
 
 	fmt.Println("=== DOCKER FILE INFO ===")
-	transformer.PrintDockerfileInfo(defaultSpec)
+	parser.PrintDockerfileInfo(defaultSpec)
 
 	dalecSpec := transformer.TransformToDalec(defaultSpec, &makefileInfo, nonDeterministicInfo)
 

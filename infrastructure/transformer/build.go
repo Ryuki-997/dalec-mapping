@@ -4,12 +4,13 @@ import (
 	"fmt"
 	"strings"
 
+	"dalec-mapping/domain/contents"
 	"dalec-mapping/domain/llm"
 	"dalec-mapping/infrastructure/github"
 )
 
 // extractBuildSteps converts RUN commands to Dalec build steps (uses nonDeterministicValues if available)
-func extractBuildSection(defaultSpec *DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
+func extractBuildSection(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
 	build := make(map[string]interface{})
 	env := make(map[string]interface{})
 

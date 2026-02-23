@@ -17,18 +17,8 @@ import (
 // DalecSpec represents a Dalec specification using flexible maps for dynamic keys
 type DalecSpec map[string]interface{}
 
-// DefaultSpec combines GitHub repo info, parsed Dockerfile info, and Makefile info
-type DefaultSpec struct {
-	repository.RepoInfo
-	contents.DockerfileInfo
-	onboarding.OnboardingInfo
-
-	Revision     int
-	BuildTargets []contents.BuildTarget
-}
-
-func InitDefaultSpec(onboardInfo *onboarding.OnboardingInfo, repoInfo *repository.RepoInfo, dockerfileInfo *contents.DockerfileInfo, previousDalecSpecInfo PreviousDalecSpec) *DefaultSpec {
-	defaultSpec := &DefaultSpec{}
+func InitDefaultSpec(onboardInfo *onboarding.OnboardingInfo, repoInfo *repository.RepoInfo, dockerfileInfo *contents.DockerfileInfo, previousDalecSpecInfo PreviousDalecSpec) *contents.DefaultSpec {
+	defaultSpec := &contents.DefaultSpec{}
 	defaultSpec.RepoInfo = *repoInfo
 
 	defaultSpec.OnboardingInfo = *onboardInfo
@@ -43,17 +33,19 @@ func InitDefaultSpec(onboardInfo *onboarding.OnboardingInfo, repoInfo *repositor
 		defaultSpec.Revision = previousDalecSpecInfo.Args.Revision + 1
 	}
 
+	// Default Build Targets in x-build-extensions (can be overridden by Makefile or LLM output)
 	defaultSpec.BuildTargets = []contents.BuildTarget{
 		contents.AzLinux3Container, // Primary container image target
 		contents.AzLinux3Rpm,       // RPM package target
 		contents.NobleDeb,          // Ubuntu/Debian package target
+		contents.WindowsCrossContainer, // Windows container image target
 	}
 
 	return defaultSpec
 }
 
 // TransformToDalec converts parsed Dockerfile info to Dalec spec format
-func TransformToDalec(defaultSpec *DefaultSpec, makefileInfo *contents.MakefileInfo, nonDeterministicValues *llm.NonDeterministicValues) DalecSpec {
+func TransformToDalec(defaultSpec *contents.DefaultSpec, makefileInfo *contents.MakefileInfo, nonDeterministicValues *llm.NonDeterministicValues) DalecSpec {
 	spec := make(DalecSpec)
 
 	// Add syntax header (special comment format)
@@ -80,7 +72,7 @@ func TransformToDalec(defaultSpec *DefaultSpec, makefileInfo *contents.MakefileI
 }
 
 // buildExtensions creates the x-build-extensions section
-func buildExtensions(defaultSpec *DefaultSpec) map[string]interface{} {
+func buildExtensions(defaultSpec *contents.DefaultSpec) map[string]interface{} {
 	ext := make(map[string]interface{})
 	ext["image-name"] = defaultSpec.SpecImageName
 	ext["repository"] = defaultSpec.SpecRepository
@@ -99,7 +91,7 @@ func buildExtensions(defaultSpec *DefaultSpec) map[string]interface{} {
 }
 
 // extractTargets creates target-specific configurations
-func extractTargets(defaultSpec *DefaultSpec) map[string]interface{} {
+func extractTargets(defaultSpec *contents.DefaultSpec) map[string]interface{} {
 	targets := make(map[string]interface{})
 
 	// Track unique OS targets (deduplicate by OS, not by full build target)
@@ -180,7 +172,7 @@ func extractTargets(defaultSpec *DefaultSpec) map[string]interface{} {
 }
 
 // extractArtifacts identifies build artifacts (uses nonDeterministicValues if available)
-func extractArtifacts(defaultSpec *DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
+func extractArtifacts(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
 	artifacts := make(map[string]interface{})
 	binaries := make(map[string]interface{})
 
@@ -214,7 +206,7 @@ func extractArtifacts(defaultSpec *DefaultSpec, nonDeterministicValues *llm.NonD
 }
 
 // extractImageConfig extracts final image configuration (uses nonDeterministicValues if available)
-func extractImageConfig(defaultSpec *DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
+func extractImageConfig(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
 	image := make(map[string]interface{})
 
 	var entrypoint string
@@ -281,7 +273,7 @@ func createSymlinks(stage *contents.Stage) map[string]interface{} {
 }
 
 // appendTests creates test specifications
-func appendTests(defaultSpec *DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) []map[string]interface{} {
+func appendTests(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) []map[string]interface{} {
 	tests := make([]map[string]interface{}, 0)
 
 	// Use binary name from NonDeterministicValues if available, otherwise fall back to repo name
@@ -293,31 +285,4 @@ func appendTests(defaultSpec *DefaultSpec, nonDeterministicValues *llm.NonDeterm
 	tests = append(tests, test.TestCheckFiles(binaryName, 0755))
 
 	return tests
-}
-
-func PrintDockerfileInfo(defaultSpec *DefaultSpec) {
-	fmt.Println("Parsed Dockerfile Stages:")
-	fmt.Println("")
-
-	for _, stage := range defaultSpec.Stages {
-		fmt.Printf("Stage: %s (From: %s)\n", stage.Name, stage.From)
-		fmt.Println("  Env:")
-		for k, v := range stage.Env {
-			fmt.Printf("    %s=%s\n", k, v)
-		}
-		fmt.Println("  Runs:")
-		for _, run := range stage.Runs {
-			fmt.Printf("    %s\n", run)
-		}
-		fmt.Println("  Copies:")
-		for _, copy := range stage.Copies {
-			fmt.Printf("    From: %s, Source: %v, Dest: %s\n", copy.From, copy.Source, copy.Dest)
-		}
-		fmt.Println("")
-	}
-
-	for k, v := range defaultSpec.Args {
-		fmt.Printf("Build Arg: %s=%s\n", k, v)
-	}
-	fmt.Println("")
 }

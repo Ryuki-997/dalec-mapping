@@ -18,24 +18,28 @@ const (
 )
 
 // GitPush commits the spec file directly to the base branch.
-func GitPush(repo, tag string) error {
+func GitPush(specRepository, specImageName, tag string) error {
 	// 1. Read the local spec file content
 	specContent, err := os.ReadFile(utils.SpecPath)
 	if err != nil {
 		return fmt.Errorf("failed to read spec file: %w", err)
 	}
 
-	_, repoName, _, _ := github.ExtractRepositorySegments(repo)
 	tag = strings.TrimPrefix(tag, "v")
 
 	encoded := base64.StdEncoding.EncodeToString(specContent)
-	file := fmt.Sprintf("%s-%s-specfile.yml", repoName, tag)
-	filePath := fmt.Sprintf("specs/%s/%s", repoName, file)
+	file := fmt.Sprintf("%s-%s-specfile.yml", specImageName, tag)
+	var filePath string
+	if specRepository != "" {
+		filePath = fmt.Sprintf("specs/%s/%s/%s", specRepository, specImageName, file)
+	} else {
+		filePath = fmt.Sprintf("specs/%s/%s", specImageName, file)
+	}
 
 	// 2. Check if file exists and get SHA
 	contentsURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s", targetOwner, targetRepo, filePath)
 	putPayload := map[string]interface{}{
-		"message": fmt.Sprintf("Add %s-%s-specfile.yml", repoName, tag),
+		"message": fmt.Sprintf("Add %s-%s-specfile.yml", specImageName, tag),
 		"committer": map[string]string{
 			"name":  "spec generation",
 			"email": "ryukikoda@microsoft.com",

@@ -1,7 +1,9 @@
 package transformer
 
+import "dalec-mapping/domain/contents"
+
 // extractSources creates source definitions from Dockerfile
-func extractSources(defaultSpec *DefaultSpec) map[string]interface{} {
+func extractSources(defaultSpec *contents.DefaultSpec) map[string]interface{} {
 	sources := make(map[string]interface{})
 	sourceName := defaultSpec.Repo
 
