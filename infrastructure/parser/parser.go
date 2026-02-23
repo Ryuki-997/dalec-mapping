@@ -117,8 +117,6 @@ func fetchNonDeterministicValue(agentResponse []byte) (*llm.NonDeterministicValu
 		for key, value := range removeFlags {
 			nonDeterministicValues.Binaries[i].BuildCommand = strings.ReplaceAll(nonDeterministicValues.Binaries[i].BuildCommand, key, value)
 		}
-
-		fmt.Printf("New Command: %v\n", nonDeterministicValues.Binaries[i].BuildCommand)
 	}
 
 	fmt.Println("✅ Successfully read NonDeterministicValues.yml file.")

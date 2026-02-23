@@ -17,6 +17,7 @@ func extractBuildSection(defaultSpec *contents.DefaultSpec, nonDeterministicValu
 	// Add standard env vars (deterministic)
 	env["GOPROXY"] = "direct"
 	env["GOEXPERIMENT"] = "systemcrypto"
+	// env["CGO_ENABLED"] = "1"
 	env["VERSION"] = "${VERSION}"
 
 	// Set CGO_ENABLED: use LLM/parser value if provided, default to "1" for FIPS compliance

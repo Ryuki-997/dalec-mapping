@@ -234,7 +234,7 @@ RUN curl -Ls https://github.com/Azure/azcopy/releases/.../azcopy.tar.gz | tar xz
 
 ```makefile
 # Makefile input:
-CGO_ENABLED=1 GOOS=linux GOARCH=$(ARCH) go build -a \
+CGO_ENABLED=${CGO_ENABLED} GOOS=linux GOARCH=$(ARCH) go build -a \
     -ldflags "-X ${PKG}/pkg/version.Ver=$(TAG) -s -w" \
     -o _output/binary ./cmd/main
 
@@ -248,7 +248,7 @@ CGO_ENABLED=1 GOOS=linux GOARCH=$(ARCH) go build -a \
 ```yaml
 build:
   env:
-    CGO_ENABLED: "1"
+    CGO_ENABLED: "${CGO_ENABLED}"
     GOOS: linux
   steps:
     - command: |

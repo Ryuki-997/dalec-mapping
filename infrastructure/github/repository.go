@@ -220,9 +220,35 @@ func ClearEnvVariables(key string, command *string) {
 		binaryName := filepath.Base(cleanedCache.OutputPath)
 		envPathPattern := regexp.MustCompile(`[^\s]+\$[\{\(][^\}\)]+[\}\)][^\s]*` + binaryName)
 		*command = envPathPattern.ReplaceAllString(*command, cleanedCache.OutputPath)
-		
+
 		ldFlagsVarPattern := regexp.MustCompile(`\$\{LDFLAGS\}`)
 		*command = ldFlagsVarPattern.ReplaceAllString(*command, cleanedCache.LdFlags)
+
+		// Remove prebuilt runtime/OS env assignments that Dalec handles natively
+		removeEnvs := map[string]bool{
+			"CGO_ENABLED": true,
+			"GOOS":        true,
+			"GOARCH":      true,
+			"GOARM":       true,
+			"GOARM64":     true,
+			"OS":          true,
+			"ARCH":        true,
+		}
+		// Match patterns like KEY=value, KEY=${VAR}, KEY=${VAR:-default}, KEY=$(VAR)
+		envAssignPattern := regexp.MustCompile(`(\w+)=(?:\$[\{\(][^\}\)]*[\}\)]|\S*)`)
+		*command = envAssignPattern.ReplaceAllStringFunc(*command, func(match string) string {
+			eqIdx := strings.Index(match, "=")
+			if eqIdx > 0 {
+				varName := match[:eqIdx]
+				if removeEnvs[varName] {
+					return ""
+				}
+			}
+			return match
+		})
+		// Clean up leftover extra whitespace
+		spacePattern := regexp.MustCompile(`\s{2,}`)
+		*command = strings.TrimSpace(spacePattern.ReplaceAllString(*command, " "))
 
 	default:
 		fmt.Printf("Warning: unrecognized key for ClearEnvVariables: %s\n", key)
