@@ -17,7 +17,7 @@ func extractBuildSection(defaultSpec *contents.DefaultSpec, nonDeterministicValu
 	// Add standard env vars (deterministic)
 	env["GOPROXY"] = "direct"
 	env["GOEXPERIMENT"] = "systemcrypto"
-	env["CGO_ENABLED"] = "1"
+	// env["CGO_ENABLED"] = "1"
 	env["VERSION"] = "${VERSION}"
 
 	skipArguments := map[string]bool{

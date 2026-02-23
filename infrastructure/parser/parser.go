@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"dalec-mapping/domain/contents"
 	"dalec-mapping/domain/llm"
@@ -94,22 +93,22 @@ func fetchNonDeterministicValue(agentResponse []byte) (*llm.NonDeterministicValu
 		return nil, err
 	}
 
-	removeFlags := map[string]string{
-		"'":              "\"",
-		"`":              "\"",
-		"CGO_ENABLED=0 ": "",
-		"CGO_ENABLED=1 ": "",
-		"GOOS=linux ":    "",
-		"GOARCH=amd64 ":  "",
-	}
+	// removeFlags := map[string]string{
+	// 	"'":              "\"",
+	// 	"`":              "\"",
+	// 	"CGO_ENABLED=0 ": "",
+	// 	"CGO_ENABLED=1 ": "",
+	// 	"GOOS=linux ":    "",
+	// 	"GOARCH=amd64 ":  "",
+	// }
 
-	for i := range nonDeterministicValues.Binaries {
-		for key, value := range removeFlags {
-			nonDeterministicValues.Binaries[i].BuildCommand = strings.ReplaceAll(nonDeterministicValues.Binaries[i].BuildCommand, key, value)
-		}
+	// for i := range nonDeterministicValues.Binaries {
+	// 	for key, value := range removeFlags {
+	// 		nonDeterministicValues.Binaries[i].BuildCommand = strings.ReplaceAll(nonDeterministicValues.Binaries[i].BuildCommand, key, value)
+	// 	}
 
-		fmt.Printf("New Command: %v\n", nonDeterministicValues.Binaries[i].BuildCommand)
-	}
+	// 	fmt.Printf("New Command: %v\n", nonDeterministicValues.Binaries[i].BuildCommand)
+	// }
 
 	fmt.Println("✅ Successfully read NonDeterministicValues.yml file.")
 	return &nonDeterministicValues, nil
