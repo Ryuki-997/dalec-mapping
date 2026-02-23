@@ -3,106 +3,79 @@ package semver
 import (
 	"dalec-mapping/infrastructure/github"
 	"log"
+	"regexp"
 	"strconv"
 	"strings"
 )
 
-
-func ResolveOnboardTags(repoPath string, tags []string) ([]string, error) {
+func ResolveOnboardTags(repoPath string, patterns []string) ([]string, error) {
 	owner, repoName, _, _ := github.ExtractRepositorySegments(repoPath)
 	allTags, err := github.FetchAllTags(owner, repoName)
 	if err != nil {
 		log.Fatalf("❌ Failed to fetch tags: %v", err)
 	}
 
-	existingTags := make(map[string]bool)
-	for _, tag := range allTags {
-		existingTags[strings.TrimPrefix(tag, "v")] = true
-	}
-
 	resolvedTags := make(map[string]bool)
-	for _, tag := range tags {
-		resolved := getCorrespondingTag(tag, existingTags)
-		if resolved != "" && !resolvedTags[resolved] {
+	for _, pattern := range patterns {
+		for _, resolved := range resolvePattern(pattern, allTags) {
 			resolvedTags[resolved] = true
 		}
 	}
 
-	// Get unique resolved tags as a slice
 	keys := make([]string, 0, len(resolvedTags))
 	for k := range resolvedTags {
-		keys = append(keys, "v" + k)
+		if !strings.HasPrefix(k, "v") {
+			k = "v" + k
+		}
+		keys = append(keys, k)
 	}
 	return keys, nil
 }
 
-func getCorrespondingTag(tag string, existingTags map[string]bool) string {
-	// Strip leading "v" prefix to normalize (e.g. v0.2.10 -> 0.2.10)
-	tag = strings.TrimPrefix(tag, "v")
-
-	// Exact match
-	if existingTags[tag] {
-		return tag
+// resolvePattern compiles the input as a regex, matches against existing tags,
+// and returns all matching semver tags.
+// "latest" is a special keyword that returns only the largest semver tag.
+func resolvePattern(pattern string, existingTags []string) []string {
+	if pattern == "latest" {
+		largest := findLargestMatch(existingTags, regexp.MustCompile(`^v\d+\.\d+\.\d+$`))
+		if largest != "" {
+			return []string{largest}
+		}
+		return nil
 	}
 
-	// "latest" → return the overall largest tag (all wildcards)
-	if tag == "latest" {
-		return findLargestTag(existingTags, "*", "*", "*")
+	re, err := regexp.Compile("^" + pattern + "$")
+	if err != nil {
+		log.Printf("⚠️  Invalid regex pattern %q, skipping: %v", pattern, err)
+		return nil
 	}
 
-	parts := strings.Split(tag, ".")
-	for len(parts) < 3 {
-		parts = append(parts, "*")
-	}
+	return findAllMatches(existingTags, re)
+}
 
-	// If no wildcards remain, it's an exact tag that doesn't exist — skip
-	hasWildcard := false
-	for _, p := range parts {
-		if isWildcard(p) {
-			hasWildcard = true
-			break
+// findAllMatches returns all semver tags that match the regex.
+func findAllMatches(existingTags []string, re *regexp.Regexp) []string {
+	var matches []string
+	for _, tag := range existingTags {
+		if re.MatchString(tag) && parseSemver(tag) != nil {
+			matches = append(matches, tag)
 		}
 	}
-	if !hasWildcard {
-		return ""
-	}
-
-	return findLargestTag(existingTags, parts[0], parts[1], parts[2])
+	return matches
 }
 
-func isWildcard(s string) bool {
-	return s == "x" || s == "X" || s == "*"
-}
-
-// findLargestTag finds the largest semver tag filtered by major/minor/patch.
-// Wildcard values ("x", "X", "*") match any component.
-func findLargestTag(existingTags map[string]bool, major, minor, patch string) string {
+// findLargestMatch returns the largest semver tag that matches the regex.
+func findLargestMatch(existingTags []string, re *regexp.Regexp) string {
 	var largest string
 	var largestNums []int
 
-	filters := []string{major, minor, patch}
-
-	for tag := range existingTags {
-		parts := strings.Split(tag, ".")
-		if len(parts) != 3 {
+	for _, tag := range existingTags {
+		if !re.MatchString(tag) {
 			continue
 		}
 
-		match := true
-		nums := make([]int, 3)
-		for i, p := range parts {
-			n, err := strconv.Atoi(p)
-			if err != nil {
-				match = false
-				break
-			}
-			nums[i] = n
-			if !isWildcard(filters[i]) && parts[i] != filters[i] {
-				match = false
-				break
-			}
-		}
-		if !match {
+		nums := parseSemver(tag)
+		if nums == nil {
 			continue
 		}
 
@@ -113,6 +86,24 @@ func findLargestTag(existingTags map[string]bool, major, minor, patch string) st
 	}
 
 	return largest
+}
+
+// parseSemver parses a tag like "v1.2.3" or "1.2.3" into [3]int, or nil if invalid.
+func parseSemver(tag string) []int {
+	tag = strings.TrimPrefix(tag, "v")
+	parts := strings.Split(tag, ".")
+	if len(parts) != 3 {
+		return nil
+	}
+	nums := make([]int, 3)
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return nil
+		}
+		nums[i] = n
+	}
+	return nums
 }
 
 func compareVersions(a, b []int) int {
