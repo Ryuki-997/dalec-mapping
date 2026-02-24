@@ -20,12 +20,9 @@ func extractBuildSection(defaultSpec *contents.DefaultSpec, makefileInfo *conten
 	env["GOEXPERIMENT"] = "systemcrypto"
 	env["VERSION"] = "${VERSION}"
 
-	// Set CGO_ENABLED: use LLM/parser value if provided, default to "1" for FIPS compliance
-	cgoEnabled := "1"
-	if nonDeterministicValues != nil && nonDeterministicValues.CgoEnabled != "" {
-		cgoEnabled = nonDeterministicValues.CgoEnabled
-	}
-	env["CGO_ENABLED"] = cgoEnabled
+	// Set CGO_ENABLED: GOEXPERIMENT=systemcrypto requires CGO_ENABLED=1 for FIPS compliance.
+	// Always force "1" since we always set systemcrypto above.
+	env["CGO_ENABLED"] = "1"
 
 	// Extract build steps first so we can scan them for variable references
 	command := extractBuildSteps(nonDeterministicValues, defaultSpec.Repo)

@@ -134,30 +134,6 @@ func extractTargets(defaultSpec *contents.DefaultSpec) map[string]interface{} {
 			target := make(map[string]interface{})
 			runtimeDeps := make(map[string]interface{})
 
-			// // Check if this is a Go binary (requires crypto dependencies)
-			// hasGo := false
-			// for _, stage := range defaultSpec.Stages {
-			// 	if !hasGoModules(stage) {
-			// 		continue
-			// 	}
-
-			// 	hasGo = true
-			// 	break
-			// }
-
-			// if hasGo {
-			// runtimeDeps["openssl-libs"] = map[string]interface{}{}
-			// runtimeDeps["SymCrypt"] = map[string]interface{}{}
-			// runtimeDeps["SymCrypt-OpenSSL"] = map[string]interface{}{}
-			// }
-
-			// if len(runtimeDeps) > 0 {
-			// target["dependencies"] = map[string]interface{}{
-			// 	"runtime": runtimeDeps,
-			// }
-			// targets[os] = target
-			// }
-
 			runtimeDeps["openssl-libs"] = map[string]interface{}{}
 			runtimeDeps["SymCrypt"] = map[string]interface{}{}
 			runtimeDeps["SymCrypt-OpenSSL"] = map[string]interface{}{}
@@ -187,8 +163,6 @@ func extractArtifacts(defaultSpec *contents.DefaultSpec, nonDeterministicValues 
 			}
 			if !strings.Contains(outputPath, "/") {
 				outputPath = fmt.Sprintf("bin/%s", outputPath)
-			} else if !strings.HasPrefix(outputPath, "bin/") {
-				outputPath = "bin/" + outputPath
 			}
 			
 			artifact := defaultSpec.Repo + "/" + outputPath

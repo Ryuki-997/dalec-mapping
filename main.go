@@ -39,10 +39,14 @@ func main() {
 			fmt.Printf("▶ Running pipeline for %s @ %s\n", onboard.Repository, tag)
 			remotePath := generateSpec(&onboard, tag)
 			shellVar = append(shellVar, remotePath)
+
+			// Step 6: build, run, and test the image
+			if err := workflow.ImageTest(remotePath, onboard.SpecImageName, tag); err != nil {
+				log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
+			}
 		}
 	}
 
-	// TODO: return shell comma separated list variable paths
 	fmt.Printf("specPaths=%s\n", strings.Join(shellVar, ","))
 }
 

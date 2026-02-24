@@ -111,7 +111,11 @@ func fetchNonDeterministicValue(agentResponse []byte) (*llm.NonDeterministicValu
 		}
 	}
 
+	// Join shell line continuations (backslash + newline + optional whitespace) into single lines
+	lineContinuation := regexp.MustCompile(`\\\s*\n\s*`)
+
 	for i := range nonDeterministicValues.Binaries {
+		nonDeterministicValues.Binaries[i].BuildCommand = lineContinuation.ReplaceAllString(nonDeterministicValues.Binaries[i].BuildCommand, " ")
 		// Strip CGO_ENABLED assignments from command (moved to build.env)
 		nonDeterministicValues.Binaries[i].BuildCommand = cgoPattern.ReplaceAllString(nonDeterministicValues.Binaries[i].BuildCommand, "")
 		for key, value := range removeFlags {

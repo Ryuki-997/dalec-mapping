@@ -188,7 +188,9 @@ func cleanOutputPath(outputPath string) string {
 	if nonAlphanumericOnlyPattern.MatchString(cleaned) {
 		return ""
 	}
-	
+
+	// Return the cleaned relative path as-is (leading slashes already stripped).
+	// The artifact will be prefixed with the repo dir since the build does cd into it.
 	return cleaned
 }
 
@@ -220,6 +222,12 @@ func ClearEnvVariables(key string, command *string) {
 		binaryName := filepath.Base(cleanedCache.OutputPath)
 		envPathPattern := regexp.MustCompile(`[^\s]+\$[\{\(][^\}\)]+[\}\)][^\s]*` + binaryName)
 		*command = envPathPattern.ReplaceAllString(*command, cleanedCache.OutputPath)
+
+		// Rewrite the -o flag to use the cleaned relative output path
+		if cleanedCache.OutputPath != "" {
+			oFlagPattern := regexp.MustCompile(`-o\s+\S+`)
+			*command = oFlagPattern.ReplaceAllString(*command, "-o "+cleanedCache.OutputPath)
+		}
 
 		ldFlagsVarPattern := regexp.MustCompile(`\$\{LDFLAGS\}`)
 		*command = ldFlagsVarPattern.ReplaceAllString(*command, cleanedCache.LdFlags)
