@@ -13,14 +13,10 @@ import (
 )
 
 // Generate runs the generation step to create dalec specs
-func Generate(onboard *onboarding.OnboardingInfo, fileContents *llm.InstructionContents, agentResponse []byte) error {
+func Generate(onboard *onboarding.OnboardingInfo, fileContents *llm.InstructionContents, agentResponse []byte, tag string) error {
 	fmt.Println("=== GENERATE MODE ===")
 
 	// Fetch GitHub repository info
-	tag := ""
-	if len(onboard.Tag) > 0 {
-		tag = onboard.Tag[0]
-	}
 	repoInfo, err := github.FetchRepoInfo(onboard.Repository, tag)
 	if err != nil {
 		fmt.Printf("❌ Error fetching repository info: %v\n", err)

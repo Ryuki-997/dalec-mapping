@@ -12,7 +12,7 @@ import (
 )
 
 // Discover runs the discovery step to find all Dockerfiles and Makefiles
-func Discover(onboard *onboarding.OnboardingInfo, fileContents *llm.InstructionContents, repoInfo *repository.RepoInfo) error {
+func Discover(onboard *onboarding.OnboardingInfo, fileContents *llm.InstructionContents, repoInfo *repository.RepoInfo, tag string) error {
 	fmt.Println("=== DISCOVER MODE ===")
 
 	// Clear result directory for fresh start
@@ -21,10 +21,6 @@ func Discover(onboard *onboarding.OnboardingInfo, fileContents *llm.InstructionC
 	}
 
 	// Parse repo info (just need owner, repo, branch)
-	tag := ""
-	if len(onboard.Tag) > 0 {
-		tag = onboard.Tag[0]
-	}
 	repoInfo, err := github.FetchRepoInfo(onboard.Repository, tag)
 	if err != nil {
 		fmt.Printf("❌ Error fetching repository info: %v\n", err)

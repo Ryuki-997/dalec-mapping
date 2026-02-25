@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bufio"
 	"fmt"
 	"log"
 	"os"
@@ -155,7 +156,10 @@ func runDockerImage(imageTag string) error {
 	return nil
 }
 
-// runTestScript writes a test script to a temp file and executes it against the image.
+// runTestScript writes a test script to a temp file and runs it inside an Azure Linux
+// container with the Docker socket mounted.  The built image is distroless (no shell),
+// so the test must execute in a full Linux environment that has /etc/os-release, bash,
+// and Docker access.  The IMAGE_TAG env var tells the script which image to test.
 func runTestScript(imageTag, scriptName, scriptContent string) error {
 	tmpFile, err := os.CreateTemp("", "dalec-test-*.sh")
 	if err != nil {
@@ -172,11 +176,26 @@ func runTestScript(imageTag, scriptName, scriptContent string) error {
 		return fmt.Errorf("failed to chmod temp script: %w", err)
 	}
 
-	cmd := exec.Command("docker", "run", "--rm",
-		"-v", tmpFile.Name()+":/test.sh:ro",
-		imageTag,
-		"/bin/sh", "/test.sh",
+	// Build docker run args: base flags + per-arg env vars from the spec
+	args := []string{"run", "--rm",
+		"-v", "/var/run/docker.sock:/var/run/docker.sock",
+		"-v", tmpFile.Name() + ":/test.sh:ro",
+		"-e", "IMAGE_TAG=" + imageTag,
+	}
+
+	// Read spec args and forward them to the test container
+	for k, v := range readSpecArgs(utils.ResultDir + "/output.yml") {
+		args = append(args, "-e", k+"="+v)
+	}
+
+	args = append(args,
+		"mcr.microsoft.com/azurelinux/base/core:3.0",
+		"/bin/bash", "/test.sh",
 	)
+
+	// Run inside Azure Linux (has /etc/os-release + bash) with Docker socket
+	// so the script can invoke docker commands against the built image.
+	cmd := exec.Command("docker", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -185,4 +204,47 @@ func runTestScript(imageTag, scriptName, scriptContent string) error {
 	}
 
 	return nil
+}
+
+// readSpecArgs parses the top-level "args:" section from the Dalec spec YAML
+// and returns its key-value pairs.  Uses simple line parsing (no full YAML
+// decode) to avoid pulling the spec struct into this package.
+func readSpecArgs(specPath string) map[string]string {
+	result := make(map[string]string)
+
+	f, err := os.Open(specPath)
+	if err != nil {
+		return result
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	inArgs := false
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Detect start of args block
+		if line == "args:" {
+			inArgs = true
+			continue
+		}
+
+		// End of args block: next top-level key (no leading whitespace)
+		if inArgs && len(line) > 0 && line[0] != ' ' && line[0] != '#' {
+			break
+		}
+
+		if inArgs {
+			trimmed := strings.TrimSpace(line)
+			if parts := strings.SplitN(trimmed, ":", 2); len(parts) == 2 {
+				key := strings.TrimSpace(parts[0])
+				val := strings.TrimSpace(parts[1])
+				if key != "" {
+					result[key] = val
+				}
+			}
+		}
+	}
+
+	return result
 }

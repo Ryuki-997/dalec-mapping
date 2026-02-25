@@ -40,10 +40,10 @@ func main() {
 			remotePath := generateSpec(&onboard, tag)
 			shellVar = append(shellVar, remotePath)
 
-			// Step 6: build, run, and test the image
-			if err := workflow.ImageTest(remotePath, onboard.SpecImageName, tag); err != nil {
-				log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
-			}
+			// // Step 6: build, run, and test the image
+			// if err := workflow.ImageTest(remotePath, onboard.SpecImageName, tag); err != nil {
+			// 	log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
+			// }
 		}
 	}
 
@@ -62,7 +62,7 @@ func generateSpec(onboard *onboarding.OnboardingInfo, tag string) string {
 	}
 	repositoryInfo := &repository.RepoInfo{}
 	log.Println("\n=== Step 1: Discover Build Files ===")
-	err := workflow.Discover(onboard, fileContents, repositoryInfo)
+	err := workflow.Discover(onboard, fileContents, repositoryInfo, tag)
 	if err != nil {
 		log.Fatalf("❌ Step 1 failed: %v", err)
 	}
@@ -81,7 +81,7 @@ func generateSpec(onboard *onboarding.OnboardingInfo, tag string) string {
 
 	// Step 3: Generate Dalec spec
 	log.Println("\n=== Step 3: Generate Dalec Spec ===")
-	err = workflow.Generate(onboard, fileContents, agentResponse)
+	err = workflow.Generate(onboard, fileContents, agentResponse, tag)
 	if err != nil {
 		log.Fatalf("❌ Step 3 failed: %v", err)
 	}

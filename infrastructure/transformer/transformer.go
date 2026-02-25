@@ -60,7 +60,7 @@ func TransformToDalec(defaultSpec *contents.DefaultSpec, makefileInfo *contents.
 
 	// Transform Dockerfile content to Dalec sections
 	spec["sources"] = extractSources(defaultSpec)
-	spec["dependencies"] = extractDependencies(nonDeterministicValues)
+	spec["dependencies"] = extractDependencies(defaultSpec, nonDeterministicValues)
 	spec["targets"] = extractTargets(defaultSpec)
 	buildSection := extractBuildSection(defaultSpec, makefileInfo, nonDeterministicValues)
 	spec["build"] = buildSection

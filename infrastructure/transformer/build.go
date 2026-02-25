@@ -95,7 +95,8 @@ func extractBuildSteps(nonDeterministicValues *llm.NonDeterministicValues, repoN
 	}
 
 	// Build additional binaries
-	for _, aux := range nonDeterministicValues.Binaries {
+	for i := range nonDeterministicValues.Binaries {
+		aux := &nonDeterministicValues.Binaries[i]
 		if aux.Name == "" {
 			continue
 		}

@@ -174,8 +174,8 @@ func cleanOutputPath(outputPath string) string {
 	complexPattern := regexp.MustCompile(`\$\{GOARM:[^}]*\$\{GOARM\}[^}]*\}`)
 	cleaned := complexPattern.ReplaceAllString(outputPath, "")
 	
-	// Second pass: remove simple environment variables
-	simplePattern := regexp.MustCompile(`\$\{(OS|ARCH|GOARM)\}`)
+	// Second pass: remove simple environment variables (including suffixed variants like GOARMSUFFIX)
+	simplePattern := regexp.MustCompile(`\$\{(OS|ARCH|GOARM|GOARMSUFFIX|TARGETARCH)\}`)
 	cleaned = simplePattern.ReplaceAllString(cleaned, "")
 	
 	nonAlphanumericOnlyPattern := regexp.MustCompile(`^[^a-zA-Z0-9]+$`)
@@ -257,6 +257,27 @@ func ClearEnvVariables(key string, command *string) {
 		// Clean up leftover extra whitespace
 		spacePattern := regexp.MustCompile(`\s{2,}`)
 		*command = strings.TrimSpace(spacePattern.ReplaceAllString(*command, " "))
+
+		// Remove stray braces left behind from env var removal (e.g. "} }" from "${GOARMSUFFIX:+v${GOARM}}")
+		strayBraces := regexp.MustCompile(`[{}]`)
+		// Only remove braces that are NOT part of a valid ${...} reference
+		// Temporarily protect valid ${...} patterns, strip remaining braces, restore
+		validVarRef := regexp.MustCompile(`\$\{[^}]+\}`)
+		placeholders := map[string]string{}
+		idx := 0
+		cleaned := validVarRef.ReplaceAllStringFunc(*command, func(match string) string {
+			key := fmt.Sprintf("__VARREF_%d__", idx)
+			placeholders[key] = match
+			idx++
+			return key
+		})
+		cleaned = strayBraces.ReplaceAllString(cleaned, "")
+		for key, val := range placeholders {
+			cleaned = strings.ReplaceAll(cleaned, key, val)
+		}
+		// Final whitespace cleanup after brace removal
+		cleaned = regexp.MustCompile(`\s{2,}`).ReplaceAllString(cleaned, " ")
+		*command = strings.TrimSpace(cleaned)
 
 	default:
 		fmt.Printf("Warning: unrecognized key for ClearEnvVariables: %s\n", key)
