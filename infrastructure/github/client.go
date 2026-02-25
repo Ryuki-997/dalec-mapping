@@ -101,7 +101,7 @@ func fetchReleaseMetadata(info *repository.RepoInfo) error {
 	if !ok {
 		return fmt.Errorf("tag_name not found in response")
 	}
-	info.Version = strings.TrimPrefix(tag, "v")
+	info.Version = tag
 
 	// Fetch the commit SHA for this release tag
 	url = fmt.Sprintf("https://api.github.com/repos/%s/%s/commits/%s", info.Owner, info.Repo, tag)
@@ -207,7 +207,7 @@ func fetchTagInfo(info *repository.RepoInfo, tag string) error {
 	if object, ok := data["object"].(map[string]interface{}); ok {
 		if sha, ok := object["sha"].(string); ok {
 			info.LatestCommit = sha
-			info.Version = tag
+			info.Version = strings.TrimPrefix(tag, "v")
 			return nil
 		}
 	}
