@@ -32,12 +32,14 @@ func ResolveOnboardTags(repoPath string, patterns []string) ([]string, error) {
 	return keys, nil
 }
 
-// resolvePattern compiles the input as a regex, matches against existing tags,
-// and returns all matching semver tags.
-// "latest" is a special keyword that returns only the largest semver tag.
+// resolvePattern resolves a tag pattern against existing (release-filtered) tags:
+//   - "latest": the single largest semver tag overall
+//   - direct (e.g. v1.6.2): the tag itself if it exists (at most 1)
+//   - regex  (e.g. v1\.6\.[1-9]): all matching tags that exist as releases
 func resolvePattern(pattern string, existingTags []string) []string {
 	if pattern == "latest" {
-		largest := findLargestMatch(existingTags, regexp.MustCompile(`^v\d+\.\d+\.\d+$`))
+		re := regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
+		largest := findLargestMatch(existingTags, re)
 		if largest != "" {
 			return []string{largest}
 		}

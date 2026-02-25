@@ -79,7 +79,7 @@ func fetchTestScripts(testDir string) (map[string]string, error) {
 
 	dirURL := fmt.Sprintf(
 		"https://api.github.com/repos/%s/%s/contents/%s?ref=%s",
-		targetOwner, targetRepo, testDir, targetBranch,
+		utils.OnboardOwner, utils.OnboardRepo, testDir, utils.OnboardBranch,
 	)
 
 	items, err := github.MakeGitHubRequest[[]map[string]interface{}](repository.GithubRequest{URL: dirURL})

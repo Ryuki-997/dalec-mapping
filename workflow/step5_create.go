@@ -4,17 +4,10 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
-	"strings"
 
 	"dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/github"
 	"dalec-mapping/utils"
-)
-
-const (
-	targetOwner      	= "azure-management-and-platforms"
-	targetRepo 				= "aks-dalec-build-defs"
-	targetBranch 			= "ksehgal/fix-publish-poc"
 )
 
 // GitPush commits the spec file directly to the base branch.
@@ -24,8 +17,6 @@ func GitPush(specRepository, specImageName, tag string) error {
 	if err != nil {
 		return fmt.Errorf("failed to read spec file: %w", err)
 	}
-
-	tag = strings.TrimPrefix(tag, "v")
 
 	encoded := base64.StdEncoding.EncodeToString(specContent)
 	file := fmt.Sprintf("%s-%s-specfile.yml", specImageName, tag)
@@ -37,7 +28,7 @@ func GitPush(specRepository, specImageName, tag string) error {
 	}
 
 	// 2. Check if file exists and get SHA
-	contentsURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s", targetOwner, targetRepo, filePath)
+	contentsURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s", utils.OnboardOwner, utils.OnboardRepo, filePath)
 	putPayload := map[string]interface{}{
 		"message": fmt.Sprintf("Add %s-%s-specfile.yml", specImageName, tag),
 		"committer": map[string]string{
@@ -45,12 +36,12 @@ func GitPush(specRepository, specImageName, tag string) error {
 			"email": "ryukikoda@microsoft.com",
 		},
 		"content": encoded,
-		"branch":  targetBranch,
+		"branch":  utils.OnboardBranch,
 	}
 
 	// Try to get existing file SHA
 	existingFile, err := github.MakeGitHubRequest[map[string]interface{}](repository.GithubRequest{
-		URL: fmt.Sprintf("%s?ref=%s", contentsURL, targetBranch),
+		URL: fmt.Sprintf("%s?ref=%s", contentsURL, utils.OnboardBranch),
 	})
 
 	// use existing file's SHA if it exists 
@@ -70,6 +61,6 @@ func GitPush(specRepository, specImageName, tag string) error {
 		return fmt.Errorf("failed to commit file via GitHub API: %w", err)
 	}
 
-	fmt.Printf("Committed %s to %s\n", filePath, targetBranch)
+	fmt.Printf("Committed %s to %s\n", filePath, utils.OnboardBranch)
 	return nil
 }

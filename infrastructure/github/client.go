@@ -215,22 +215,49 @@ func fetchTagInfo(info *repository.RepoInfo, tag string) error {
 	return fmt.Errorf("failed to extract commit SHA from tag")
 }
 
-// fetchAllTags fetches all tags for a repository in a single API call.
+// FetchAllTags fetches all tags that have a corresponding GitHub release.
+// This filters out housekeeping/retraction tags that exist as git tags but have no release.
 func FetchAllTags(owner, repo string) ([]string, error) {
+	// Step 1: Fetch all releases (paginated) to build a set of released tag names
+	releaseTags := make(map[string]bool)
+	page := 1
+	for {
+		url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases?per_page=100&page=%d", owner, repo, page)
+		data, err := MakeGitHubRequest[[]map[string]interface{}](repository.GithubRequest{URL: url})
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch releases for %s/%s: %w", owner, repo, err)
+		}
+		if len(data) == 0 {
+			break
+		}
+		for _, release := range data {
+			if tagName, ok := release["tag_name"].(string); ok {
+				releaseTags[tagName] = true
+			}
+		}
+		if len(data) < 100 {
+			break
+		}
+		page++
+	}
+
+	// Step 2: Fetch all git tags and keep only those with a release
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/refs/tags", owner, repo)
 	data, err := MakeGitHubRequest[[]map[string]interface{}](repository.GithubRequest{URL: url})
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch tags for %s/%s: %w", owner, repo, err)
 	}
 
-	tags := make([]string, 0, len(data))
+	var tags []string
 	for _, item := range data {
 		ref, ok := item["ref"].(string)
 		if !ok {
 			continue
 		}
 		ref = strings.TrimPrefix(ref, "refs/tags/")
-		tags = append(tags, ref)
+		if releaseTags[ref] {
+			tags = append(tags, ref)
+		}
 	}
 	return tags, nil
 }
