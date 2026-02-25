@@ -16,6 +16,9 @@ func populateArgs(defaultSpec *contents.DefaultSpec, makefileInfo *contents.Make
 	selfHandledArgs := map[string]bool{
 		"OS_VERSION": true,
 		"VERSION":    true,
+		// Docker sets these automatically during build — never include them in spec args
+		"TARGETARCH": true,
+		"TARGETOS":   true,
 	}
 
 	// Initialize empty MakefileInfo if nil
@@ -25,9 +28,11 @@ func populateArgs(defaultSpec *contents.DefaultSpec, makefileInfo *contents.Make
 		}
 	}
 
-	// Always use sensible defaults for ARCH and OS (override any bad Makefile values)
-	makefileInfo.Variables["ARCH"] = "amd64"
-	makefileInfo.Variables["OS"] = "linux"
+	// Setting sensible defaults to empty for generalization purposes.
+	makefileInfo.Variables["ARCH"] = ""
+	makefileInfo.Variables["OS"] = ""
+	makefileInfo.Variables["TARGETARCH"] = ""
+	makefileInfo.Variables["TARGETOS"] = ""
 
 	for k, v := range defaultSpec.Args {
 		if selfHandledArgs[k] {
@@ -39,6 +44,11 @@ func populateArgs(defaultSpec *contents.DefaultSpec, makefileInfo *contents.Make
 			value = makefileInfo.Variables[k]
 		}
 		value = NestedValueReplacement(defaultSpec, makefileInfo, value)
+
+		// Skip args that resolved to empty (e.g. Docker-provided TARGETARCH/TARGETOS)
+		if value == "" {
+			continue
+		}
 
 		args[k] = value
 		fmt.Printf("key: %s, value: %v\n", k, args[k])

@@ -215,8 +215,31 @@ func fetchTagInfo(info *repository.RepoInfo, tag string) error {
 	return fmt.Errorf("failed to extract commit SHA from tag")
 }
 
-// fetchAllTags fetches all tags for a repository in a single API call.
+// FetchAllTags fetches all tags for a repository, filtering out housekeeping
+// tags (e.g. Go module retractions) by only including tags that have an
+// associated GitHub release.
 func FetchAllTags(owner, repo string) ([]string, error) {
+	// Build a set of tags that have real GitHub releases
+	releaseTags := make(map[string]bool)
+	page := 1
+	for {
+		url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases?per_page=100&page=%d", owner, repo, page)
+		data, err := MakeGitHubRequest[[]map[string]interface{}](repository.GithubRequest{URL: url})
+		if err != nil || len(data) == 0 {
+			break
+		}
+		for _, release := range data {
+			if tag, ok := release["tag_name"].(string); ok {
+				releaseTags[tag] = true
+			}
+		}
+		if len(data) < 100 {
+			break
+		}
+		page++
+	}
+
+	// Fetch all git tags
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/refs/tags", owner, repo)
 	data, err := MakeGitHubRequest[[]map[string]interface{}](repository.GithubRequest{URL: url})
 	if err != nil {
@@ -230,6 +253,12 @@ func FetchAllTags(owner, repo string) ([]string, error) {
 			continue
 		}
 		ref = strings.TrimPrefix(ref, "refs/tags/")
+
+		// If we have release data, only include tags with a real release
+		if len(releaseTags) > 0 && !releaseTags[ref] {
+			continue
+		}
+
 		tags = append(tags, ref)
 	}
 	return tags, nil
