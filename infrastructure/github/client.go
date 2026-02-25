@@ -215,24 +215,22 @@ func fetchTagInfo(info *repository.RepoInfo, tag string) error {
 	return fmt.Errorf("failed to extract commit SHA from tag")
 }
 
-// FetchAllTags fetches all tags that have a corresponding GitHub release.
-// This filters out housekeeping/retraction tags that exist as git tags but have no release.
+// FetchAllTags fetches all tags for a repository, filtering out housekeeping
+// tags (e.g. Go module retractions) by only including tags that have an
+// associated GitHub release.
 func FetchAllTags(owner, repo string) ([]string, error) {
-	// Step 1: Fetch all releases (paginated) to build a set of released tag names
+	// Build a set of tags that have real GitHub releases
 	releaseTags := make(map[string]bool)
 	page := 1
 	for {
 		url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases?per_page=100&page=%d", owner, repo, page)
 		data, err := MakeGitHubRequest[[]map[string]interface{}](repository.GithubRequest{URL: url})
-		if err != nil {
-			return nil, fmt.Errorf("failed to fetch releases for %s/%s: %w", owner, repo, err)
-		}
-		if len(data) == 0 {
+		if err != nil || len(data) == 0 {
 			break
 		}
 		for _, release := range data {
-			if tagName, ok := release["tag_name"].(string); ok {
-				releaseTags[tagName] = true
+			if tag, ok := release["tag_name"].(string); ok {
+				releaseTags[tag] = true
 			}
 		}
 		if len(data) < 100 {
@@ -241,7 +239,7 @@ func FetchAllTags(owner, repo string) ([]string, error) {
 		page++
 	}
 
-	// Step 2: Fetch all git tags and keep only those with a release
+	// Fetch all git tags
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/refs/tags", owner, repo)
 	data, err := MakeGitHubRequest[[]map[string]interface{}](repository.GithubRequest{URL: url})
 	if err != nil {
@@ -255,9 +253,13 @@ func FetchAllTags(owner, repo string) ([]string, error) {
 			continue
 		}
 		ref = strings.TrimPrefix(ref, "refs/tags/")
-		if releaseTags[ref] {
-			tags = append(tags, ref)
+
+		// If we have release data, only include tags with a real release
+		if len(releaseTags) > 0 && !releaseTags[ref] {
+			continue
 		}
+
+		tags = append(tags, ref)
 	}
 	return tags, nil
 }
