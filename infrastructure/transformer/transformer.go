@@ -35,10 +35,14 @@ func InitDefaultSpec(onboardInfo *onboarding.OnboardingInfo, repoInfo *repositor
 
 	// Default Build Targets in x-build-extensions (can be overridden by Makefile or LLM output)
 	defaultSpec.BuildTargets = []contents.BuildTarget{
-		contents.AzLinux3Container, // Primary container image target
-		contents.AzLinux3Rpm,       // RPM package target
-		contents.NobleDeb,          // Ubuntu/Debian package target
-		contents.WindowsCrossContainer, // Windows container image target
+		// contents.AzLinux3Container,     // Primary container image target
+		// contents.AzLinux3Rpm,           // RPM package target
+		// contents.BookwormDeb,           // Debian bookworm deb target
+		// contents.NobleDeb,              // Ubuntu noble deb target
+		// contents.JammyDeb,              // Ubuntu jammy deb target
+		// contents.FocalDeb,              // Ubuntu focal deb target
+		// contents.BionicDeb,             // Ubuntu bionic deb target
+		contents.WindowsCrossContainer, // Windows cross-compiled container target
 	}
 
 	return defaultSpec
@@ -60,7 +64,7 @@ func TransformToDalec(defaultSpec *contents.DefaultSpec, makefileInfo *contents.
 
 	// Transform Dockerfile content to Dalec sections
 	spec["sources"] = extractSources(defaultSpec)
-	spec["dependencies"] = extractDependencies(defaultSpec, nonDeterministicValues)
+	spec["dependencies"] = extractDependencies(nonDeterministicValues)
 	spec["targets"] = extractTargets(defaultSpec)
 	buildSection := extractBuildSection(defaultSpec, makefileInfo, nonDeterministicValues)
 	spec["build"] = buildSection
@@ -80,14 +84,34 @@ func buildExtensions(defaultSpec *contents.DefaultSpec) map[string]interface{} {
 	// Set default build target(s)
 	ext["build-targets"] = defaultSpec.BuildTargets
 
-	// Per-target configurations
-	perTarget := make(map[string]interface{})
-	perTarget["windowscross"] = map[string]interface{}{
-		"platforms": []string{"windows/amd64"},
+	// Per-target platform configuration
+	ext["per-target"] = map[string]interface{}{
+		"windowscross": map[string]interface{}{
+			"platforms": []string{"windows/amd64"},
+		},
 	}
-	ext["per-target"] = perTarget
 
 	return ext
+}
+
+// microsoftRepoURI returns the packages.microsoft.com apt repo URI for a given distro.
+func microsoftRepoURI(distro string) string {
+	switch distro {
+	case "bookworm":
+		return "https://packages.microsoft.com/debian/12/prod"
+	case "bullseye":
+		return "https://packages.microsoft.com/debian/11/prod"
+	case "noble":
+		return "https://packages.microsoft.com/ubuntu/24.04/prod"
+	case "jammy":
+		return "https://packages.microsoft.com/ubuntu/22.04/prod"
+	case "focal":
+		return "https://packages.microsoft.com/ubuntu/20.04/prod"
+	case "bionic":
+		return "https://packages.microsoft.com/ubuntu/18.04/prod"
+	default:
+		return "https://packages.microsoft.com/" + distro + "/apt/prod"
+	}
 }
 
 // extractTargets creates target-specific configurations
@@ -115,34 +139,102 @@ func extractTargets(defaultSpec *contents.DefaultSpec) map[string]interface{} {
 		}
 		osTargets[os] = true
 
+		target := make(map[string]interface{})
+		deps := make(map[string]interface{})
+		buildDeps := make(map[string]interface{})
+
+		// Per-target build dependencies and repo configuration
 		switch os {
 		case "azlinux3":
-			fallthrough
-		case "noble":
-			fallthrough
-		case "jammy":
-			fallthrough
-		case "focal":
-			fallthrough
-		case "bionic":
-			fallthrough
-		case "bookworm":
-			fallthrough
-		case "windowscross":
-			fallthrough
-		default:
-			target := make(map[string]interface{})
-			runtimeDeps := make(map[string]interface{})
-
-			runtimeDeps["openssl-libs"] = map[string]interface{}{}
-			runtimeDeps["SymCrypt"] = map[string]interface{}{}
-			runtimeDeps["SymCrypt-OpenSSL"] = map[string]interface{}{}
-
-			target["dependencies"] = map[string]interface{}{
-				"runtime": runtimeDeps,
+			// msft-golang is available natively in Azure Linux repos
+			if defaultSpec.Generator == repository.GoModGenerator {
+				buildDeps["msft-golang"] = map[string]interface{}{}
 			}
-			targets[os] = target
+			// SymCrypt/OpenSSL runtime deps only apply to Azure Linux (RPM packages)
+			deps["runtime"] = map[string]interface{}{
+				"openssl-libs":    map[string]interface{}{},
+				"SymCrypt":        map[string]interface{}{},
+				"SymCrypt-OpenSSL": map[string]interface{}{},
+			}
+		case "bookworm", "bullseye", "noble", "jammy", "focal", "bionic":
+			// Debian/Ubuntu: add Microsoft apt repo to get msft-golang
+			if defaultSpec.Generator == repository.GoModGenerator {
+				buildDeps["msft-golang"] = map[string]interface{}{}
+				buildDeps["gcc"] = map[string]interface{}{}
+			}
+
+			// Microsoft apt feed via extra_repos using proper Dalec Source format.
+			// Dalec appends ".list" to the config key, so we use the traditional "deb ..." format.
+			repoURI := microsoftRepoURI(os)
+			deps["extra_repos"] = []map[string]interface{}{
+				{
+					"keys": map[string]interface{}{
+						"microsoft.asc": map[string]interface{}{
+							"http": map[string]interface{}{
+								"url": "https://packages.microsoft.com/keys/microsoft.asc",
+							},
+						},
+					},
+					"config": map[string]interface{}{
+						"microsoft-prod": map[string]interface{}{
+							"inline": map[string]interface{}{
+								"file": map[string]interface{}{
+									"contents": fmt.Sprintf("deb [trusted=yes] %s %s main\n", repoURI, os),
+								},
+							},
+						},
+					},
+					"envs": []string{"build", "install", "test"},
+				},
+			}
+		case "windowscross":
+			// windowscross builds on an Ubuntu (Jammy) base — needs extra_repos for msft-golang.
+			// No SymCrypt/OpenSSL runtime deps (those are Linux RPM packages, not Windows).
+			if defaultSpec.Generator == repository.GoModGenerator {
+				buildDeps["msft-golang"] = map[string]interface{}{}
+			}
+
+			// Microsoft Jammy apt feed for the windowscross builder environment
+			deps["extra_repos"] = []map[string]interface{}{
+				{
+					"keys": map[string]interface{}{
+						"microsoft.asc": map[string]interface{}{
+							"http": map[string]interface{}{
+								"url": "https://packages.microsoft.com/keys/microsoft.asc",
+							},
+						},
+					},
+					"config": map[string]interface{}{
+						"microsoft-prod": map[string]interface{}{
+							"inline": map[string]interface{}{
+								"file": map[string]interface{}{
+									"contents": "deb [trusted=yes] https://packages.microsoft.com/ubuntu/22.04/prod jammy main\n",
+								},
+							},
+						},
+					},
+					"envs": []string{"build", "install", "test"},
+				},
+			}
 		}
+
+		if len(buildDeps) > 0 {
+			deps["build"] = buildDeps
+		}
+		target["dependencies"] = deps
+
+		// windowscross uses Windows paths — override the global Linux image config
+		// Must suppress symlinks and set a Windows-compatible entrypoint
+		if os == "windowscross" {
+			target["image"] = map[string]interface{}{
+				"entrypoint": defaultSpec.Repo,
+				"post":       map[string]interface{}{},
+			}
+			// Override global tests — Linux file permission checks don't apply to Windows
+			target["tests"] = []interface{}{}
+		}
+
+		targets[os] = target
 	}
 	return targets
 }

@@ -239,15 +239,14 @@ func FetchAllTags(owner, repo string) ([]string, error) {
 		page++
 	}
 
-	// Fetch all git tags
+	// Fetch all git tags — the refs/tags endpoint returns all tags in a single response
+	var tags []string
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/refs/tags", owner, repo)
-	data, err := MakeGitHubRequest[[]map[string]interface{}](repository.GithubRequest{URL: url})
+	tagData, err := MakeGitHubRequest[[]map[string]interface{}](repository.GithubRequest{URL: url})
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch tags for %s/%s: %w", owner, repo, err)
 	}
-
-	var tags []string
-	for _, item := range data {
+	for _, item := range tagData {
 		ref, ok := item["ref"].(string)
 		if !ok {
 			continue

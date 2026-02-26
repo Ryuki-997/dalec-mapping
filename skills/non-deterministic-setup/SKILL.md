@@ -80,32 +80,89 @@ Where `{repo-name}` is the repository name (e.g., `kubelogin`, `blob-csi-driver`
 
 **Output:** `Binaries` (YAML fields in output)
 
-#### 1.1 Extraction Checklist
+#### 1.1 Core Principle: Deterministic Build Steps
+
+**CRITICAL:** Each binary extraction MUST produce a single, deterministic build step. The Dockerfile and Makefile contain all the information needed — there is no ambiguity.
+
+**Rules:**
+1. **Collapse all conditionals into one path.** If the Makefile/Dockerfile has `if/else` branches for different architectures, OS, or configurations, pick the **primary production path** (the one matching the Dockerfile's final COPY/ENTRYPOINT). Do NOT preserve conditionals or emit multiple alternatives.
+2. **Resolve platform-specific output paths.** If the output path contains `${OS}`, `${ARCH}`, `${GOOS}`, `${GOARCH}`, `${TARGETARCH}`, or similar platform variables, **remove them** and collapse to a flat path. Dalec handles platform targeting via its target system, not via path conventions.
+   - `bin/${OS}_${ARCH}/kubelogin` → `bin/kubelogin`
+   - `_output/${ARCH}/blobplugin` → `_output/blobplugin`
+   - `bin/${OS}_${ARCH}${GOARM:+v${GOARM}}/binary` → `bin/binary`
+3. **Preserve `${VERSION}`, `${COMMIT}`, `${REVISION}` variables.** These are Dalec spec args and must remain as `${VAR}` references.
+4. **No double slashes.** After removing platform variables from paths, ensure no `//` remains. `bin//kubelogin` is invalid — it must be `bin/kubelogin`.
+5. **The output path in `buildCommand -o <path>` must exactly match `outputPath`.** These two fields describe the same thing — the file path where `go build` writes the binary. They must be identical so the artifact section can find the built file.
+
+#### 1.2 Extraction Checklist
 
 - [ ] Find all `go build -o <path>` commands in Makefile
 - [ ] Extract binary name from `-o` flag path (last path segment)
 - [ ] If no `-o` flag, infer from `./cmd/<name>` package path
+- [ ] **Collapse conditional branches** — pick the single production build path
+- [ ] **Remove platform variables** from output paths (`${OS}`, `${ARCH}`, etc.)
+- [ ] **Verify no double slashes** in the resulting path
 - [ ] Add all binaries to binaries list:
   - [ ] Primary = matches Dockerfile ENTRYPOINT or repo name
-- [ ] Store full path for artifact mapping
+- [ ] Store the cleaned, deterministic path for artifact mapping
 
-#### 1.2 Patterns
+#### 1.3 Patterns
 
 ```makefile
-# Pattern A: Direct -o flag
+# Pattern A: Direct -o flag with platform vars (COLLAPSE)
 go build -o _output/${ARCH}/blobplugin ./pkg/blobplugin
 # → binaries[0].name: "blobplugin"
-# → binaries[0].outputPath: "_output/${ARCH}/blobplugin"
+# → binaries[0].outputPath: "_output/blobplugin"
+# → binaries[0].buildCommand: "go build -o _output/blobplugin ./pkg/blobplugin"
 
-# Pattern B: Variable reference
+# Pattern B: Nested conditional output path (COLLAPSE)
+go build -o bin/${OS}_${ARCH}${GOARM:+v${GOARM}}/kubelogin -ldflags "-X main.gitTag=${VERSION}"
+# → binaries[0].name: "kubelogin"
+# → binaries[0].outputPath: "bin/kubelogin"
+# → binaries[0].buildCommand: "go build -o bin/kubelogin -ldflags \"-X main.gitTag=${VERSION}\""
+# → binaries[0].ldFlags: "-X main.gitTag=${VERSION}"
+
+# Pattern C: Conditional build (COLLAPSE to primary path)
+# if [ "$(ARCH)" = "amd64" ]; then
+#   go build -o _output/amd64/binary ./cmd/main
+# else
+#   go build -o _output/arm64/binary ./cmd/main
+# fi
+# → binaries[0].outputPath: "_output/binary"
+# → binaries[0].buildCommand: "go build -o _output/binary ./cmd/main"
+
+# Pattern D: Variable reference (keep non-platform vars)
 go build -o $(TEMP_DIR)/pod_nanny main.go
 # → binaries[0].name: "pod_nanny"
 # → binaries[0].outputPath: "$(TEMP_DIR)/pod_nanny"
 
-# Pattern C: Implicit (no -o flag)
+# Pattern E: Implicit (no -o flag)
 go build ./cmd/myapp
 # → binaries[0].name: "myapp" (inferred from package)
 # → binaries[0].outputPath: "myapp"
+```
+
+#### 1.4 Anti-Patterns (DO NOT produce these)
+
+```yaml
+# ❌ WRONG: Platform variables in output path
+outputPath: "bin/${OS}_${ARCH}/kubelogin"
+
+# ❌ WRONG: Double slashes from collapsed variables
+outputPath: "bin//kubelogin"
+buildCommand: "go build -o bin//kubelogin ./cmd/main"
+
+# ❌ WRONG: Conditional preserved in build command  
+buildCommand: "if [ \"$ARCH\" = \"amd64\" ]; then go build -o bin/amd64/app; else go build -o bin/arm64/app; fi"
+
+# ❌ WRONG: outputPath doesn't match buildCommand -o path
+outputPath: "bin/kubelogin"
+buildCommand: "go build -o bin/${OS}_${ARCH}/kubelogin ..."
+
+# ✅ CORRECT: Single deterministic step
+outputPath: "bin/kubelogin"
+buildCommand: "go build -o bin/kubelogin -ldflags \"-X main.gitTag=${VERSION}\""
+ldFlags: "-X main.gitTag=${VERSION}"
 ```
 
 ---
@@ -212,7 +269,20 @@ RUN curl -Ls https://github.com/Azure/azcopy/releases/.../azcopy.tar.gz | tar xz
 **Input:** Makefile content provided in prompt  
 **Output:** `BuildCommand`, `LdFlags` (YAML fields in output)
 
-#### 4.1 Extraction Checklist
+#### 4.1 Core Principle: Deterministic Output
+
+The build command in Dockerfile and Makefile is **deterministic** — it has a concrete, observable structure. The LLM's job is to extract it faithfully, not interpret or branch.
+
+**Rules:**
+1. **Collapse all IF/ELSE/case branches** into the single primary build path. Dalec handles platform targeting; the build step must be one linear command.
+2. **Remove environment variable assignments** that Dalec manages: `CGO_ENABLED=`, `GOOS=`, `GOARCH=`, `GOARM=`, `OS=`, `ARCH=`. These are set in the Dalec spec's `build.env` section.
+3. **Remove platform variables from output paths** (`${OS}`, `${ARCH}`, `${TARGETARCH}`, etc.) and collapse any resulting double slashes.
+4. **The `-o <path>` in the build command MUST match the `outputPath` field exactly.** Both describe where the binary is written — they must be identical.
+5. **Preserve `${VERSION}`, `${COMMIT}`, `${REVISION}`** — these are Dalec spec args.
+6. **Replace version-like Makefile variables** (`$(TAG)`, `$(VERSION)`, `$(IMAGE_VERSION)`) with `${VERSION}` in ldflags.
+7. **Replace git commit variables** (`$(GIT_COMMIT)`, `$(COMMIT)`) with `${COMMIT}` in ldflags.
+
+#### 4.2 Extraction Checklist
 
 - [ ] Find primary build target:
   1. `.PHONY: container` or `container:` target
@@ -220,40 +290,61 @@ RUN curl -Ls https://github.com/Azure/azcopy/releases/.../azcopy.tar.gz | tar xz
   3. `.PHONY: all` or `all:` target
   4. Direct `go build` command
 - [ ] Extract `go build` command from target
+- [ ] **Collapse all conditional branches** to a single command
 - [ ] Remove Docker wrappers:
   - `docker run golang:... /bin/bash -c "..."`
   - `docker run --rm -v ... go build`
+- [ ] Remove env var assignments: `CGO_ENABLED=... GOOS=... GOARCH=...`
+- [ ] **Remove platform variables from -o path** and collapse `//` → `/`
 - [ ] Parse ldflags:
   - [ ] Extract `-ldflags "..."` content
   - [ ] Replace `$(TAG)`, `$(VERSION)`, `$(IMAGE_VERSION)` with `${VERSION}`
   - [ ] Replace `$(GIT_COMMIT)` with `${COMMIT}`
   - [ ] Preserve `-s -w` strip flags
 - [ ] Convert `$(VAR)` to `${VAR}` syntax
+- [ ] **Verify `-o <path>` matches `outputPath`**
 
-#### 4.2 Patterns
+#### 4.3 Patterns
 
 ```makefile
-# Makefile input:
+# Makefile input (with conditionals and platform vars):
 CGO_ENABLED=${CGO_ENABLED} GOOS=linux GOARCH=$(ARCH) go build -a \
     -ldflags "-X ${PKG}/pkg/version.Ver=$(TAG) -s -w" \
-    -o _output/binary ./cmd/main
+    -o _output/${ARCH}/binary ./cmd/main
 
-# Extracted:
-# BuildCommand: "go build -a -ldflags \"...\" -o _output/binary ./cmd/main"
+# Extracted (deterministic, collapsed):
+# BuildCommand: "go build -a -ldflags \"-X ${PKG}/pkg/version.Ver=${VERSION} -s -w\" -o _output/binary ./cmd/main"
 # LdFlags: "-X ${PKG}/pkg/version.Ver=${VERSION} -s -w"
+# OutputPath: "_output/binary"
 ```
 
-#### 4.3 Dalec Translation
+```makefile
+# Makefile input (with IF/ELSE for arch):
+# if [ "$(ARCH)" = "amd64" ]; then
+#   go build -o bin/amd64/myapp -ldflags "-X main.version=$(VERSION)" ./cmd/myapp
+# else
+#   go build -o bin/arm64/myapp -ldflags "-X main.version=$(VERSION)" ./cmd/myapp
+# fi
+
+# Extracted (collapsed to single step):
+# BuildCommand: "go build -o bin/myapp -ldflags \"-X main.version=${VERSION}\" ./cmd/myapp"
+# LdFlags: "-X main.version=${VERSION}"
+# OutputPath: "bin/myapp"
+```
+
+#### 4.4 Dalec Translation
 
 ```yaml
 build:
   env:
-    CGO_ENABLED: "${CGO_ENABLED}"
-    GOOS: linux
+    CGO_ENABLED: "1"
+    GOEXPERIMENT: systemcrypto
+    GOPROXY: direct
+    VERSION: ${VERSION}
   steps:
     - command: |
         cd ${SOURCE_DIR}
-        go build -a -ldflags "-X ${PKG}/pkg/version.Ver=${VERSION} -s -w" -o binary ./cmd/main
+        go build -a -ldflags "-X ${PKG}/pkg/version.Ver=${VERSION} -s -w" -o _output/binary ./cmd/main
 ```
 
 ---
@@ -428,12 +519,12 @@ ENTRYPOINT ["/blobplugin"]
 
 binaries:
   - name: "blobplugin"
-    outputPath: "blobplugin"
-    buildCommand: "go build -a -ldflags \"${LDFLAGS}\" -mod vendor -o blobplugin ./pkg/blobplugin"
+    outputPath: "_output/blobplugin"
+    buildCommand: "go build -a -ldflags \"${LDFLAGS}\" -mod vendor -o _output/blobplugin ./pkg/blobplugin"
     ldFlags: "-X sigs.k8s.io/blob-csi-driver/pkg/blob.driverVersion=${VERSION} -s -w"
   - name: "blobfuse-proxy"
-    outputPath: "_output/${ARCH}/blobfuse-proxy"
-    buildCommand: "go build -o _output/${ARCH}/blobfuse-proxy ./pkg/blobfuse-proxy"
+    outputPath: "_output/blobfuse-proxy"
+    buildCommand: "go build -o _output/blobfuse-proxy ./pkg/blobfuse-proxy"
     ldFlags: ""
 
 entrypoint: "/blobplugin"
@@ -456,7 +547,7 @@ Equivalent Go struct (for reference):
 
 ```go
 NonDeterministicValues{
-    Binaries: []{{Name: "blobplugin", OutputPath: "blobplugin", ...}, {Name: "blobfuse-proxy", ...}},
+    Binaries: []{{Name: "blobplugin", OutputPath: "_output/blobplugin", BuildCommand: "go build -a ...", LdFlags: "..."}, {Name: "blobfuse-proxy", OutputPath: "_output/blobfuse-proxy", ...}},
     
     Entrypoint:        "/blobplugin",
     Symlink:           "/usr/bin/blobplugin",

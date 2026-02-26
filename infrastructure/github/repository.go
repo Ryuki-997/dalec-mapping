@@ -277,6 +277,8 @@ func ClearEnvVariables(key string, command *string) {
 		}
 		// Final whitespace cleanup after brace removal
 		cleaned = regexp.MustCompile(`\s{2,}`).ReplaceAllString(cleaned, " ")
+		// Collapse double slashes in paths (e.g. bin//kubelogin -> bin/kubelogin)
+		cleaned = regexp.MustCompile(`/{2,}`).ReplaceAllString(cleaned, "/")
 		*command = strings.TrimSpace(cleaned)
 
 	default:
