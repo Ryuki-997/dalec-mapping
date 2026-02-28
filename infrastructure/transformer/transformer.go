@@ -33,16 +33,10 @@ func InitDefaultSpec(onboardInfo *onboarding.OnboardingInfo, repoInfo *repositor
 		defaultSpec.Revision = previousDalecSpecInfo.Args.Revision + 1
 	}
 
-	// Default Build Targets in x-build-extensions (can be overridden by Makefile or LLM output)
+	// Default Build Targets (can be overridden by LLM-extracted targets)
 	defaultSpec.BuildTargets = []contents.BuildTarget{
-		// contents.AzLinux3Container,     // Primary container image target
-		// contents.AzLinux3Rpm,           // RPM package target
-		// contents.BookwormDeb,           // Debian bookworm deb target
-		// contents.NobleDeb,              // Ubuntu noble deb target
-		// contents.JammyDeb,              // Ubuntu jammy deb target
-		// contents.FocalDeb,              // Ubuntu focal deb target
-		// contents.BionicDeb,             // Ubuntu bionic deb target
-		contents.WindowsCrossContainer, // Windows cross-compiled container target
+		contents.AzLinux3Container,
+		contents.WindowsCrossContainer,
 	}
 
 	return defaultSpec
@@ -84,14 +78,45 @@ func buildExtensions(defaultSpec *contents.DefaultSpec) map[string]interface{} {
 	// Set default build target(s)
 	ext["build-targets"] = defaultSpec.BuildTargets
 
-	// Per-target platform configuration
-	ext["per-target"] = map[string]interface{}{
-		"windowscross": map[string]interface{}{
-			"platforms": []string{"windows/amd64"},
-		},
+	// Per-target platform configuration (only if windowscross is in targets)
+	for _, bt := range defaultSpec.BuildTargets {
+		if string(bt) == "windowscross/container" {
+			ext["per-target"] = map[string]interface{}{
+				"windowscross": map[string]interface{}{
+					"platforms": []string{"windows/amd64"},
+				},
+			}
+			break
+		}
 	}
 
 	return ext
+}
+
+// ResolveTargets validates and converts target strings from NonDeterministicValues
+// into BuildTarget values. Returns nil if none provided (caller uses InitDefaultSpec defaults).
+func ResolveTargets(targets []string) []contents.BuildTarget {
+	if len(targets) == 0 {
+		fmt.Println("ℹ️  No targets specified, using InitDefaultSpec defaults")
+		return nil
+	}
+
+	resolved := []contents.BuildTarget{}
+	for _, t := range targets {
+		t = strings.TrimSpace(t)
+		if bt, ok := contents.IsValidTarget(t); ok {
+			resolved = append(resolved, bt)
+		} else {
+			fmt.Printf("⚠️  Ignoring unsupported target: %s\n", t)
+		}
+	}
+
+	if len(resolved) == 0 {
+		fmt.Println("⚠️  No valid targets found, keeping InitDefaultSpec defaults")
+		return nil
+	}
+
+	return resolved
 }
 
 // microsoftRepoURI returns the packages.microsoft.com apt repo URI for a given distro.

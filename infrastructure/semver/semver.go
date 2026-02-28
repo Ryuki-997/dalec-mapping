@@ -1,6 +1,8 @@
 package semver
 
 import (
+	"fmt"
+
 	"dalec-mapping/infrastructure/github"
 	"log"
 	"regexp"
@@ -10,14 +12,22 @@ import (
 
 func ResolveOnboardTags(repoPath string, patterns []string) ([]string, error) {
 	owner, repoName, _, _ := github.ExtractRepositorySegments(repoPath)
-	allTags, err := github.FetchAllTags(owner, repoName)
+	releaseTags, allGitTags, err := github.FetchAllTags(owner, repoName)
 	if err != nil {
 		log.Fatalf("❌ Failed to fetch tags: %v", err)
 	}
 
 	resolvedTags := make(map[string]bool)
 	for _, pattern := range patterns {
-		for _, resolved := range resolvePattern(pattern, allTags) {
+		matched := resolvePattern(pattern, releaseTags)
+		if len(matched) == 0 {
+			// Check if the pattern matches git tags that have no release
+			gitOnly := resolvePattern(pattern, allGitTags)
+			for _, tag := range gitOnly {
+				fmt.Printf("⏭  Skipping %s @ %s: tag exists but has no associated GitHub release\n", repoPath, tag)
+			}
+		}
+		for _, resolved := range matched {
 			resolvedTags[resolved] = true
 		}
 	}

@@ -37,20 +37,21 @@ func main() {
 		fmt.Printf("Onboard Documents: %v\n", onboard)
 		for _, tag := range onboard.Tag {
 			fmt.Printf("▶ Running pipeline for %s @ %s\n", onboard.Repository, tag)
-			remotePath := generateSpec(&onboard, tag)
+			remotePath, resolvedTargets := generateSpec(&onboard, tag)
 			shellVar = append(shellVar, remotePath)
 
 			// // Step 6: build, run, and test the image
-			// if err := workflow.ImageTest(remotePath, onboard.SpecImageName, tag); err != nil {
+			// if err := workflow.ImageTest(remotePath, onboard.SpecImageName, tag, resolvedTargets); err != nil {
 			// 	log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
 			// }
+			_ = resolvedTargets
 		}
 	}
 
 	fmt.Printf("specPaths=%s\n", strings.Join(shellVar, ","))
 }
 
-func generateSpec(onboard *onboarding.OnboardingInfo, tag string) string {
+func generateSpec(onboard *onboarding.OnboardingInfo, tag string) (string, []string) {
 	log.Println("Dalec Spec Generator - Scheduled Job")
 	log.Printf("Started at: %s", time.Now().Format(time.RFC3339))
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -81,7 +82,7 @@ func generateSpec(onboard *onboarding.OnboardingInfo, tag string) string {
 
 	// Step 3: Generate Dalec spec
 	log.Println("\n=== Step 3: Generate Dalec Spec ===")
-	err = workflow.Generate(onboard, fileContents, agentResponse, tag)
+	resolvedTargets, err := workflow.Generate(onboard, fileContents, agentResponse, tag)
 	if err != nil {
 		log.Fatalf("❌ Step 3 failed: %v", err)
 	}
@@ -90,17 +91,20 @@ func generateSpec(onboard *onboarding.OnboardingInfo, tag string) string {
 	log.Printf("✅ Generation Complete at %s", time.Now().Format(time.RFC3339))
 
 	// Step 4: Push to remote repository
-	err = workflow.GitPush(onboard.SpecRepository, onboard.SpecImageName, tag)
-	if err != nil {
-		log.Fatalf("❌ Step 4 failed: %v", err)
-	}
+	// err = workflow.GitPush(onboard.SpecRepository, onboard.SpecImageName, tag)
+	// if err != nil {
+	// 	log.Fatalf("❌ Step 4 failed: %v", err)
+	// }
 
 	log.Printf("✅ Spec created successfully for repository %s @ %s", onboard.Repository, onboard.Tag)
 
 	// // Step 5: Output a shell variable consist of a list of remote generated spec path separated by comma for CI integration
 	// // specs/{repository}/{image}/{image}-{tag}-specfile.yml
+	var specPath string
 	if onboard.SpecRepository == "" {
-		return fmt.Sprintf("specs/%s/%s-%s-specfile.yml", onboard.SpecImageName, onboard.SpecImageName, tag)
-	} 
-	return fmt.Sprintf("specs/%s/%s/%s-%s-specfile.yml", onboard.SpecRepository, onboard.SpecImageName, onboard.SpecImageName, tag)
+		specPath = fmt.Sprintf("specs/%s/%s-%s-specfile.yml", onboard.SpecImageName, onboard.SpecImageName, tag)
+	} else {
+		specPath = fmt.Sprintf("specs/%s/%s/%s-%s-specfile.yml", onboard.SpecRepository, onboard.SpecImageName, onboard.SpecImageName, tag)
+	}
+	return specPath, resolvedTargets
 }

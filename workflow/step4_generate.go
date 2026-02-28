@@ -12,8 +12,9 @@ import (
 	"dalec-mapping/utils"
 )
 
-// Generate runs the generation step to create dalec specs
-func Generate(onboard *onboarding.OnboardingInfo, fileContents *llm.InstructionContents, agentResponse []byte, tag string) error {
+// Generate runs the generation step to create dalec specs.
+// Returns the resolved build target strings for downstream use (e.g. image test).
+func Generate(onboard *onboarding.OnboardingInfo, fileContents *llm.InstructionContents, agentResponse []byte, tag string) ([]string, error) {
 	fmt.Println("=== GENERATE MODE ===")
 
 	// Fetch GitHub repository info
@@ -38,6 +39,19 @@ func Generate(onboard *onboarding.OnboardingInfo, fileContents *llm.InstructionC
 
 	defaultSpec := transformer.InitDefaultSpec(onboard, repoInfo, &dockerfileInfo, previousDalecSpecInfo)
 
+	// Override build targets from LLM-extracted values (keep InitDefaultSpec defaults if nil)
+	if nonDeterministicInfo != nil {
+		if resolved := transformer.ResolveTargets(nonDeterministicInfo.Targets); resolved != nil {
+			defaultSpec.BuildTargets = resolved
+		}
+	}
+
+	// Collect resolved target strings for downstream use
+	resolvedTargets := make([]string, len(defaultSpec.BuildTargets))
+	for i, bt := range defaultSpec.BuildTargets {
+		resolvedTargets[i] = string(bt)
+	}
+
 	fmt.Println("=== DOCKER FILE INFO ===")
 	parser.PrintDockerfileInfo(defaultSpec)
 
@@ -54,5 +68,5 @@ func Generate(onboard *onboarding.OnboardingInfo, fileContents *llm.InstructionC
 
 	fmt.Printf("✅ Successfully generated %s\n\n", utils.ResultDir)
 
-	return nil
+	return resolvedTargets, nil
 }

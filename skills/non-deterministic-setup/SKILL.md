@@ -26,6 +26,7 @@ The Go struct uses yaml tags that **require camelCase keys** in the YAML file:
 type NonDeterministicValues struct {
     // Build Artifacts
     Binaries []Binary `yaml:"binaries"` // All binaries
+    Targets  []string `yaml:"targets"` // Build targets (e.g. azlinux3/container)
     
     // Image Configuration  
     Entrypoint        string            `yaml:"entrypoint"`        // Container entrypoint
@@ -70,6 +71,51 @@ Where `{repo-name}` is the repository name (e.g., `kubelogin`, `blob-csi-driver`
 ---
 
 ## Agent Extraction Tasks
+
+### Task 0: Build Targets Selection
+
+**Input:** Dockerfile and Makefile content provided in prompt
+
+**Output:** `Targets` (YAML field in output)
+
+#### 0.1 Allowed Targets
+
+All of the following build targets are supported. Select the ones that apply based on the project's build files:
+
+| Target | Description |
+| ------ | ----------- |
+| `azlinux3/container` | Azure Linux 3 container image (primary Linux target) |
+| `azlinux3/rpm` | Azure Linux 3 RPM package |
+| `bookworm/deb` | Debian Bookworm deb package |
+| `noble/deb` | Ubuntu Noble deb package |
+| `jammy/deb` | Ubuntu Jammy deb package |
+| `focal/deb` | Ubuntu Focal deb package |
+| `bionic/deb` | Ubuntu Bionic deb package |
+| `windowscross/container` | Windows cross-compiled container image |
+
+#### 0.2 Selection Rules
+
+1. **Default:** If the Dockerfile/Makefile does not indicate a specific target platform, emit both `azlinux3/container` and `windowscross/container`.
+2. **Windows-only:** If the project only builds for Windows (e.g., `GOOS=windows` exclusively, no Linux binary), emit both `azlinux3/container` and `windowscross/container`.
+3. **Additional targets:** If the project explicitly needs RPM or deb packaging, include the relevant targets (e.g., `azlinux3/rpm`, `bookworm/deb`, etc.) in addition to the container targets.
+4. **When in doubt**, default to `azlinux3/container` and `windowscross/container` only.
+
+#### 0.3 Extraction Checklist
+
+- [ ] Check Makefile for `GOOS` references — does it build for both `linux` and `windows`?
+- [ ] Check Dockerfile for platform-specific instructions
+- [ ] Only add rpm/deb targets if explicitly indicated in the build files
+
+#### 0.4 Patterns
+
+```yaml
+# Default (most Go projects):
+targets:
+  - "azlinux3/container"
+  - "windowscross/container"
+```
+
+---
 
 ### Task 1: Binary Output Extraction
 
@@ -526,6 +572,9 @@ binaries:
     outputPath: "_output/blobfuse-proxy"
     buildCommand: "go build -o _output/blobfuse-proxy ./pkg/blobfuse-proxy"
     ldFlags: ""
+targets:
+  - "azlinux3/container"
+  - "windowscross/container"
 
 entrypoint: "/blobplugin"
 symlink: "/usr/bin/blobplugin"
@@ -548,6 +597,7 @@ Equivalent Go struct (for reference):
 ```go
 NonDeterministicValues{
     Binaries: []{{Name: "blobplugin", OutputPath: "_output/blobplugin", BuildCommand: "go build -a ...", LdFlags: "..."}, {Name: "blobfuse-proxy", OutputPath: "_output/blobfuse-proxy", ...}},
+    Targets:  []string{"azlinux3/container", "windowscross/container"},
     
     Entrypoint:        "/blobplugin",
     Symlink:           "/usr/bin/blobplugin",

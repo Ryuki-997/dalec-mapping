@@ -18,7 +18,7 @@ import (
 // specPath: remote spec path like "specs/HelloWorld/kubelogin/kubelogin-v0.2.14-specfile.yml"
 // imageName: e.g. "kubelogin"
 // tag: e.g. "v0.2.14"
-func ImageTest(specPath, imageName, tag string) error {
+func ImageTest(specPath, imageName, tag string, targets []string) error {
 	log.Println("\n=== Step 6: Image Test ===")
 
 	// Derive testDir: tests live alongside the spec under the same directory
@@ -42,15 +42,8 @@ func ImageTest(specPath, imageName, tag string) error {
 	}
 
 	// Step 2: Build container from spec for all targets
-	targets := []string{
-		// "azlinux3/container",
-		// "azlinux3/rpm",
-		// "bookworm/deb",
-		// "noble/deb",
-		// "jammy/deb",
-		// "focal/deb",
-		// "bionic/deb",
-		"windowscross/container",
+	if len(targets) == 0 {
+		targets = []string{"azlinux3/container", "windowscross/container"}
 	}
 	imageTag := fmt.Sprintf("%s:%s", imageName, tag)
 	for i, target := range targets {

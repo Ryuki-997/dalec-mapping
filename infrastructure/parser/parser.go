@@ -23,7 +23,6 @@ func ParseOptionalFileInfo(dockerfile, makefile []byte, specFilePath string, age
 
 	makefileInfo := contents.MakefileInfo{
 		Variables: make(map[string]string),
-		Targets:  make(map[string][]string),
 	}
 
 	ParseDockerfile(dockerfile, &dockerfileInfo)
@@ -102,22 +101,11 @@ func fetchNonDeterministicValue(agentResponse []byte) (*llm.NonDeterministicValu
 		"GOARCH=amd64 ":  "",
 	}
 
-	// Extract CGO_ENABLED value from build commands before stripping
-	cgoPattern := regexp.MustCompile(`CGO_ENABLED=(\d)`)
-	for _, bin := range nonDeterministicValues.Binaries {
-		if m := cgoPattern.FindStringSubmatch(bin.BuildCommand); len(m) > 1 {
-			nonDeterministicValues.CgoEnabled = m[1]
-			break
-		}
-	}
-
 	// Join shell line continuations (backslash + newline + optional whitespace) into single lines
 	lineContinuation := regexp.MustCompile(`\\\s*\n\s*`)
 
 	for i := range nonDeterministicValues.Binaries {
 		nonDeterministicValues.Binaries[i].BuildCommand = lineContinuation.ReplaceAllString(nonDeterministicValues.Binaries[i].BuildCommand, " ")
-		// Strip CGO_ENABLED assignments from command (moved to build.env)
-		nonDeterministicValues.Binaries[i].BuildCommand = cgoPattern.ReplaceAllString(nonDeterministicValues.Binaries[i].BuildCommand, "")
 		for key, value := range removeFlags {
 			nonDeterministicValues.Binaries[i].BuildCommand = strings.ReplaceAll(nonDeterministicValues.Binaries[i].BuildCommand, key, value)
 		}
