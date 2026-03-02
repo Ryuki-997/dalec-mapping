@@ -140,19 +140,89 @@ targets:
 4. **No double slashes.** After removing platform variables from paths, ensure no `//` remains. `bin//kubelogin` is invalid — it must be `bin/kubelogin`.
 5. **The output path in `buildCommand -o <path>` must exactly match `outputPath`.** These two fields describe the same thing — the file path where `go build` writes the binary. They must be identical so the artifact section can find the built file.
 
-#### 1.2 Extraction Checklist
+#### 1.2 Multi-Binary Makefile: Selecting the Correct Target
 
-- [ ] Find all `go build -o <path>` commands in Makefile
+**Scenario:** A single Makefile defines many build targets, each producing a different binary (e.g. `azure-cns`, `azure-npm`, `azure-vnet`, `acncli`). The pipeline generates **one spec per image**, so only the target matching the requested image name is relevant.
+
+**How to identify the correct target:**
+
+1. **Match on image name.** The prompt specifies which image is being built (via `SpecImageName`). Find the Makefile target whose output binary name matches that image name.
+2. **Match on Dockerfile ENTRYPOINT/COPY.** If the Dockerfile copies a specific binary into the final stage or sets it as the entrypoint, that is the target binary. The Makefile target producing that binary is the correct one.
+3. **Ignore all other targets.** Do NOT extract build commands for unrelated binaries. Only extract the one (or few) that directly produce the requested image's artifacts.
+
+**Rules:**
+- Extract **only** the binary whose name matches the image being built.
+- If the matching target has prerequisites (e.g. `bpf-lib`), note them but do not extract their build commands as separate binaries.
+- The `ldflags`, `outputPath`, and `buildCommand` must come from the matched target only — not from a different target in the same Makefile.
+
+**Example: azure-container-networking Makefile (building `azure-cns` image)**
+
+```makefile
+# The Makefile has 12+ binary targets:
+azure-block-iptables-binary:
+	cd $(AZURE_BLOCK_IPTABLES_DIR) && CGO_ENABLED=0 go build -v -o $(AZURE_BLOCK_IPTABLES_BUILD_DIR)/azure-block-iptables$(EXE_EXT) -ldflags "-X main.version=$(AZURE_BLOCK_IPTABLES_VERSION)"
+
+azure-vnet-binary:
+	cd $(CNI_NET_DIR) && CGO_ENABLED=0 go build -v -o $(CNI_BUILD_DIR)/azure-vnet$(EXE_EXT) -ldflags "-X main.version=$(CNI_VERSION) $(LD_BUILD_FLAGS)"
+
+azure-cns-binary:                                           # ← This is the correct target for image "azure-cns"
+	cd $(CNS_DIR) && CGO_ENABLED=0 go build -v -o $(CNS_BUILD_DIR)/azure-cns$(EXE_EXT) -ldflags "-X main.version=$(CNS_VERSION) -X $(CNS_AI_PATH)=$(CNS_AI_ID) -X $(CNI_AI_PATH)=$(CNI_AI_ID) $(LD_BUILD_FLAGS)"
+
+azure-npm-binary:
+	cd $(CNI_TELEMETRY_DIR) && CGO_ENABLED=0 go build -v -o $(NPM_BUILD_DIR)/azure-npm$(EXE_EXT) -ldflags "-X main.version=$(NPM_VERSION) $(LD_BUILD_FLAGS)"
+
+# ... 8+ more targets
+```
+
+The image being built is `azure-cns`. The correct extraction:
+
+```yaml
+# ✅ CORRECT: Only the azure-cns target is extracted
+binaries:
+  - name: "azure-cns"
+    outputPath: "output/cns/azure-cns"
+    buildCommand: "cd ${CNS_DIR} && go build -v -o output/cns/azure-cns -ldflags \"-X main.version=${VERSION} -X ${CNS_AI_PATH}=${CNS_AI_ID} -X ${CNI_AI_PATH}=${CNI_AI_ID} ${LD_BUILD_FLAGS}\" -gcflags=\"-dwarflocationlists=true\""
+    ldFlags: "-X main.version=${VERSION} -X ${CNS_AI_PATH}=${CNS_AI_ID} -X ${CNI_AI_PATH}=${CNI_AI_ID} ${LD_BUILD_FLAGS}"
+```
+
+```yaml
+# ❌ WRONG: Extracting all 12 binaries from the Makefile
+binaries:
+  - name: "azure-block-iptables"
+    ...
+  - name: "azure-vnet"
+    ...
+  - name: "azure-cns"
+    ...
+  - name: "azure-npm"
+    ...
+  # ... 8 more unrelated binaries
+```
+
+```yaml
+# ❌ WRONG: Picking the wrong target (azure-vnet instead of azure-cns)
+binaries:
+  - name: "azure-vnet"
+    outputPath: "output/cni/azure-vnet"
+    buildCommand: "cd ${CNI_NET_DIR} && go build ..."
+    ldFlags: "-X main.version=${CNI_VERSION} ${LD_BUILD_FLAGS}"
+```
+
+#### 1.3 Extraction Checklist
+
+- [ ] Identify which image/binary is being built (from image name or Dockerfile ENTRYPOINT)
+- [ ] If the Makefile has multiple binary targets, select **only** the one matching the image name
+- [ ] Find the `go build -o <path>` command in the matched target
 - [ ] Extract binary name from `-o` flag path (last path segment)
 - [ ] If no `-o` flag, infer from `./cmd/<name>` package path
 - [ ] **Collapse conditional branches** — pick the single production build path
 - [ ] **Remove platform variables** from output paths (`${OS}`, `${ARCH}`, etc.)
 - [ ] **Verify no double slashes** in the resulting path
-- [ ] Add all binaries to binaries list:
-  - [ ] Primary = matches Dockerfile ENTRYPOINT or repo name
+- [ ] Add matched binaries to binaries list:
+  - [ ] Primary = matches Dockerfile ENTRYPOINT or image name
 - [ ] Store the cleaned, deterministic path for artifact mapping
 
-#### 1.3 Patterns
+#### 1.4 Patterns
 
 ```makefile
 # Pattern A: Direct -o flag with platform vars (COLLAPSE)
@@ -188,7 +258,7 @@ go build ./cmd/myapp
 # → binaries[0].outputPath: "myapp"
 ```
 
-#### 1.4 Anti-Patterns (DO NOT produce these)
+#### 1.5 Anti-Patterns (DO NOT produce these)
 
 ```yaml
 # ❌ WRONG: Platform variables in output path

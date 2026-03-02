@@ -10,8 +10,9 @@ import (
 	"dalec-mapping/infrastructure/github"
 )
 
-// extractBuildSteps converts RUN commands to Dalec build steps (uses nonDeterministicValues if available)
-func extractBuildSection(defaultSpec *contents.DefaultSpec, makefileInfo *contents.MakefileInfo, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
+// extractBuildSection converts RUN commands to Dalec build steps (uses nonDeterministicValues if available).
+// It returns the build map and a set of variable names referenced in the build command/ldflags.
+func extractBuildSection(defaultSpec *contents.DefaultSpec, makefileInfo *contents.MakefileInfo, nonDeterministicValues *llm.NonDeterministicValues) (map[string]interface{}, map[string]bool) {
 	build := make(map[string]interface{})
 	env := make(map[string]interface{})
 
@@ -62,14 +63,12 @@ func extractBuildSection(defaultSpec *contents.DefaultSpec, makefileInfo *conten
 		}
 	}
 
-	// Only push Makefile variables that are actually referenced
+	// Add referenced Makefile variables to env as ${VAR} references
 	if makefileInfo != nil {
 		for varName := range referencedVars {
-			// Skip vars already set in env or handled elsewhere
 			if _, alreadySet := env[varName]; alreadySet {
 				continue
 			}
-			// If Makefile defines this variable, add it as a reference
 			if _, exists := makefileInfo.Variables[varName]; exists {
 				env[varName] = fmt.Sprintf("${%s}", varName)
 			}
@@ -84,7 +83,7 @@ func extractBuildSection(defaultSpec *contents.DefaultSpec, makefileInfo *conten
 
 	build["steps"] = steps
 
-	return build
+	return build, referencedVars
 }
 
 func extractBuildSteps(nonDeterministicValues *llm.NonDeterministicValues, repoName string) string {

@@ -54,7 +54,7 @@ func Populate(ctx context.Context, onboard *onboarding.OnboardingInfo, fileConte
 	}
 
 	// Build user prompt
-	userPrompt := buildPrompt(fileContents.Dockerfile, fileContents.Makefile)
+	userPrompt := buildPrompt(fileContents.Dockerfile, fileContents.Makefile, onboard.SpecImageName)
 
 	// Call Azure Foundry API
 	log.Println("Calling Azure OpenAI API...")
@@ -120,10 +120,14 @@ func fetchFileContents(onboard *onboarding.OnboardingInfo, paths []string) (map[
 }
 
 // buildPrompt constructs the user prompt with dockerfile and makefile contents
-func buildPrompt(dockerfile, makefile []byte) string {
+func buildPrompt(dockerfile, makefile []byte, specImageName string) string {
 	var sb strings.Builder
 
 	sb.WriteString("Analyze the following build files and extract non-deterministic values.\n\n")
+
+	if specImageName != "" {
+		sb.WriteString(fmt.Sprintf("## Target Image\nThe image being built is **%s**. Extract only the binary and build command relevant to this image. Ignore unrelated build targets in the Makefile.\n\n", specImageName))
+	}
 
 	sb.WriteString("## Dockerfiles\n")
 	if dockerfile == nil {

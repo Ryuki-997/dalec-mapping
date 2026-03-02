@@ -40,15 +40,17 @@ func main() {
 			remotePath, resolvedTargets := generateSpec(&onboard, tag)
 			shellVar = append(shellVar, remotePath)
 
-			// // Step 6: build, run, and test the image
-			// if err := workflow.ImageTest(remotePath, onboard.SpecImageName, tag, resolvedTargets); err != nil {
-			// 	log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
-			// }
+			// Step 6: build, run, and test the image
+			if err := workflow.ImageTest(remotePath, onboard.SpecImageName, tag, resolvedTargets); err != nil {
+				log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
+			}
 			_ = resolvedTargets
 		}
 	}
 
 	fmt.Printf("specPaths=%s\n", strings.Join(shellVar, ","))
+
+	// test()
 }
 
 func generateSpec(onboard *onboarding.OnboardingInfo, tag string) (string, []string) {

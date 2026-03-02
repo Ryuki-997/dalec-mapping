@@ -7,3 +7,6 @@ onboard.yml
 tmp.go
 
 TODO
+
+kubelogin-test.sh
+partnerTest.go

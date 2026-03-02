@@ -49,8 +49,12 @@ func TransformToDalec(defaultSpec *contents.DefaultSpec, makefileInfo *contents.
 	// Add syntax header (special comment format)
 	spec["# syntax"] = "ghcr.io/azure/dalec/frontend:latest"
 
-	// Initialize args section
-	spec["args"] = populateArgs(defaultSpec, makefileInfo)
+	// Compute build section first to discover which variables are referenced
+	buildSection, referencedVars := extractBuildSection(defaultSpec, makefileInfo, nonDeterministicValues)
+	spec["build"] = buildSection
+
+	// Initialize args section — only include Makefile vars that are actually used
+	spec["args"] = populateArgs(defaultSpec, makefileInfo, referencedVars)
 	populateMetadata(defaultSpec, spec)
 
 	// Build extensions section
@@ -60,8 +64,6 @@ func TransformToDalec(defaultSpec *contents.DefaultSpec, makefileInfo *contents.
 	spec["sources"] = extractSources(defaultSpec)
 	spec["dependencies"] = extractDependencies(nonDeterministicValues)
 	spec["targets"] = extractTargets(defaultSpec)
-	buildSection := extractBuildSection(defaultSpec, makefileInfo, nonDeterministicValues)
-	spec["build"] = buildSection
 	spec["artifacts"] = extractArtifacts(defaultSpec, nonDeterministicValues)
 	spec["image"] = extractImageConfig(defaultSpec, nonDeterministicValues)
 	spec["tests"] = appendTests(defaultSpec, nonDeterministicValues)

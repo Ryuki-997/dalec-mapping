@@ -39,6 +39,10 @@ func parseVariable(line string, info *contents.MakefileInfo) {
 
 	if key != "" {
 		value = strings.TrimSpace(value)
+		// Strip surrounding quotes: '"value"' → 'value', '""' → ''
+		if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+			value = value[1 : len(value)-1]
+		}
 		info.Variables[key] = value
 	}
 }
