@@ -62,8 +62,8 @@ func TransformToDalec(defaultSpec *contents.DefaultSpec, makefileInfo *contents.
 
 	// Transform Dockerfile content to Dalec sections
 	spec["sources"] = extractSources(defaultSpec)
-	spec["dependencies"] = extractDependencies(nonDeterministicValues)
-	spec["targets"] = extractTargets(defaultSpec)
+	spec["dependencies"] = extractDependencies()
+	spec["targets"] = extractTargets(defaultSpec, nonDeterministicValues)
 	spec["artifacts"] = extractArtifacts(defaultSpec, makefileInfo, nonDeterministicValues)
 	spec["image"] = extractImageConfig(defaultSpec, nonDeterministicValues)
 	spec["tests"] = appendTests(defaultSpec, nonDeterministicValues)
@@ -141,8 +141,10 @@ func microsoftRepoURI(distro string) string {
 	}
 }
 
-// extractTargets creates target-specific configurations
-func extractTargets(defaultSpec *contents.DefaultSpec) map[string]interface{} {
+// extractTargets creates target-specific configurations.
+// It merges transformer-hardcoded deps (toolchain, crypto libs) with
+// app-specific deps extracted by the LLM via nonDeterministicValues.PerTargetDeps.
+func extractTargets(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
 	targets := make(map[string]interface{})
 
 	// Track unique OS targets (deduplicate by OS, not by full build target)
@@ -169,6 +171,7 @@ func extractTargets(defaultSpec *contents.DefaultSpec) map[string]interface{} {
 		target := make(map[string]interface{})
 		deps := make(map[string]interface{})
 		buildDeps := make(map[string]interface{})
+		runtimeDeps := make(map[string]interface{})
 
 		// Per-target build dependencies and repo configuration
 		switch os {
@@ -177,17 +180,40 @@ func extractTargets(defaultSpec *contents.DefaultSpec) map[string]interface{} {
 			if defaultSpec.Generator == repository.GoModGenerator {
 				buildDeps["msft-golang"] = map[string]interface{}{}
 			}
-			// SymCrypt/OpenSSL runtime deps only apply to Azure Linux (RPM packages)
-			deps["runtime"] = map[string]interface{}{
-				"openssl-libs":    map[string]interface{}{},
-				"SymCrypt":        map[string]interface{}{},
-				"SymCrypt-OpenSSL": map[string]interface{}{},
+			// CGO + GOEXPERIMENT=systemcrypto requires SymCrypt/OpenSSL at both build and runtime
+			buildDeps["SymCrypt"] = map[string]interface{}{}
+			buildDeps["SymCrypt-OpenSSL"] = map[string]interface{}{}
+			buildDeps["openssl-libs"] = map[string]interface{}{}
+			runtimeDeps["SymCrypt"] = map[string]interface{}{}
+			runtimeDeps["SymCrypt-OpenSSL"] = map[string]interface{}{}
+			runtimeDeps["openssl-libs"] = map[string]interface{}{}
+			// Merge LLM-provided app-specific deps for azlinux3
+			if nonDeterministicValues != nil {
+				if td, ok := nonDeterministicValues.PerTargetDeps["azlinux3"]; ok {
+					for _, dep := range td.Build {
+						buildDeps[dep] = map[string]interface{}{}
+					}
+					for _, dep := range td.Runtime {
+						runtimeDeps[dep] = map[string]interface{}{}
+					}
+				}
 			}
 		case "bookworm", "bullseye", "noble", "jammy", "focal", "bionic":
 			// Debian/Ubuntu: add Microsoft apt repo to get msft-golang
 			if defaultSpec.Generator == repository.GoModGenerator {
 				buildDeps["msft-golang"] = map[string]interface{}{}
 				buildDeps["gcc"] = map[string]interface{}{}
+			}
+			// Merge LLM-provided app-specific deps for this distro
+			if nonDeterministicValues != nil {
+				if td, ok := nonDeterministicValues.PerTargetDeps[os]; ok {
+					for _, dep := range td.Build {
+						buildDeps[dep] = map[string]interface{}{}
+					}
+					for _, dep := range td.Runtime {
+						runtimeDeps[dep] = map[string]interface{}{}
+					}
+				}
 			}
 
 			// Microsoft apt feed via extra_repos using proper Dalec Source format.
@@ -216,9 +242,18 @@ func extractTargets(defaultSpec *contents.DefaultSpec) map[string]interface{} {
 			}
 		case "windowscross":
 			// windowscross builds on an Ubuntu (Jammy) base — needs extra_repos for msft-golang.
-			// No SymCrypt/OpenSSL runtime deps (those are Linux RPM packages, not Windows).
+			// Runtime deps are NEVER allowed on windowscross (Dalec rejects them).
 			if defaultSpec.Generator == repository.GoModGenerator {
 				buildDeps["msft-golang"] = map[string]interface{}{}
+			}
+			// Merge LLM-provided build-only deps for windowscross (runtime is intentionally ignored)
+			if nonDeterministicValues != nil {
+				if td, ok := nonDeterministicValues.PerTargetDeps["windowscross"]; ok {
+					for _, dep := range td.Build {
+						buildDeps[dep] = map[string]interface{}{}
+					}
+					// td.Runtime is explicitly ignored — windowscross cannot have runtime deps
+				}
 			}
 
 			// Microsoft Jammy apt feed for the windowscross builder environment
@@ -247,6 +282,9 @@ func extractTargets(defaultSpec *contents.DefaultSpec) map[string]interface{} {
 
 		if len(buildDeps) > 0 {
 			deps["build"] = buildDeps
+		}
+		if len(runtimeDeps) > 0 {
+			deps["runtime"] = runtimeDeps
 		}
 		target["dependencies"] = deps
 

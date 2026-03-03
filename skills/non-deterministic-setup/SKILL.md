@@ -95,10 +95,11 @@ All of the following build targets are supported. Select the ones that apply bas
 
 #### 0.2 Selection Rules
 
-1. **Default:** If the Dockerfile/Makefile does not indicate a specific target platform, emit both `azlinux3/container` and `windowscross/container`.
-2. **Windows-only:** If the project only builds for Windows (e.g., `GOOS=windows` exclusively, no Linux binary), emit both `azlinux3/container` and `windowscross/container`.
-3. **Additional targets:** If the project explicitly needs RPM or deb packaging, include the relevant targets (e.g., `azlinux3/rpm`, `bookworm/deb`, etc.) in addition to the container targets.
-4. **When in doubt**, default to `azlinux3/container` and `windowscross/container` only.
+1. **Default (cross-platform):** If the Dockerfile/Makefile builds for both Linux and Windows (or does not indicate a specific target platform), emit both `azlinux3/container` and `windowscross/container`.
+2. **Windows-only:** If the project only builds for Windows (e.g., `GOOS=windows` exclusively, Dockerfile final stage is Windows-based, no Linux binary produced), emit **only** `windowscross/container`. Do NOT add `azlinux3/container`.
+3. **Linux-only:** If the project only builds for Linux (no `GOOS=windows`, no Windows Dockerfile stage, no windows cross-compile target in Makefile), emit **only** `azlinux3/container`. Do NOT add `windowscross/container`.
+4. **Additional targets:** If the project explicitly needs RPM or deb packaging, include the relevant targets (e.g., `azlinux3/rpm`, `bookworm/deb`, etc.) in addition to the container targets.
+5. **When in doubt**, default to `azlinux3/container` and `windowscross/container` only.
 
 #### 0.3 Extraction Checklist
 
@@ -109,10 +110,20 @@ All of the following build targets are supported. Select the ones that apply bas
 #### 0.4 Patterns
 
 ```yaml
-# Default (most Go projects):
+# Cross-platform (default — most Go projects that run on both Linux and Windows):
 targets:
   - "azlinux3/container"
   - "windowscross/container"
+
+# Windows-only (e.g. kubelogin — kubectl credential plugin, runs on Windows clients):
+# Signal: Dockerfile final stage is Windows, or Makefile only sets GOOS=windows
+targets:
+  - "windowscross/container"
+
+# Linux-only (e.g. a Linux daemon/agent with no Windows target in Makefile):
+# Signal: No GOOS=windows, no Windows Dockerfile stage, no windows make target
+targets:
+  - "azlinux3/container"
 ```
 
 ---
@@ -321,61 +332,108 @@ ENTRYPOINT ["/app", "--config", "/etc/app.conf"]
 
 **Input:** Dockerfile and Makefile content provided in prompt
 
-- Dockerfile content - Search for apt/yum install commands  
-- Makefile content - Search for image references
+**Output:** `perTargetDeps` (YAML field in output)
 
-**Output:** `BuildDeps`, `RuntimeDeps`, `ExternalTools` (YAML fields in output)
+#### 3.0 What the Transformer Already Provides (Do NOT emit these)
 
-#### 3.1 Build Dependencies Checklist
+The transformer **automatically** adds these to every target — you must NOT include them in `perTargetDeps`:
 
-- [ ] Check Dockerfile builder stage for `apt install` packages
-- [ ] Check Makefile for `golang:` image → add `msft-golang`
-- [ ] Check for `rust:` image → add `rust`
-- [ ] Extract C library deps: `libssl-dev`, `pkg-config`, etc.
-- [ ] Add `curl` if used in builder stage
+| Package | Target | Why auto-added |
+| ------- | ------ | -------------- |
+| `msft-golang` | all targets (build) | Go toolchain, always needed |
+| `SymCrypt` | azlinux3 (build + runtime) | FIPS crypto lib, CGO_ENABLED=1 |
+| `SymCrypt-OpenSSL` | azlinux3 (build + runtime) | GOEXPERIMENT=systemcrypto provider |
+| `openssl-libs` | azlinux3 (build + runtime) | OpenSSL shared libs for CGO link |
 
-#### 3.2 Runtime Dependencies Checklist
+Only emit **application-specific** packages that the Dockerfile installs on top of these.
+
+#### 3.1 Structure
+
+`perTargetDeps` is a map keyed by OS name (`azlinux3`, `windowscross`, `bookworm`, etc.). Each entry has:
+- `build`: packages needed at compile time (beyond toolchain)
+- `runtime`: packages needed inside the final image at runtime
+
+**CRITICAL:** `windowscross.runtime` must **always be empty or omitted**. Dalec rejects runtime deps on Windows output images.
+
+#### 3.2 Per-Target Build Dependencies Checklist
+
+- [ ] Check Dockerfile builder stage for `apt install` / `RUN` install commands
+- [ ] Check Makefile for extra build tools (e.g. `curl` in builder, `pkg-config`)
+- [ ] Do NOT emit: `msft-golang`, `gcc`, `SymCrypt`, `SymCrypt-OpenSSL`, `openssl-libs` (auto-added)
+- [ ] Only emit packages specific to the application's build process
+
+#### 3.3 Per-Target Runtime Dependencies Checklist
 
 - [ ] Analyze **final Dockerfile stage only** (not builder stages)
-- [ ] Find `apt install`, `yum install`, `apk add` commands
+- [ ] Find `apt install`, `yum install`, `apk add`, `tdnf install` commands
 - [ ] Apply exclusion filter:
 
 | Exclude | Reason |
 | ------- | ------ |
 | `fi`, `then`, `else`, `do`, `done`, `;;` | Shell syntax |
 | `&&`, `\|\|`, `;` | Operators |
-| `install`, `dpkg`, `apt`, `apt-get` | Commands |
+| `install`, `dpkg`, `apt`, `apt-get`, `tdnf` | Commands |
 | `/path/to/file` | File paths |
 | `$VAR`, `${VAR}` | Variables |
+| `SymCrypt`, `SymCrypt-OpenSSL`, `openssl-libs` | Auto-added by transformer |
 
-- [ ] Handle conditionals: extract all branches, add arch comments
+- [ ] **Never populate `windowscross.runtime`** — Dalec rejects it
+- [ ] Linux-only packages (e.g. `iptables`) go to `azlinux3.runtime` only
 
-#### 3.3 External Tools Checklist
+#### 3.4 External Tools Checklist
 
 - [ ] Find `curl -L`, `curl -Ls`, `wget` commands downloading binaries
 - [ ] Extract tool name from URL path
 - [ ] Mark as `NeedsSeparateSpec: true`
-- [ ] Add TODO comment in generated spec
 
-#### 3.4 Patterns
+#### 3.5 Patterns
 
 ```dockerfile
-# Build deps (builder stage)
+# Builder stage
 FROM golang:1.21 AS builder
-RUN apt install -y curl libssl-dev
-# → BuildDeps: ["msft-golang", "curl", "libssl-dev"]
+RUN apt install -y curl
 
-# Runtime deps (final stage)
-RUN apt install -y ca-certificates curl
-# → RuntimeDeps: ["ca-certificates", "curl"]
+# Final stage (azlinux3 equiv)
+RUN apt install -y ca-certificates iptables
 
-# Conditional deps
-RUN if [ "$ARCH" = "amd64" ]; then apt install -y blobfuse; fi
-# → RuntimeDeps: ["blobfuse"] with comment "# amd64 only"
+# → perTargetDeps:
+#   azlinux3:
+#     build: ["curl"]        # extra build tool
+#     runtime: ["ca-certificates", "iptables"]
+#   windowscross:
+#     build: []              # nothing extra
+#     # runtime: omitted — windowscross cannot have runtime deps
+```
 
-# External tools
-RUN curl -Ls https://github.com/Azure/azcopy/releases/.../azcopy.tar.gz | tar xz
-# → ExternalTools: [{Name: "azcopy", NeedsSeparateSpec: true}]
+```dockerfile
+# Final stage — no extra build tools, just runtime
+RUN apt install -y ca-certificates fuse
+
+# → perTargetDeps:
+#   azlinux3:
+#     build: []
+#     runtime: ["ca-certificates", "fuse"]
+#   windowscross:
+#     build: []
+```
+
+```yaml
+# ❌ WRONG: global buildDeps/runtimeDeps (old format — no longer used)
+buildDeps:
+  - "msft-golang"
+  - "iptables"
+runtimeDeps:
+  - "iptables"
+
+# ✅ CORRECT: per-target format
+perTargetDeps:
+  azlinux3:
+    build: []      # or omit if empty
+    runtime:
+      - "iptables"
+  windowscross:
+    build: []      # or omit if empty
+    # runtime: never populated
 ```
 
 ---
@@ -564,8 +622,8 @@ func FillNonDeterministicValues(dockerfileContent, makefileContent string) (*Non
 │  - artifacts.binaries (from Binaries list)                       │
 │  - image.entrypoint (from Entrypoint)                           │
 │  - image.post.symlinks (from Symlink)                           │
-│  - dependencies.build (from BuildDeps)                          │
-│  - dependencies.runtime (from RuntimeDeps)                      │
+│  - targets.<os>.dependencies.build (from PerTargetDeps + auto)  │
+│  - targets.<os>.dependencies.runtime (from PerTargetDeps + auto)│
 │  - build.steps (from binary BuildCommand, LdFlags)              │
 │  CLI fills remaining deterministic fields (license, version)    │
 │  Output: Final Dalec YAML spec (result/output.yml)              │
@@ -583,8 +641,8 @@ After agent extraction, verify:
 | V1 | `binaries[0].name` matches Makefile `-o` output (not repo name) | [ ] |
 | V2 | `Entrypoint` matches Dockerfile `ENTRYPOINT`/`CMD` | [ ] |
 | V3 | `Symlink` target matches `Entrypoint` path | [ ] |
-| V4 | `RuntimeDeps` excludes: `fi`, `then`, `;`, `install`, `dpkg` | [ ] |
-| V5 | `BuildDeps` includes compiler (`msft-golang` / `rust`) | [ ] |
+| V4 | `perTargetDeps.azlinux3.runtime` excludes: `fi`, `then`, `;`, `install`, `dpkg`, `SymCrypt`, `openssl-libs` | [ ] |
+| V5 | `perTargetDeps.windowscross.runtime` is empty or omitted | [ ] |
 | V6 | `LdFlags` uses `${VERSION}` not hardcoded values | [ ] |
 | V7 | `BuildCommand` has no `docker run` commands | [ ] |
 | V8 | All `Binaries` have corresponding build commands | [ ] |
@@ -649,12 +707,18 @@ targets:
 entrypoint: "/blobplugin"
 symlink: "/usr/bin/blobplugin"
 
-buildDeps:
-  - "msft-golang"
-  - "curl"
-runtimeDeps:
-  - "ca-certificates"
-  - "fuse"
+# Only app-specific packages — transformer auto-adds msft-golang, SymCrypt, openssl-libs
+perTargetDeps:
+  azlinux3:
+    build:
+      - "curl"              # used in builder stage
+    runtime:
+      - "ca-certificates"
+      - "fuse"
+  windowscross:
+    build: []              # nothing extra beyond auto-added msft-golang
+    # runtime: omitted — windowscross cannot have runtime deps
+
 externalTools: []
 
 warnings:
@@ -666,20 +730,28 @@ Equivalent Go struct (for reference):
 
 ```go
 NonDeterministicValues{
-    Binaries: []{{Name: "blobplugin", OutputPath: "_output/blobplugin", BuildCommand: "go build -a ...", LdFlags: "..."}, {Name: "blobfuse-proxy", OutputPath: "_output/blobfuse-proxy", ...}},
-    Targets:  []string{"azlinux3/container", "windowscross/container"},
-    
-    Entrypoint:        "/blobplugin",
-    Symlink:           "/usr/bin/blobplugin",
-    
-    BuildDeps:         []string{"msft-golang", "curl"},
-    RuntimeDeps:       []string{"ca-certificates", "fuse"},
-    ExternalTools:     []ExternalTool{},
-    
-    BuildCommand:      "go build -a -ldflags \"${LDFLAGS}\" -mod vendor -o blobplugin ./pkg/blobplugin",
-    LdFlags:           "-X sigs.k8s.io/blob-csi-driver/pkg/blob.driverVersion=${VERSION} -s -w",
-    
-    Warnings:          []string{"WARN_MULTI_BINARY: blobfuse-proxy detected"},
-    Confidence:        0.85,
+    Binaries: []Binary{
+        {Name: "blobplugin", OutputPath: "_output/blobplugin", BuildCommand: "go build -a ...", LdFlags: "..."},
+        {Name: "blobfuse-proxy", OutputPath: "_output/blobfuse-proxy", BuildCommand: "go build ..."},
+    },
+    Targets: []string{"azlinux3/container", "windowscross/container"},
+
+    Entrypoint: "/blobplugin",
+    Symlink:    "/usr/bin/blobplugin",
+
+    PerTargetDeps: map[string]TargetDeps{
+        "azlinux3": {
+            Build:   []string{"curl"},
+            Runtime: []string{"ca-certificates", "fuse"},
+        },
+        "windowscross": {
+            Build: []string{},
+            // Runtime intentionally empty
+        },
+    },
+
+    ExternalTools: []ExternalTool{},
+    Warnings:      []string{"WARN_MULTI_BINARY: blobfuse-proxy detected"},
+    Confidence:    0.85,
 }
 ```
