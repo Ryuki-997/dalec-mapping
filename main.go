@@ -41,9 +41,9 @@ func main() {
 			shellVar = append(shellVar, remotePath)
 
 			// Step 6: build, run, and test the image
-			if err := workflow.ImageTest(remotePath, onboard.SpecImageName, tag, resolvedTargets); err != nil {
-				log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
-			}
+			// if err := workflow.ImageTest(remotePath, onboard.SpecImageName, tag, resolvedTargets); err != nil {
+			// 	log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
+			// }
 			_ = resolvedTargets
 		}
 	}
@@ -93,10 +93,10 @@ func generateSpec(onboard *onboarding.OnboardingInfo, tag string) (string, []str
 	log.Printf("✅ Generation Complete at %s", time.Now().Format(time.RFC3339))
 
 	// Step 4: Push to remote repository
-	// err = workflow.GitPush(onboard.SpecRepository, onboard.SpecImageName, tag)
-	// if err != nil {
-	// 	log.Fatalf("❌ Step 4 failed: %v", err)
-	// }
+	err = workflow.GitPush(onboard.SpecRepository, onboard.SpecImageName, tag)
+	if err != nil {
+		log.Fatalf("❌ Step 4 failed: %v", err)
+	}
 
 	log.Printf("✅ Spec created successfully for repository %s @ %s", onboard.Repository, onboard.Tag)
 

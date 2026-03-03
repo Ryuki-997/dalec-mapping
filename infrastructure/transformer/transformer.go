@@ -64,7 +64,7 @@ func TransformToDalec(defaultSpec *contents.DefaultSpec, makefileInfo *contents.
 	spec["sources"] = extractSources(defaultSpec)
 	spec["dependencies"] = extractDependencies(nonDeterministicValues)
 	spec["targets"] = extractTargets(defaultSpec)
-	spec["artifacts"] = extractArtifacts(defaultSpec, nonDeterministicValues)
+	spec["artifacts"] = extractArtifacts(defaultSpec, makefileInfo, nonDeterministicValues)
 	spec["image"] = extractImageConfig(defaultSpec, nonDeterministicValues)
 	spec["tests"] = appendTests(defaultSpec, nonDeterministicValues)
 
@@ -254,7 +254,7 @@ func extractTargets(defaultSpec *contents.DefaultSpec) map[string]interface{} {
 		// Must suppress symlinks and set a Windows-compatible entrypoint
 		if os == "windowscross" {
 			target["image"] = map[string]interface{}{
-				"entrypoint": defaultSpec.Repo,
+				"entrypoint": defaultSpec.SpecImageName,
 				"post":       map[string]interface{}{},
 			}
 			// Override global tests — Linux file permission checks don't apply to Windows
@@ -266,8 +266,10 @@ func extractTargets(defaultSpec *contents.DefaultSpec) map[string]interface{} {
 	return targets
 }
 
-// extractArtifacts identifies build artifacts (uses nonDeterministicValues if available)
-func extractArtifacts(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
+// extractArtifacts identifies build artifacts (uses nonDeterministicValues if available).
+// When a binary's build command contains a leading "cd X &&", the subdir X is resolved
+// via makefileInfo and prepended to the artifact path so it is root-relative.
+func extractArtifacts(defaultSpec *contents.DefaultSpec, makefileInfo *contents.MakefileInfo, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
 	artifacts := make(map[string]interface{})
 	binaries := make(map[string]interface{})
 
@@ -276,15 +278,23 @@ func extractArtifacts(defaultSpec *contents.DefaultSpec, nonDeterministicValues 
 		for _, aux := range nonDeterministicValues.Binaries {
 			outputPath := aux.OutputPath
 			github.ClearEnvVariables("OutputPath", &outputPath)
-			
+
 			if outputPath == "" {
 				outputPath = aux.Name
 			}
 			if !strings.Contains(outputPath, "/") {
 				outputPath = fmt.Sprintf("bin/%s", outputPath)
 			}
-			
-			artifact := defaultSpec.Repo + "/" + outputPath
+
+			// Detect "cd X &&" in the build command and fold X into the artifact path
+			subdir, _ := extractCdDir(strings.TrimSpace(aux.BuildCommand))
+			var artifact string
+			if subdir != "" && makefileInfo != nil {
+				resolvedSubdir := NestedValueReplacement(defaultSpec, makefileInfo, subdir)
+				artifact = defaultSpec.Repo + "/" + resolvedSubdir + "/" + outputPath
+			} else {
+				artifact = defaultSpec.Repo + "/" + outputPath
+			}
 			binaries[artifact] = map[string]interface{}{}
 			fmt.Printf("ARTIFACTS: %v\n", artifact)
 		}

@@ -38,18 +38,19 @@ func extractBuildSection(defaultSpec *contents.DefaultSpec, makefileInfo *conten
 		}
 	}
 
-	buildCommand := "cd " + defaultSpec.Repo + "\n"
+	// Build the full command string used for variable scanning
+	var scanCommand string
 	if command == "" {
 		output := fmt.Sprintf("bin/%s", defaultSpec.Repo)
-		buildCommand += fmt.Sprintf("go build -o %s ./main.go", output)
+		scanCommand = fmt.Sprintf("cd %s\ngo build -o %s ./main.go", defaultSpec.Repo, output)
 	} else {
-		buildCommand += command
+		scanCommand = "cd " + defaultSpec.Repo + "\n" + command
 	}
 
 	// Collect all text to scan for variable references:
 	// build commands + LdFlags from env
 	var scanTexts []string
-	scanTexts = append(scanTexts, buildCommand)
+	scanTexts = append(scanTexts, scanCommand)
 	if ldflags, ok := env["LDFLAGS"]; ok {
 		scanTexts = append(scanTexts, fmt.Sprintf("%v", ldflags))
 	}
@@ -77,13 +78,41 @@ func extractBuildSection(defaultSpec *contents.DefaultSpec, makefileInfo *conten
 
 	build["env"] = env
 
-	steps := []map[string]interface{}{
-		{"command": buildCommand},
+	// Generate per-binary steps — merge "cd X &&" into the initial "cd repo/X"
+	var steps []map[string]interface{}
+	if command == "" {
+		steps = append(steps, map[string]interface{}{"command": scanCommand})
+	} else {
+		for _, line := range strings.Split(strings.TrimSpace(command), "\n") {
+			if line == "" {
+				continue
+			}
+			subdir, stripped := extractCdDir(line)
+			var stepCmd string
+			if subdir != "" {
+				stepCmd = fmt.Sprintf("cd %s/%s\n%s", defaultSpec.Repo, subdir, stripped)
+			} else {
+				stepCmd = fmt.Sprintf("cd %s\n%s", defaultSpec.Repo, line)
+			}
+			steps = append(steps, map[string]interface{}{"command": stepCmd})
+		}
 	}
 
 	build["steps"] = steps
 
 	return build, referencedVars
+}
+
+// extractCdDir detects a leading "cd X &&" in a single build command line.
+// Returns the directory (X) and the remaining command with the cd prefix stripped.
+// If no such prefix exists, returns ("", original line).
+func extractCdDir(line string) (subdir, stripped string) {
+	line = strings.TrimSpace(line)
+	cdPattern := regexp.MustCompile(`^cd\s+(\S+)\s*&&\s*(.+)$`)
+	if m := cdPattern.FindStringSubmatch(line); m != nil {
+		return m[1], strings.TrimSpace(m[2])
+	}
+	return "", line
 }
 
 func extractBuildSteps(nonDeterministicValues *llm.NonDeterministicValues, repoName string) string {
