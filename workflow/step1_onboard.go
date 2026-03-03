@@ -14,7 +14,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo) error {
+func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, inputPath string) error {
+	// Build path prefix for filtering: always rooted under "specs/"
+	pathPrefix := "specs/"
+	if inputPath != "" {
+		pathPrefix = "specs/" + strings.TrimSuffix(inputPath, "/") + "/"
+	}
+
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/%s?recursive=1", utils.OnboardOwner, utils.OnboardRepo, utils.OnboardBranch)
 
 	data, err := github.MakeGitHubRequest[map[string]interface{}](repository.GithubRequest{URL: url})
@@ -39,6 +45,11 @@ func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo) error {
 		path, ok := itemMap["path"].(string)
 		if !ok {
 			return fmt.Errorf("unexpected item format: 'path' field is missing or not a string")
+		}
+
+		// Filter paths to only include those within the specified input path
+		if !strings.HasPrefix(path, pathPrefix) {
+			continue
 		}
 
 		specRepository, specImageName, err := getOnboardFilepath(path)

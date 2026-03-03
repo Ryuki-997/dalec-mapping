@@ -213,9 +213,26 @@ func callAzureAPI(ctx context.Context, systemPrompt, userPrompt string) (string,
 	}
 
 	responseText := response.Output[0].Content[0].Text
-	responseText = strings.TrimSpace(responseText)
-	responseText = strings.TrimPrefix(responseText, "```yaml")
-	responseText = strings.TrimSuffix(responseText, "```")
+	responseText = extractYAMLContent(responseText)
 
 	return responseText, nil
+}
+
+// extractYAMLContent strips markdown code fences and any leading preamble from the LLM response,
+// returning only the raw YAML text.
+func extractYAMLContent(text string) string {
+	text = strings.TrimSpace(text)
+	// Prefer extracting the content of a ```yaml ... ``` block (handles preamble before the fence)
+	if idx := strings.Index(text, "```yaml\n"); idx != -1 {
+		text = text[idx+len("```yaml\n"):]
+		if end := strings.LastIndex(text, "```"); end != -1 {
+			text = text[:end]
+		}
+		return strings.TrimSpace(text)
+	}
+	// Fallback: strip bare fences if present
+	text = strings.TrimPrefix(text, "```yaml")
+	text = strings.TrimPrefix(text, "```")
+	text = strings.TrimSuffix(text, "```")
+	return strings.TrimSpace(text)
 }

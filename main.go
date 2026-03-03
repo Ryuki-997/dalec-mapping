@@ -6,6 +6,7 @@ import (
 	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/domain/repository"
 	"dalec-mapping/workflow"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -16,18 +17,22 @@ import (
 )
 
 func main() {
+	// Parse command line flags
+	inputPath := flag.String("path", "", "Subdirectory under specs/ to filter (e.g. 'kubelogin' → specs/kubelogin). Omit to fetch all under specs/")
+	flag.Parse()
+
 	wd, _ := os.Getwd()
 	log.Printf("Working directory: %s", wd)
-	
+
 	err := godotenv.Load()
 	if err != nil {
 		log.Printf("⚠️  .env file not found at %s/.env: %v", wd, err)
 		os.Exit(1)
-	} 
+	}
 
 	onboardFiles := []onboarding.OnboardingInfo{}
 
-	err = workflow.FetchOnboardFiles(&onboardFiles)
+	err = workflow.FetchOnboardFiles(&onboardFiles, *inputPath)
 	if err != nil {
 		log.Fatalf("❌ Failed to fetch onboard data: %v", err)
 	}
