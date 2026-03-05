@@ -2,14 +2,18 @@ package github
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"dalec-mapping/domain/repository"
 )
 
+// semverInTag extracts a clean vX.Y.Z from tags that may have suffixes (e.g. v1.2.3-main-date-hash).
+var semverInTag = regexp.MustCompile(`v(\d+)\.(\d+)\.(\d+)`)
+
 // FetchRepoInfo fetches repository metadata from GitHub API
 func FetchRepoInfo(repoPath, tag string) (*repository.RepoInfo, error) {
-	owner, repo, branch, _ := ExtractRepositorySegments(repoPath)
+	owner, repo, branch, subdir := ExtractRepositorySegments(repoPath)
 
 	fmt.Printf("Parsed - Owner: %s, Repo: %s, Branch: %s\n", owner, repo, branch)
 
@@ -17,6 +21,7 @@ func FetchRepoInfo(repoPath, tag string) (*repository.RepoInfo, error) {
 		Owner:  owner,
 		Repo:   repo,
 		Branch: branch,
+		Subdir: subdir,
 		GitURL: fmt.Sprintf("https://github.com/%s/%s", owner, repo),
 	}
 
@@ -101,7 +106,11 @@ func fetchReleaseMetadata(info *repository.RepoInfo) error {
 	if !ok {
 		return fmt.Errorf("tag_name not found in response")
 	}
-	info.Version = tag
+	if m := semverInTag.FindString(tag); m != "" {
+		info.Version = m
+	} else {
+		info.Version = tag
+	}
 
 	// Fetch the commit SHA for this release tag
 	url = fmt.Sprintf("https://api.github.com/repos/%s/%s/commits/%s", info.Owner, info.Repo, tag)
@@ -118,68 +127,88 @@ func fetchReleaseMetadata(info *repository.RepoInfo) error {
 }
 
 func fetchSourceGenerator(info *repository.RepoInfo) error {
-	// Check if branch contains a subdirectory path (e.g., "master/addon-resizer")
-	subdir := ""
-	if strings.Contains(info.Branch, "/") {
-		parts := strings.SplitN(info.Branch, "/", 2)
-		if len(parts) == 2 {
-			subdir = parts[1]
+	// Map each generator's indicator filenames to its SourceGenerator type.
+	fileGenerators := map[string]repository.SourceGenerator{
+		"go.mod":           repository.GoModGenerator,
+		"main.go":          repository.GoModGenerator,
+		"Gopkg.toml":       repository.GoModGenerator,
+		"Cargo.toml":       repository.CargoHomeGenerator,
+		"Cargo.lock":       repository.CargoHomeGenerator,
+		"requirements.txt": repository.PipGenerator,
+		"setup.py":         repository.PipGenerator,
+		"Pipfile":          repository.PipGenerator,
+	}
+	// Directory names that also indicate a Go project.
+	dirGenerators := map[string]repository.SourceGenerator{
+		"Godeps": repository.GoModGenerator,
+		"vendor": repository.GoModGenerator,
+	}
+
+	if info.Subdir != "" {
+		// Subdirectory provided — fetch its direct contents via the Contents API.
+		// This is non-recursive: we only look at the immediate children of subdir.
+		contentsURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s?ref=%s",
+			info.Owner, info.Repo, info.Subdir, info.Branch)
+
+		items, err := MakeGitHubRequest[[]map[string]interface{}](repository.GithubRequest{URL: contentsURL})
+		if err != nil {
+			return fmt.Errorf("failed to fetch contents of %s: %w", info.Subdir, err)
 		}
+
+		for _, item := range items {
+			name, _ := item["name"].(string)
+			itemType, _ := item["type"].(string) // "file" or "dir"
+
+			if gen, ok := fileGenerators[name]; ok && itemType == "file" {
+				info.Generator = gen
+				return nil
+			}
+			if gen, ok := dirGenerators[name]; ok && itemType == "dir" {
+				info.Generator = gen
+				return nil
+			}
+		}
+
+		if info.Generator == "" {
+			return fmt.Errorf("❌  No recognized source generator files found in %s; Supported: Go (go.mod), Rust (Cargo.toml), Python (requirements.txt, setup.py, Pipfile)", info.Subdir)
+		}
+		return nil
 	}
 
-	// Build URL - check subdirectory first if specified, then fall back to root
-	var url string
-	if subdir != "" {
-		url = fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s", info.Owner, info.Repo, subdir)
-	} else {
-		url = fmt.Sprintf("https://api.github.com/repos/%s/%s/contents", info.Owner, info.Repo)
-	}
+	// No subdirectory — fetch the top-level tree (non-recursive) to find generator indicators.
+	treeURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/%s", info.Owner, info.Repo, info.Branch)
 
-	// Verified files susceptible for upstream generators
-	// Note: Godeps is a directory, not a file, so we check for it separately
-	goFile := map[string]bool{"go.mod": true, "main.go": true, "Gopkg.toml": true}
-	goDir := map[string]bool{"Godeps": true, "vendor": true} // Directories that indicate Go project
-	cargoFile := map[string]bool{"Cargo.toml": true, "Cargo.lock": true}
-	pipFile := map[string]bool{"requirements.txt": true, "setup.py": true, "Pipfile": true}
-
-	data, err := MakeGitHubRequest[[]interface{}](repository.GithubRequest{URL: url})
+	data, err := MakeGitHubRequest[map[string]interface{}](repository.GithubRequest{URL: treeURL})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to fetch repository tree: %w", err)
 	}
 
-	for _, item := range data {
+	treeItems, ok := data["tree"].([]interface{})
+	if !ok {
+		return fmt.Errorf("unexpected tree response format")
+	}
+
+	for _, item := range treeItems {
 		itemMap, ok := item.(map[string]interface{})
 		if !ok {
 			continue
 		}
 
-		name, ok := itemMap["name"].(string)
+		path, ok := itemMap["path"].(string)
 		if !ok {
 			continue
 		}
 
 		itemType, _ := itemMap["type"].(string)
 
-		// Check for Go files
-		if goFile[name] {
-			info.Generator = repository.GoModGenerator
-			return nil
+		if gen, ok := fileGenerators[path]; ok && itemType == "blob" {
+			info.Generator = gen
+			break
 		}
 
-		// Check for Go directories (Godeps, vendor)
-		if itemType == "dir" && goDir[name] {
-			info.Generator = repository.GoModGenerator
-			return nil
-		}
-
-		if cargoFile[name] {
-			info.Generator = repository.CargoHomeGenerator
-			return nil
-		}
-
-		if pipFile[name] {
-			info.Generator = repository.PipGenerator
-			return nil
+		if gen, ok := dirGenerators[path]; ok && itemType == "tree" {
+			info.Generator = gen
+			break
 		}
 	}
 
@@ -187,7 +216,7 @@ func fetchSourceGenerator(info *repository.RepoInfo) error {
 		return fmt.Errorf("❌  No recognized source generator files found; Supported: Go (go.mod), Rust (Cargo.toml), Python (requirements.txt, setup.py, Pipfile)")
 	}
 
-	return fmt.Errorf("❌ Unexpected error in determining source generator")
+	return nil
 }
 
 // fetchTagInfo fetches commit SHA for a specific tag
@@ -207,7 +236,11 @@ func fetchTagInfo(info *repository.RepoInfo, tag string) error {
 	if object, ok := data["object"].(map[string]interface{}); ok {
 		if sha, ok := object["sha"].(string); ok {
 			info.LatestCommit = sha
-			info.Version = strings.TrimPrefix(tag, "v")
+			if m := semverInTag.FindString(tag); m != "" {
+				info.Version = strings.TrimPrefix(m, "v")
+			} else {
+				info.Version = strings.TrimPrefix(tag, "v")
+			}
 			return nil
 		}
 	}

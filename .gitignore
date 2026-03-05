@@ -7,6 +7,8 @@ onboard.yml
 tmp.go
 
 TODO
+ISSUES.md
 
 kubelogin-test.sh
 partnerTest.go
+tmp.yml

@@ -18,7 +18,7 @@ import (
 
 func main() {
 	// Parse command line flags
-	inputPath := flag.String("path", "", "Subdirectory under specs/ to filter (e.g. 'kubelogin' → specs/kubelogin). Omit to fetch all under specs/")
+	inputPath := flag.String("path", "", "Input path to search for onboarding files (e.g. specs/containernetworking and specs/containernetworking/azure-cns both work. It is the difference between building all components vs one). Omit to fetch all under specs/")
 	flag.Parse()
 
 	wd, _ := os.Getwd()
@@ -27,7 +27,6 @@ func main() {
 	err := godotenv.Load()
 	if err != nil {
 		log.Printf("⚠️  .env file not found at %s/.env: %v", wd, err)
-		os.Exit(1)
 	}
 
 	onboardFiles := []onboarding.OnboardingInfo{}

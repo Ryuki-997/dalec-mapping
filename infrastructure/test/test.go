@@ -19,13 +19,34 @@ func (p Permission) MarshalYAML() (interface{}, error) {
 	return node, nil
 }
 
-func TestCheckFiles(path string, permission os.FileMode) map[string]interface{} {
+// TestCheckFiles returns a test entry for the given target OS.
+//
+//   - azlinux3 (and other Linux targets): checks binaryPath; also checks symlinkPath when non-empty.
+//   - windowscross: checks /Windows/System32/<binaryName>.exe; symlink is not applicable on Windows.
+func TestCheckFiles(targetOS string, binaryName string, binaryPath string, symlinkPath string, permission os.FileMode) map[string]interface{} {
+	files := make(map[string]interface{})
+	var name string
+
+	switch targetOS {
+	case "windowscross":
+		name = "Check windowsCross Files"
+		files["/Windows/System32/"+binaryName+".exe"] = map[string]interface{}{
+			"permissions": Permission(permission),
+		}
+	default:
+		name = "Check " + targetOS + " Files"
+		files[binaryPath] = map[string]interface{}{
+			"permissions": Permission(permission),
+		}
+		if symlinkPath != "" {
+			// symlinkPath is a symlink in the container; lstat always returns 0777 for symlinks.
+			// Only verify it exists — do not assert permissions.
+			files[symlinkPath] = map[string]interface{}{}
+		}
+	}
+
 	return map[string]interface{}{
-		"name": "Check files",
-		"files": map[string]interface{}{
-			"/usr/bin/" + path: map[string]interface{}{
-				"permissions": Permission(permission),
-			},
-		},
+		"name":  name,
+		"files": files,
 	}
 }

@@ -26,33 +26,38 @@ The Go struct uses yaml tags that **require camelCase keys** in the YAML file:
 type NonDeterministicValues struct {
     // Build Artifacts
     Binaries []Binary `yaml:"binaries"` // All binaries
-    Targets  []string `yaml:"targets"` // Build targets (e.g. azlinux3/container)
-    
-    // Image Configuration  
-    Entrypoint        string            `yaml:"entrypoint"`        // Container entrypoint
-    Symlink           string            `yaml:"symlink"`           // Symlink path
-    
-    // Dependencies
-    BuildDeps         []string          `yaml:"buildDeps"`         // Build-time dependencies
-    RuntimeDeps       []string          `yaml:"runtimeDeps"`       // Runtime dependencies
-    ExternalTools     []ExternalTool    `yaml:"externalTools"`     // curl/wget downloaded tools
-    
+
+    // Targets is the ordered list of build targets.
+    // Each entry is a TargetSpec containing the OS, entrypoint, symlink, and deps.
+    Targets  []TargetSpec `yaml:"targets"`
+
+    ExternalTools []ExternalTool `yaml:"externalTools"`
+
     // Validation
-    Warnings          []string          `yaml:"warnings"`          // Agent review warnings
-    Confidence        float64           `yaml:"confidence"`        // Extraction confidence (0.0-1.0)
+    Warnings   []string `yaml:"warnings"`
+    Confidence float64  `yaml:"confidence"`
+}
+
+// TargetSpec holds ALL per-target configuration in one struct.
+type TargetSpec struct {
+    TargetOS   string   `yaml:"targetOS"`   // e.g. "azlinux3/container"
+    Entrypoint string   `yaml:"entrypoint"` // absolute path inside the image
+    Symlink    string   `yaml:"symlink"`    // secondary path → Entrypoint (Linux only)
+    Build      []string `yaml:"build"`      // app-specific compile-time packages
+    Runtime    []string `yaml:"runtime"`    // app-specific runtime packages (empty for windowscross)
 }
 
 type ExternalTool struct {
-    Name              string `yaml:"name"`              // Tool name (e.g., "azcopy")
-    DownloadURL       string `yaml:"downloadURL"`       // Source URL
-    NeedsSeparateSpec bool   `yaml:"needsSeparateSpec"` // Requires separate Dalec spec
+    Name              string `yaml:"name"`
+    DownloadURL       string `yaml:"downloadURL"`
+    NeedsSeparateSpec bool   `yaml:"needsSeparateSpec"`
 }
 
 type Binary struct {
-    Name         string `yaml:"name"`         // Binary name
-    OutputPath   string `yaml:"outputPath"`   // Output path
-    BuildCommand string `yaml:"buildCommand"` // Build command
-    LdFlags      string `yaml:"ldFlags"`      // LdFlags for this binary
+    Name         string `yaml:"name"`
+    OutputPath   string `yaml:"outputPath"`
+    BuildCommand string `yaml:"buildCommand"`
+    LdFlags      string `yaml:"ldFlags"`
 }
 ```
 
@@ -72,11 +77,27 @@ Where `{repo-name}` is the repository name (e.g., `kubelogin`, `blob-csi-driver`
 
 ## Agent Extraction Tasks
 
-### Task 0: Build Targets Selection
+### Task 0: Build Targets Configuration
 
 **Input:** Dockerfile and Makefile content provided in prompt
 
-**Output:** `Targets` (YAML field in output)
+**Output:** `Targets` — a list of `TargetSpec` objects (YAML field in output)
+
+Each build target is represented as a self-contained `TargetSpec` that groups together:
+- `targetOS` — the Dalec target string
+- `entrypoint` — the binary path inside the container image (target-specific)
+- `symlink` — a secondary path pointing to the entrypoint (Linux only)
+- `build` — application-specific compile-time packages
+- `runtime` — application-specific runtime packages (always empty for `windowscross`)
+
+The transformer automatically adds toolchain and crypto packages on top of what the LLM emits — do NOT include them:
+
+| Auto-added package | Target | Reason |
+| ------------------ | ------ | ------ |
+| `msft-golang` | all targets (build) | Go toolchain |
+| `SymCrypt` | azlinux3 (build + runtime) | FIPS crypto lib |
+| `SymCrypt-OpenSSL` | azlinux3 (build + runtime) | systemcrypto provider |
+| `openssl-libs` | azlinux3 (build + runtime) | CGO link |
 
 #### 0.1 Allowed Targets
 
@@ -104,26 +125,45 @@ All of the following build targets are supported. Select the ones that apply bas
 #### 0.3 Extraction Checklist
 
 - [ ] Check Makefile for `GOOS` references — does it build for both `linux` and `windows`?
-- [ ] Check Dockerfile for platform-specific instructions
+- [ ] Check Dockerfile for platform-specific instructions and ENTRYPOINT/CMD per stage
+- [ ] For each target: determine entrypoint path, symlink, and any extra deps
 - [ ] Only add rpm/deb targets if explicitly indicated in the build files
+- [ ] `windowscross.runtime` must always be empty
+- [ ] Do NOT emit: `msft-golang`, `SymCrypt`, `SymCrypt-OpenSSL`, `openssl-libs`
 
 #### 0.4 Patterns
 
 ```yaml
 # Cross-platform (default — most Go projects that run on both Linux and Windows):
 targets:
-  - "azlinux3/container"
-  - "windowscross/container"
+  - targetOS: "azlinux3/container"
+    entrypoint: "/usr/local/bin/myapp"   # from Dockerfile ENTRYPOINT of Linux final stage
+    symlink: "/usr/bin/myapp"            # typically /usr/bin/<binary-name>
+    build: []                            # app-specific build packages only
+    runtime:                             # app-specific runtime packages only
+      - "ca-certificates"
+  - targetOS: "windowscross/container"
+    entrypoint: "myapp"                  # just the binary name, no path prefix, NO .exe suffix — transformer adds it
+    symlink: ""                          # no symlinks on Windows
+    build: []
+    runtime: []                          # always empty — Dalec rejects runtime deps on Windows
 
-# Windows-only (e.g. kubelogin — kubectl credential plugin, runs on Windows clients):
-# Signal: Dockerfile final stage is Windows, or Makefile only sets GOOS=windows
+# Windows-only (e.g. kubectl credential plugin):
 targets:
-  - "windowscross/container"
+  - targetOS: "windowscross/container"
+    entrypoint: "myapp"
+    symlink: ""
+    build: []
+    runtime: []
 
-# Linux-only (e.g. a Linux daemon/agent with no Windows target in Makefile):
-# Signal: No GOOS=windows, no Windows Dockerfile stage, no windows make target
+# Linux-only (e.g. Linux daemon/agent with no Windows target):
 targets:
-  - "azlinux3/container"
+  - targetOS: "azlinux3/container"
+    entrypoint: "/usr/local/bin/myapp"
+    symlink: "/usr/bin/myapp"
+    build: []
+    runtime:
+      - "iptables"
 ```
 
 ---
@@ -143,13 +183,22 @@ targets:
 
 **Rules:**
 1. **Collapse all conditionals into one path.** If the Makefile/Dockerfile has `if/else` branches for different architectures, OS, or configurations, pick the **primary production path** (the one matching the Dockerfile's final COPY/ENTRYPOINT). Do NOT preserve conditionals or emit multiple alternatives.
-2. **Resolve platform-specific output paths.** If the output path contains `${OS}`, `${ARCH}`, `${GOOS}`, `${GOARCH}`, `${TARGETARCH}`, or similar platform variables, **remove them** and collapse to a flat path. Dalec handles platform targeting via its target system, not via path conventions.
-   - `bin/${OS}_${ARCH}/kubelogin` → `bin/kubelogin`
+2. **Resolve platform-specific output paths.** If the output path contains `${OS}`, `${ARCH}`, `${GOOS}`, `${GOARCH}`, `${TARGETARCH}`, `$(GOOS)`, `$(GOARCH)`, `$(ARCH)`, `$(OS)`, or any variable that expands to a platform string (e.g. `linux`, `windows`, `amd64`, `arm64`), **strip the entire platform segment from the path** and collapse the result. Dalec handles platform targeting via its target system — the `outputPath` must be a single platform-neutral path.
+   **CRITICAL — Platform variables MUST NOT appear in `outputPath` or `buildCommand -o <path>` in any form:**
+   - `bin/${GOOS}_${GOARCH}/kubelogin` → `bin/kubelogin`
    - `_output/${ARCH}/blobplugin` → `_output/blobplugin`
    - `bin/${OS}_${ARCH}${GOARM:+v${GOARM}}/binary` → `bin/binary`
+   - `out/$(GOOS)/$(GOARCH)/myapp` → `out/myapp`
+   - After removal, collapse any `//` or trailing `/` that results.
+   **CRITICAL — No `.exe` in `outputPath` or `name`:** Never add `.exe` to a binary's `outputPath` or `name` field, even when the Makefile uses `$(EXE_EXT)` or `${EXE_EXT}`. The transformer deterministically appends `.exe` to every `windowscross/container` artifact path and entrypoint — the LLM-emitted values must always use the bare binary name.
 3. **Preserve `${VERSION}`, `${COMMIT}`, `${REVISION}` variables.** These are Dalec spec args and must remain as `${VAR}` references.
 4. **No double slashes.** After removing platform variables from paths, ensure no `//` remains. `bin//kubelogin` is invalid — it must be `bin/kubelogin`.
-5. **The output path in `buildCommand -o <path>` must exactly match `outputPath`.** These two fields describe the same thing — the file path where `go build` writes the binary. They must be identical so the artifact section can find the built file.
+5. **`outputPath` is always `/go/bin/<binary-name>` and the `-o` flag in `buildCommand` must match it exactly.** The `buildCommand` writes to `/go/bin/<binary-name>` and `outputPath` records the same. See Rule 7.
+6. **Resolve Makefile directory variables to their actual defined value.** When the `-o` flag uses a Makefile variable for the output directory (e.g. `$(CNS_BUILD_DIR)`, `$(CNI_BUILD_DIR)`), you MUST look up that variable's definition in the Makefile and substitute the literal string. Do NOT invent a path by using the binary name as the directory name — that is always wrong.
+   - `CNS_BUILD_DIR := output/cns` → `-o output/cns/azure-cns` ✅
+   - Guessing `output/azure-cns/azure-cns` because the binary is named `azure-cns` ❌
+7. **Always set `outputPath` to `/go/bin/<binary-name>` and use the same path in `buildCommand -o`.** This path always exists in every Go builder image (it is `$GOPATH/bin`), requires no `mkdir`, and works correctly regardless of which subdir the build `cd`s into. Never use a relative path like `output/cns/azure-cns` — the parent directory may not exist in the build sandbox.
+8. **Single `command:` block.** The entire build for a binary must be one string: `cd <subdir> && go build -o /go/bin/<name> <flags> <pkg>`. Do NOT split into multiple lines that become separate `command:` entries — each `command:` runs in its own shell.
 
 #### 1.2 Multi-Binary Makefile: Selecting the Correct Target
 
@@ -227,26 +276,30 @@ binaries:
 - [ ] Extract binary name from `-o` flag path (last path segment)
 - [ ] If no `-o` flag, infer from `./cmd/<name>` package path
 - [ ] **Collapse conditional branches** — pick the single production build path
+- [ ] **Resolve all Makefile directory variables** used in the `-o` flag — look up each variable's definition (e.g. `CNS_BUILD_DIR := output/cns`) and substitute the literal value; never guess a directory name from the binary name
 - [ ] **Remove platform variables** from output paths (`${OS}`, `${ARCH}`, etc.)
 - [ ] **Verify no double slashes** in the resulting path
 - [ ] Add matched binaries to binaries list:
   - [ ] Primary = matches Dockerfile ENTRYPOINT or image name
+- [ ] **Do NOT add `.exe`** to `name` or `outputPath` — the transformer appends `.exe` to all `windowscross/container` artifacts automatically
+- [ ] **Set `outputPath` to `/go/bin/<binary-name>`** — always use this absolute path
+- [ ] `buildCommand -o` path matches `outputPath` exactly: `/go/bin/<binary-name>`
 - [ ] Store the cleaned, deterministic path for artifact mapping
 
 #### 1.4 Patterns
 
 ```makefile
-# Pattern A: Direct -o flag with platform vars (COLLAPSE)
+# Pattern A: Direct -o flag with platform vars (COLLAPSE → /go/bin/)
 go build -o _output/${ARCH}/blobplugin ./pkg/blobplugin
 # → binaries[0].name: "blobplugin"
-# → binaries[0].outputPath: "_output/blobplugin"
-# → binaries[0].buildCommand: "go build -o _output/blobplugin ./pkg/blobplugin"
+# → binaries[0].outputPath: "/go/bin/blobplugin"
+# → binaries[0].buildCommand: "go build -o /go/bin/blobplugin ./pkg/blobplugin"
 
-# Pattern B: Nested conditional output path (COLLAPSE)
+# Pattern B: Nested conditional output path (COLLAPSE → /go/bin/)
 go build -o bin/${OS}_${ARCH}${GOARM:+v${GOARM}}/kubelogin -ldflags "-X main.gitTag=${VERSION}"
 # → binaries[0].name: "kubelogin"
-# → binaries[0].outputPath: "bin/kubelogin"
-# → binaries[0].buildCommand: "go build -o bin/kubelogin -ldflags \"-X main.gitTag=${VERSION}\""
+# → binaries[0].outputPath: "/go/bin/kubelogin"
+# → binaries[0].buildCommand: "go build -o /go/bin/kubelogin -ldflags \"-X main.gitTag=${VERSION}\""
 # → binaries[0].ldFlags: "-X main.gitTag=${VERSION}"
 
 # Pattern C: Conditional build (COLLAPSE to primary path)
@@ -255,15 +308,42 @@ go build -o bin/${OS}_${ARCH}${GOARM:+v${GOARM}}/kubelogin -ldflags "-X main.git
 # else
 #   go build -o _output/arm64/binary ./cmd/main
 # fi
-# → binaries[0].outputPath: "_output/binary"
-# → binaries[0].buildCommand: "go build -o _output/binary ./cmd/main"
+# → binaries[0].outputPath: "/go/bin/binary"
+# → binaries[0].buildCommand: "go build -o /go/bin/binary ./cmd/main"
 
-# Pattern D: Variable reference (keep non-platform vars)
+# Pattern D: Makefile directory variable — MUST resolve to actual definition, then rewrite to /go/bin/
+# CNS_BUILD_DIR := output/cns
+# azure-cns-binary:
+#   cd $(CNS_DIR) && go build -o $(CNS_BUILD_DIR)/azure-cns$(EXE_EXT) ...
+#
+# The resolved native path would be output/cns/azure-cns, but that directory may not exist.
+# Always rewrite outputPath to /go/bin/<binaryname>:
+# → binaries[0].name: "azure-cns"
+# → binaries[0].outputPath: "/go/bin/azure-cns"
+# → binaries[0].buildCommand: "cd ${CNS_DIR} && go build -v -o /go/bin/azure-cns -ldflags \"...\" ..."
+#
+# Artifact key (transformer): /go/bin/azure-cns   (Linux)
+#                              /go/bin/azure-cns.exe  (windowscross)
+#
+# ❌ WRONG: keeping the original relative path — output/cns/ may not exist in build sandbox
+# → binaries[0].outputPath: "output/cns/azure-cns"
+# → binaries[0].buildCommand: "cd ${CNS_DIR} && go build -o output/cns/azure-cns ..."
+
+
 go build -o $(TEMP_DIR)/pod_nanny main.go
 # → binaries[0].name: "pod_nanny"
 # → binaries[0].outputPath: "$(TEMP_DIR)/pod_nanny"
 
-# Pattern E: Implicit (no -o flag)
+# Pattern E (canonical): Always output to /go/bin/<binary-name>
+# Applies to ALL patterns above regardless of what the Makefile specifies.
+#
+# → binaries[0].outputPath: "/go/bin/azure-cns"
+# → binaries[0].buildCommand: "cd ${CNS_DIR} && go build -v -o /go/bin/azure-cns -ldflags \"...\" ..."
+#
+# /go/bin/ always exists, absolute, works from any cd subdir.
+# Artifact keys: /go/bin/azure-cns (global/Linux), /go/bin/azure-cns.exe (windowscross)
+
+# Pattern F: Implicit (no -o flag)
 go build ./cmd/myapp
 # → binaries[0].name: "myapp" (inferred from package)
 # → binaries[0].outputPath: "myapp"
@@ -272,12 +352,50 @@ go build ./cmd/myapp
 #### 1.5 Anti-Patterns (DO NOT produce these)
 
 ```yaml
-# ❌ WRONG: Platform variables in output path
-outputPath: "bin/${OS}_${ARCH}/kubelogin"
+# ❌ WRONG: Any platform variable remaining in outputPath or buildCommand -o path
+outputPath: "bin/${GOOS}_${GOARCH}/kubelogin"
+outputPath: "_output/${ARCH}/blobplugin"
+outputPath: "out/$(GOOS)/$(GOARCH)/myapp"
+buildCommand: "go build -o bin/${GOOS}_${GOARCH}/kubelogin ..."
+
+# ✅ CORRECT: Platform segments fully stripped
+outputPath: "bin/kubelogin"
+outputPath: "_output/blobplugin"
+outputPath: "out/myapp"
+buildCommand: "go build -o bin/kubelogin ..."
+
+# ❌ WRONG: Directory variable guessed from binary name instead of resolved from Makefile definition
+# Makefile has: CNS_BUILD_DIR := output/cns
+outputPath: "output/azure-cns/azure-cns"   # invented — azure-cns is the binary name, NOT the dir
+buildCommand: "cd ${CNS_DIR} && go build -o output/azure-cns/azure-cns ..."
+
+# ✅ CORRECT: CNS_BUILD_DIR looked up in Makefile → literal value is "output/cns"
+outputPath: "output/cns/azure-cns"
+buildCommand: "cd ${CNS_DIR} && go build -o output/cns/azure-cns ..."
+
+# ❌ WRONG: .exe in outputPath or name — transformer adds it for windowscross automatically
+outputPath: "bin/kubelogin.exe"
+name: "kubelogin.exe"
+buildCommand: "go build -o bin/kubelogin.exe ..."
 
 # ❌ WRONG: Double slashes from collapsed variables
 outputPath: "bin//kubelogin"
 buildCommand: "go build -o bin//kubelogin ./cmd/main"
+
+# ❌ WRONG: Split build command (BIN_SUFFIX in separate step — each command: runs its own shell)
+# buildCommand emitting multiple lines that would become separate command: entries
+buildCommand: |-
+  BIN_SUFFIX=""
+  if [ "${GOOS}" = "windows" ]; then BIN_SUFFIX=".exe"; fi
+  cd ${CNS_DIR} && go build -o output/cns/azure-cns${BIN_SUFFIX} ...
+
+# ❌ WRONG: Relative path — output/cns/ may not exist in the build sandbox
+outputPath: "output/cns/azure-cns"
+buildCommand: "cd ${CNS_DIR} && go build -v -o output/cns/azure-cns -ldflags \"...\" ..."
+
+# ✅ CORRECT: /go/bin/ path — always exists, no mkdir needed, works from any cd subdir
+outputPath: "/go/bin/azure-cns"
+buildCommand: "cd ${CNS_DIR} && go build -v -o /go/bin/azure-cns -ldflags \"...\" ..."
 
 # ❌ WRONG: Conditional preserved in build command  
 buildCommand: "if [ \"$ARCH\" = \"amd64\" ]; then go build -o bin/amd64/app; else go build -o bin/arm64/app; fi"
@@ -286,9 +404,9 @@ buildCommand: "if [ \"$ARCH\" = \"amd64\" ]; then go build -o bin/amd64/app; els
 outputPath: "bin/kubelogin"
 buildCommand: "go build -o bin/${OS}_${ARCH}/kubelogin ..."
 
-# ✅ CORRECT: Single deterministic step
-outputPath: "bin/kubelogin"
-buildCommand: "go build -o bin/kubelogin -ldflags \"-X main.gitTag=${VERSION}\""
+# ✅ CORRECT: Single deterministic step using /go/bin/ as canonical output
+outputPath: "/go/bin/kubelogin"
+buildCommand: "go build -o /go/bin/kubelogin -ldflags \"-X main.gitTag=${VERSION}\""
 ldFlags: "-X main.gitTag=${VERSION}"
 ```
 
@@ -297,7 +415,11 @@ ldFlags: "-X main.gitTag=${VERSION}"
 ### Task 2: Entrypoint & Symlink
 
 **Input:** Dockerfile content provided in prompt  
-**Output:** `Entrypoint`, `Symlink` (YAML fields in output)
+**Output:** `entrypoint` and `symlink` fields **inside each TargetSpec** (not as top-level fields)
+
+For each build target, determine the correct entrypoint and symlink:
+- **Linux targets** (`azlinux3/container`, etc.): entrypoint is the full absolute path (e.g. `/usr/local/bin/azure-cns`); symlink is typically `/usr/bin/<binary-name>`.
+- **Windows targets** (`windowscross/container`): entrypoint is just the binary name with no path prefix (e.g. `azure-cns`); symlink should be empty string.
 
 #### 2.1 Extraction Checklist
 
@@ -332,7 +454,9 @@ ENTRYPOINT ["/app", "--config", "/etc/app.conf"]
 
 **Input:** Dockerfile and Makefile content provided in prompt
 
-**Output:** `perTargetDeps` (YAML field in output)
+**Output:** `build` and `runtime` fields **inside each TargetSpec** (not as a separate `perTargetDeps` map)
+
+For each build target, identify the app-specific packages and place them directly in the target's `build`/`runtime` arrays.
 
 #### 3.0 What the Transformer Already Provides (Do NOT emit these)
 
@@ -349,11 +473,26 @@ Only emit **application-specific** packages that the Dockerfile installs on top 
 
 #### 3.1 Structure
 
-`perTargetDeps` is a map keyed by OS name (`azlinux3`, `windowscross`, `bookworm`, etc.). Each entry has:
-- `build`: packages needed at compile time (beyond toolchain)
-- `runtime`: packages needed inside the final image at runtime
+`build` and `runtime` are arrays inside each `TargetSpec` in the `targets` list:
 
-**CRITICAL:** `windowscross.runtime` must **always be empty or omitted**. Dalec rejects runtime deps on Windows output images.
+```yaml
+targets:
+  - targetOS: "azlinux3/container"
+    entrypoint: "/usr/local/bin/myapp"
+    symlink: "/usr/bin/myapp"
+    build:           # app-specific compile-time packages
+      - "curl"
+    runtime:         # app-specific runtime packages
+      - "ca-certificates"
+      - "iptables"
+  - targetOS: "windowscross/container"
+    entrypoint: "myapp"
+    symlink: ""
+    build: []
+    runtime: []      # always empty — Dalec rejects runtime deps on Windows
+```
+
+**CRITICAL:** `windowscross.runtime` must **always be empty or `[]`**. Dalec rejects runtime deps on Windows output images.
 
 #### 3.2 Per-Target Build Dependencies Checklist
 
@@ -393,47 +532,67 @@ Only emit **application-specific** packages that the Dockerfile installs on top 
 FROM golang:1.21 AS builder
 RUN apt install -y curl
 
-# Final stage (azlinux3 equiv)
+# Final Linux stage
 RUN apt install -y ca-certificates iptables
+ENTRYPOINT ["/usr/local/bin/myapp"]
 
-# → perTargetDeps:
-#   azlinux3:
-#     build: ["curl"]        # extra build tool
+# Final Windows stage
+COPY myapp.exe /myapp.exe
+
+# → targets:
+#   - targetOS: "azlinux3/container"
+#     entrypoint: "/usr/local/bin/myapp"
+#     symlink: "/usr/bin/myapp"
+#     build: ["curl"]           # extra build tool
 #     runtime: ["ca-certificates", "iptables"]
-#   windowscross:
-#     build: []              # nothing extra
-#     # runtime: omitted — windowscross cannot have runtime deps
+#   - targetOS: "windowscross/container"
+#     entrypoint: "myapp"   # bare binary name — NO .exe, transformer adds it
+#     symlink: ""
+#     build: []                 # nothing extra beyond auto-added msft-golang
+#     runtime: []               # always empty
 ```
 
 ```dockerfile
 # Final stage — no extra build tools, just runtime
 RUN apt install -y ca-certificates fuse
+ENTRYPOINT ["/usr/local/bin/myapp"]
 
-# → perTargetDeps:
-#   azlinux3:
+# → targets:
+#   - targetOS: "azlinux3/container"
+#     entrypoint: "/usr/local/bin/myapp"
+#     symlink: "/usr/bin/myapp"
 #     build: []
 #     runtime: ["ca-certificates", "fuse"]
-#   windowscross:
+#   - targetOS: "windowscross/container"
+#     entrypoint: "myapp"
+#     symlink: ""
 #     build: []
+#     runtime: []
 ```
 
 ```yaml
-# ❌ WRONG: global buildDeps/runtimeDeps (old format — no longer used)
-buildDeps:
-  - "msft-golang"
-  - "iptables"
-runtimeDeps:
-  - "iptables"
-
-# ✅ CORRECT: per-target format
+# ❌ WRONG: old perTargetDeps map format (no longer used)
 perTargetDeps:
   azlinux3:
-    build: []      # or omit if empty
+    build: []
     runtime:
       - "iptables"
   windowscross:
-    build: []      # or omit if empty
-    # runtime: never populated
+    build: []
+
+# ✅ CORRECT: per-target fields inside each TargetSpec
+targets:
+  - targetOS: "azlinux3/container"
+    entrypoint: "/usr/local/bin/myapp"
+    symlink: "/usr/bin/myapp"
+    build: []
+    runtime:
+      - "iptables"
+  - targetOS: "windowscross/container"
+    entrypoint: "myapp"
+    symlink: ""
+    build: []
+    runtime: []
 ```
 
 ---
@@ -641,8 +800,8 @@ After agent extraction, verify:
 | V1 | `binaries[0].name` matches Makefile `-o` output (not repo name) | [ ] |
 | V2 | `Entrypoint` matches Dockerfile `ENTRYPOINT`/`CMD` | [ ] |
 | V3 | `Symlink` target matches `Entrypoint` path | [ ] |
-| V4 | `perTargetDeps.azlinux3.runtime` excludes: `fi`, `then`, `;`, `install`, `dpkg`, `SymCrypt`, `openssl-libs` | [ ] |
-| V5 | `perTargetDeps.windowscross.runtime` is empty or omitted | [ ] |
+| V4 | `targets[azlinux3].runtime` excludes: `fi`, `then`, `;`, `install`, `dpkg`, `SymCrypt`, `openssl-libs` | [ ] |
+| V5 | `targets[windowscross].runtime` is empty or `[]` | [ ] |
 | V6 | `LdFlags` uses `${VERSION}` not hardcoded values | [ ] |
 | V7 | `BuildCommand` has no `docker run` commands | [ ] |
 | V8 | All `Binaries` have corresponding build commands | [ ] |
@@ -700,24 +859,21 @@ binaries:
     outputPath: "_output/blobfuse-proxy"
     buildCommand: "go build -o _output/blobfuse-proxy ./pkg/blobfuse-proxy"
     ldFlags: ""
+
 targets:
-  - "azlinux3/container"
-  - "windowscross/container"
-
-entrypoint: "/blobplugin"
-symlink: "/usr/bin/blobplugin"
-
-# Only app-specific packages — transformer auto-adds msft-golang, SymCrypt, openssl-libs
-perTargetDeps:
-  azlinux3:
+  - targetOS: "azlinux3/container"
+    entrypoint: "/blobplugin"
+    symlink: "/usr/bin/blobplugin"
     build:
       - "curl"              # used in builder stage
     runtime:
       - "ca-certificates"
       - "fuse"
-  windowscross:
-    build: []              # nothing extra beyond auto-added msft-golang
-    # runtime: omitted — windowscross cannot have runtime deps
+  - targetOS: "windowscross/container"
+    entrypoint: "blobplugin"  # bare binary name only — NO .exe, NO path prefix; transformer adds .exe
+    symlink: ""               # no symlinks on Windows
+    build: []                 # nothing extra beyond auto-added msft-golang
+    runtime: []               # always empty — Dalec rejects runtime deps on Windows
 
 externalTools: []
 
@@ -734,22 +890,22 @@ NonDeterministicValues{
         {Name: "blobplugin", OutputPath: "_output/blobplugin", BuildCommand: "go build -a ...", LdFlags: "..."},
         {Name: "blobfuse-proxy", OutputPath: "_output/blobfuse-proxy", BuildCommand: "go build ..."},
     },
-    Targets: []string{"azlinux3/container", "windowscross/container"},
-
-    Entrypoint: "/blobplugin",
-    Symlink:    "/usr/bin/blobplugin",
-
-    PerTargetDeps: map[string]TargetDeps{
-        "azlinux3": {
-            Build:   []string{"curl"},
-            Runtime: []string{"ca-certificates", "fuse"},
+    Targets: []TargetSpec{
+        {
+            TargetOS:   "azlinux3/container",
+            Entrypoint: "/blobplugin",
+            Symlink:    "/usr/bin/blobplugin",
+            Build:      []string{"curl"},
+            Runtime:    []string{"ca-certificates", "fuse"},
         },
-        "windowscross": {
-            Build: []string{},
-            // Runtime intentionally empty
+        {
+            TargetOS:   "windowscross/container",
+            Entrypoint: "blobplugin",
+            Symlink:    "",
+            Build:      []string{},
+            Runtime:    []string{},   // intentionally empty
         },
     },
-
     ExternalTools: []ExternalTool{},
     Warnings:      []string{"WARN_MULTI_BINARY: blobfuse-proxy detected"},
     Confidence:    0.85,

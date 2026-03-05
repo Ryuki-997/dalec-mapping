@@ -1,19 +1,33 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "========================================"
-echo "Run 1: default (all onboard files)"
-echo "========================================"
-specPaths=""
-output="$(go run . 2>&1)" && echo "$output" || { echo "$output"; exit 1; }
-specPaths="$(echo "$output" | grep '^specPaths=' | cut -d= -f2- || true)"
-echo "specPaths=${specPaths}"
+run_and_stream() {
+  local label="$1"; shift
+  local tmpfile
+  tmpfile=$(mktemp)
+
+  echo "========================================"
+  echo "$label"
+  echo "========================================"
+
+  # Stream output in real time via tee; capture exit code from go run (not tee)
+  go run . "$@" 2>&1 | tee "$tmpfile"; local pipe_exit=${PIPESTATUS[0]}
+
+  local specPaths
+  specPaths="$(grep '^specPaths=' "$tmpfile" | cut -d= -f2- || true)"
+  rm -f "$tmpfile"
+
+  echo "specPaths=${specPaths}"
+
+  return $pipe_exit
+}
+
+# run_and_stream "Run 1: default (all onboard files)"
 
 echo ""
-echo "========================================"
-echo "Run 2: -path=containernetworkingauto"
-echo "========================================"
-specPaths=""
-output="$(go run . -path=containernetworkingauto 2>&1)" && echo "$output" || { echo "$output"; exit 1; }
-specPaths="$(echo "$output" | grep '^specPaths=' | cut -d= -f2- || true)"
-echo "specPaths=${specPaths}"
+
+run_and_stream "Run 2: -path=containernetworkingauto" -path=containernetworkingauto
+
+echo ""
+
+# run_and_stream "Run 3: -path=prometheus-collector" -path=prometheus-collector

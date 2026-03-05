@@ -16,9 +16,8 @@ import (
 
 func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, inputPath string) error {
 	// Build path prefix for filtering: always rooted under "specs/"
-	pathPrefix := "specs/"
 	if inputPath != "" {
-		pathPrefix = "specs/" + strings.TrimSuffix(inputPath, "/") + "/"
+		inputPath = "specs"
 	}
 
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/%s?recursive=1", utils.OnboardOwner, utils.OnboardRepo, utils.OnboardBranch)
@@ -48,7 +47,7 @@ func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, inputPath str
 		}
 
 		// Filter paths to only include those within the specified input path
-		if !strings.HasPrefix(path, pathPrefix) {
+		if !strings.HasPrefix(path, inputPath) {
 			continue
 		}
 
@@ -89,6 +88,7 @@ func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, inputPath str
 			fmt.Printf("⚠️  Failed to resolve tags for %s: %v\n", onboard.Repository, err)
 			continue
 		}
+		fmt.Printf("✅ Resolved tags for %s: %v (from patterns: %v)\n", onboard.Repository, resolvedTags, onboard.Tag)
 
 		// Filter out resolved tags whose spec files already exist in the remote repo
 		filteredTags := getFilteredTags(resolvedTags, onboard.SpecRepository, onboard.SpecImageName, treePaths)

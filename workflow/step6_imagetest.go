@@ -47,6 +47,11 @@ func ImageTest(specPath, imageName, tag string, targets []string) error {
 	}
 	imageTag := fmt.Sprintf("%s:%s", imageName, tag)
 	for i, target := range targets {
+		// windowscross requires a Windows build host; skip on Linux/macOS
+		if strings.HasPrefix(target, "windowscross") {
+			log.Printf("  [2/4] Skipping windowscross target (requires Windows host): %s", target)
+			continue
+		}
 		targetImageTag := fmt.Sprintf("%s-%s", imageTag, strings.ReplaceAll(target, "/", "-"))
 		log.Printf("  [2/4] Building target %d/%d: %s (image: %s)...", i+1, len(targets), target, targetImageTag)
 		if err := buildDockerImage(targetImageTag, target); err != nil {

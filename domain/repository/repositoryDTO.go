@@ -13,6 +13,7 @@ type RepoInfo struct {
 	Owner        string
 	Repo         string
 	Branch       string
+	Subdir       string          // subdirectory within the repo (e.g. "otelcollector")
 	GitURL       string
 	Description  string
 	Version      string

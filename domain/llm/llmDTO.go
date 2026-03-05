@@ -15,16 +15,28 @@ type Binary struct {
 	LdFlags      string `yaml:"ldFlags"`
 }
 
-// TargetDeps holds application-specific build and runtime dependencies for one OS target.
-// The transformer hardcodes toolchain (msft-golang) and crypto libs (SymCrypt, openssl-libs) —
-// the LLM only provides app-specific packages on top of those.
-type TargetDeps struct {
-	// Build contains packages needed at compile time beyond the toolchain.
+// TargetSpec holds all per-target configuration for one build target.
+// Each entry groups the Dalec target OS, image entrypoint, symlink, and
+// application-specific dependencies together.
+type TargetSpec struct {
+	// TargetOS is the full Dalec target string (e.g. "azlinux3/container", "windowscross/container").
+	TargetOS string `yaml:"targetOS"`
+
+	// Entrypoint is the absolute path to the binary inside the container image.
+	// Linux targets: typically "/usr/local/bin/<name>".
+	// Windows targets: just the binary name with no path prefix (e.g. "azure-cns").
+	Entrypoint string `yaml:"entrypoint"`
+
+	// Symlink is a secondary path pointing to Entrypoint (Linux targets only).
+	// Typically "/usr/bin/<name>". Leave empty for windowscross.
+	Symlink string `yaml:"symlink,omitempty"`
+
+	// Build contains application-specific packages needed at compile time.
 	// Do NOT include: msft-golang, gcc, SymCrypt, SymCrypt-OpenSSL, openssl-libs — transformer adds these.
 	Build []string `yaml:"build"`
 
-	// Runtime contains packages needed at runtime inside the final image.
-	// Linux targets only — windowscross.Runtime must always be empty (Dalec rejects runtime deps on Windows).
+	// Runtime contains packages needed inside the final image at runtime.
+	// windowscross: must always be empty — Dalec rejects runtime deps on Windows targets.
 	Runtime []string `yaml:"runtime"`
 }
 
@@ -32,17 +44,10 @@ type TargetDeps struct {
 type NonDeterministicValues struct {
 	// Build Artifacts
 	Binaries []Binary `yaml:"binaries"`
-	Targets  []string `yaml:"targets"`
 
-	// Image Configuration
-	Entrypoint string `yaml:"entrypoint"`
-	Symlink    string `yaml:"symlink"`
-
-	// Per-target dependencies keyed by OS name ("azlinux3", "windowscross", "bookworm", etc.).
-	// windowscross.Runtime must always be empty — Dalec rejects runtime deps on Windows targets.
-	// The transformer auto-adds: msft-golang (build), SymCrypt/openssl-libs (azlinux3 build+runtime).
-	// Only emit app-specific packages here (e.g. iptables, ca-certificates, fuse).
-	PerTargetDeps map[string]TargetDeps `yaml:"perTargetDeps"`
+	// Targets is the ordered list of build targets, each carrying its full per-target configuration:
+	// targetOS, entrypoint, symlink, and application-specific build/runtime dependencies.
+	Targets []TargetSpec `yaml:"targets"`
 
 	ExternalTools []ExternalTool `yaml:"externalTools"`
 

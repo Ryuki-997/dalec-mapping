@@ -165,35 +165,6 @@ func FetchRawContent(url string) ([]byte, error) {
 	return body, nil
 }
 
-// Helper function to clean output paths
-func cleanOutputPath(outputPath string) string {
-	// Remove build environment variables but keep others like ${VERSION}
-	// Handle complex nested syntax like ${GOARM:+v${GOARM}} and simple ${OS}_${ARCH}
-	
-	// First pass: remove complex conditional patterns
-	complexPattern := regexp.MustCompile(`\$\{GOARM:[^}]*\$\{GOARM\}[^}]*\}`)
-	cleaned := complexPattern.ReplaceAllString(outputPath, "")
-	
-	// Second pass: remove simple environment variables (including suffixed variants like GOARMSUFFIX)
-	simplePattern := regexp.MustCompile(`\$\{(OS|ARCH|GOARM|GOARMSUFFIX|TARGETARCH)\}`)
-	cleaned = simplePattern.ReplaceAllString(cleaned, "")
-	
-	nonAlphanumericOnlyPattern := regexp.MustCompile(`^[^a-zA-Z0-9]+$`)
-	
-	// Remove any remaining artifacts like underscores, slashes from env var removal
-	cleaned = regexp.MustCompile(`_+`).ReplaceAllString(cleaned, "")
-	cleaned = regexp.MustCompile(`/+`).ReplaceAllString(cleaned, "/")
-	cleaned = regexp.MustCompile(`^/+|/+$`).ReplaceAllString(cleaned, "")
-	
-	if nonAlphanumericOnlyPattern.MatchString(cleaned) {
-		return ""
-	}
-
-	// Return the cleaned relative path as-is (leading slashes already stripped).
-	// The artifact will be prefixed with the repo dir since the build does cd into it.
-	return cleaned
-}
-
 // Helper function to clean ldflags
 func cleanLdFlags(ldflags string) string {
 	// Only clean quotes, preserve all env variables including ${VERSION}
@@ -201,7 +172,8 @@ func cleanLdFlags(ldflags string) string {
 	return cleaned
 }
 
-// Global cache for cleaned values
+// cleanedCache retains the last cleaned LdFlags value so the BuildCommand
+// case can substitute ${LDFLAGS} references in the build command.
 var cleanedCache = llm.CleanedValuesCache{}
 
 func ClearEnvVariables(key string, command *string) {
@@ -210,25 +182,11 @@ func ClearEnvVariables(key string, command *string) {
 	}
 
 	switch key {
-	case "OutputPath":
-		cleanedCache.OutputPath = cleanOutputPath(*command)
-		*command = cleanedCache.OutputPath
-
 	case "LdFlags":
 		cleanedCache.LdFlags = cleanLdFlags(*command)
 		*command = cleanedCache.LdFlags
 
 	case "BuildCommand":
-		binaryName := filepath.Base(cleanedCache.OutputPath)
-		envPathPattern := regexp.MustCompile(`[^\s]+\$[\{\(][^\}\)]+[\}\)][^\s]*` + binaryName)
-		*command = envPathPattern.ReplaceAllString(*command, cleanedCache.OutputPath)
-
-		// Rewrite the -o flag to use the cleaned relative output path
-		if cleanedCache.OutputPath != "" {
-			oFlagPattern := regexp.MustCompile(`-o\s+\S+`)
-			*command = oFlagPattern.ReplaceAllString(*command, "-o "+cleanedCache.OutputPath)
-		}
-
 		ldFlagsVarPattern := regexp.MustCompile(`\$\{LDFLAGS\}`)
 		*command = ldFlagsVarPattern.ReplaceAllString(*command, cleanedCache.LdFlags)
 

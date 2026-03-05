@@ -7,7 +7,6 @@ import (
 	"log"
 	"regexp"
 	"strconv"
-	"strings"
 )
 
 func ResolveOnboardTags(repoPath string, patterns []string) ([]string, error) {
@@ -24,7 +23,7 @@ func ResolveOnboardTags(repoPath string, patterns []string) ([]string, error) {
 			// Check if the pattern matches git tags that have no release
 			gitOnly := resolvePattern(pattern, allGitTags)
 			for _, tag := range gitOnly {
-				fmt.Printf("⏭  Skipping %s @ %s: tag exists but has no associated GitHub release\n", repoPath, tag)
+				fmt.Printf("⏭  Skipping %s @ %s (stripped: %s): tag exists but has no associated GitHub release\n", repoPath, tag, stripToSemver(tag))
 			}
 		}
 		for _, resolved := range matched {
@@ -34,20 +33,18 @@ func ResolveOnboardTags(repoPath string, patterns []string) ([]string, error) {
 
 	keys := make([]string, 0, len(resolvedTags))
 	for k := range resolvedTags {
-		if !strings.HasPrefix(k, "v") {
-			k = "v" + k
-		}
 		keys = append(keys, k)
 	}
 	return keys, nil
 }
 
 // resolvePattern resolves a tag pattern against existing (release-filtered) tags:
-//   - "latest": the single largest semver tag overall
+//   - "latest": the single largest semver tag overall (plain or suffixed)
 //   - direct (e.g. v1.6.2): the tag itself if it exists (at most 1)
-//   - regex  (e.g. v1\.6\.[1-9]): all matching tags that exist as releases
+//   - regex  (e.g. v1\.6\.\d-main-\d+): all matching tags that exist as releases
 func resolvePattern(pattern string, existingTags []string) []string {
 	if pattern == "latest" {
+		// Match against stripped semver — the (-.*) suffix is handled by stripToSemver in findLargestMatch.
 		re := regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
 		largest := findLargestMatch(existingTags, re)
 		if largest != "" {
@@ -65,24 +62,26 @@ func resolvePattern(pattern string, existingTags []string) []string {
 	return findAllMatches(existingTags, re)
 }
 
-// findAllMatches returns all semver tags that match the regex.
+// findAllMatches returns all tags whose stripped semver (vX.Y.Z) matches the regex.
 func findAllMatches(existingTags []string, re *regexp.Regexp) []string {
 	var matches []string
 	for _, tag := range existingTags {
-		if re.MatchString(tag) && parseSemver(tag) != nil {
+		stripped := stripToSemver(tag)
+		if re.MatchString(stripped) {
 			matches = append(matches, tag)
 		}
 	}
 	return matches
 }
 
-// findLargestMatch returns the largest semver tag that matches the regex.
+// findLargestMatch returns the largest tag whose stripped semver (vX.Y.Z) matches the regex.
 func findLargestMatch(existingTags []string, re *regexp.Regexp) string {
 	var largest string
 	var largestNums []int
 
 	for _, tag := range existingTags {
-		if !re.MatchString(tag) {
+		stripped := stripToSemver(tag)
+		if !re.MatchString(stripped) {
 			continue
 		}
 
@@ -100,16 +99,18 @@ func findLargestMatch(existingTags []string, re *regexp.Regexp) string {
 	return largest
 }
 
-// parseSemver parses a tag like "v1.2.3" or "1.2.3" into [3]int, or nil if invalid.
+// parseSemver finds and parses the first vX.Y.Z occurrence in a tag.
+// Handles plain tags ("v1.2.3"), suffixed tags ("v1.2.3-main-date-hash"),
+// and tags with arbitrary english prefixes ("release-v1.2.3-extra").
+// Returns nil if no valid semver is found.
 func parseSemver(tag string) []int {
-	tag = strings.TrimPrefix(tag, "v")
-	parts := strings.Split(tag, ".")
-	if len(parts) != 3 {
+	m := semverInTag.FindStringSubmatch(tag)
+	if m == nil {
 		return nil
 	}
 	nums := make([]int, 3)
-	for i, p := range parts {
-		n, err := strconv.Atoi(p)
+	for i, s := range m[1:4] {
+		n, err := strconv.Atoi(s)
 		if err != nil {
 			return nil
 		}
@@ -117,6 +118,20 @@ func parseSemver(tag string) []int {
 	}
 	return nums
 }
+
+// stripToSemver extracts just the "v{major}.{minor}.{patch}" portion from anywhere
+// in a tag, discarding any surrounding text or suffix.
+// Returns the original tag unchanged if no semver is found.
+func stripToSemver(tag string) string {
+	nums := parseSemver(tag)
+	if nums == nil {
+		return tag
+	}
+	return fmt.Sprintf("v%d.%d.%d", nums[0], nums[1], nums[2])
+}
+
+// semverInTag matches the first vX.Y.Z occurrence inside any tag string.
+var semverInTag = regexp.MustCompile(`v(\d+)\.(\d+)\.(\d+)`)
 
 func compareVersions(a, b []int) int {
 	for i := 0; i < 3; i++ {
