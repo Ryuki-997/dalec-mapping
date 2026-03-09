@@ -49,8 +49,6 @@ func buildEnv(nonDeterministicValues *llm.NonDeterministicValues) map[string]int
 		"VERSION":     "${VERSION}",
 		"GOOS":        "${TARGETOS}",
 		"GOARCH":      "${TARGETARCH}",
-		// CC is NOT set globally — for Linux builds the native gcc is used automatically.
-		// For Windows cross-builds it is injected per-step by injectBinSuffix.
 	}
 
 	if nonDeterministicValues != nil {
@@ -151,22 +149,14 @@ func rawBuildCommands(nonDeterministicValues *llm.NonDeterministicValues) []stri
 }
 
 // injectBinSuffix rewrites `-o /go/bin/<name>` → `-o /go/bin/<name>${BIN_SUFFIX}`
-// and prepends a preamble that:
-//   - sets BIN_SUFFIX (".exe" on Windows, else "")
-//   - exports CC to the prebuilt MinGW cross-compiler only on Windows builds
-//     (for Linux builds, native gcc is picked up automatically via PATH)
+// and prepends a BIN_SUFFIX shell assignment so one step handles both platforms.
 func injectBinSuffix(cmd string, re *regexp.Regexp) string {
 	loc := re.FindStringSubmatchIndex(cmd)
 	if loc == nil {
 		return cmd
 	}
 	cmd = cmd[:loc[3]] + "${BIN_SUFFIX}" + cmd[loc[3]:]
-	preamble := `BIN_SUFFIX=""
-if [ "${GOOS}" = "windows" ]; then
-  BIN_SUFFIX=".exe"
-  export CC=` + MingwGCCPath + `
-fi`
-	return preamble + "\n" + cmd
+	return "BIN_SUFFIX=\"\"\nif [ \"${GOOS}\" = \"windows\" ]; then BIN_SUFFIX=\".exe\"; fi\n" + cmd
 }
 
 // scanVarReferences finds all ${VAR}/(VAR) references in command text and env values.
