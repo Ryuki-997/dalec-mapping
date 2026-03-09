@@ -45,10 +45,10 @@ func main() {
 			shellVar = append(shellVar, remotePath)
 
 			// Step 6: build, run, and test the image
-			// if err := workflow.ImageTest(remotePath, onboard.SpecImageName, tag, resolvedTargets); err != nil {
-			// 	log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
-			// }
-			_ = resolvedTargets
+			if err := workflow.ImageTest(remotePath, onboard.SpecImageName, tag, resolvedTargets); err != nil {
+				log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
+			}
+			_ = resolvedTargets // TODO: use resolvedTargets in ImageTest once implemented
 		}
 	}
 

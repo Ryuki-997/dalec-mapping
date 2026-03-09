@@ -2,6 +2,7 @@ package github
 
 import (
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 
@@ -12,10 +13,10 @@ import (
 var semverInTag = regexp.MustCompile(`v(\d+)\.(\d+)\.(\d+)`)
 
 // FetchRepoInfo fetches repository metadata from GitHub API
-func FetchRepoInfo(repoPath, tag string) (*repository.RepoInfo, error) {
-	owner, repo, branch, subdir := ExtractRepositorySegments(repoPath)
+func FetchRepoInfo(repoPath, subdir, tag string) (*repository.RepoInfo, error) {
+	owner, repo, branch := ExtractRepositorySegments(repoPath)
 
-	fmt.Printf("Parsed - Owner: %s, Repo: %s, Branch: %s\n", owner, repo, branch)
+	fmt.Printf("Parsed - Owner: %s, Repo: %s, Branch: %s, Subdir: %s\n", owner, repo, branch, subdir)
 
 	info := &repository.RepoInfo{
 		Owner:  owner,
@@ -127,7 +128,7 @@ func fetchReleaseMetadata(info *repository.RepoInfo) error {
 }
 
 func fetchSourceGenerator(info *repository.RepoInfo) error {
-	// Map each generator's indicator filenames to its SourceGenerator type.
+	// Map each generator indicator filename to its SourceGenerator type.
 	fileGenerators := map[string]repository.SourceGenerator{
 		"go.mod":           repository.GoModGenerator,
 		"main.go":          repository.GoModGenerator,
@@ -138,46 +139,14 @@ func fetchSourceGenerator(info *repository.RepoInfo) error {
 		"setup.py":         repository.PipGenerator,
 		"Pipfile":          repository.PipGenerator,
 	}
-	// Directory names that also indicate a Go project.
+	// Directory basenames that also indicate a Go project.
 	dirGenerators := map[string]repository.SourceGenerator{
 		"Godeps": repository.GoModGenerator,
 		"vendor": repository.GoModGenerator,
 	}
 
-	if info.Subdir != "" {
-		// Subdirectory provided — fetch its direct contents via the Contents API.
-		// This is non-recursive: we only look at the immediate children of subdir.
-		contentsURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s?ref=%s",
-			info.Owner, info.Repo, info.Subdir, info.Branch)
-
-		items, err := MakeGitHubRequest[[]map[string]interface{}](repository.GithubRequest{URL: contentsURL})
-		if err != nil {
-			return fmt.Errorf("failed to fetch contents of %s: %w", info.Subdir, err)
-		}
-
-		for _, item := range items {
-			name, _ := item["name"].(string)
-			itemType, _ := item["type"].(string) // "file" or "dir"
-
-			if gen, ok := fileGenerators[name]; ok && itemType == "file" {
-				info.Generator = gen
-				return nil
-			}
-			if gen, ok := dirGenerators[name]; ok && itemType == "dir" {
-				info.Generator = gen
-				return nil
-			}
-		}
-
-		if info.Generator == "" {
-			return fmt.Errorf("❌  No recognized source generator files found in %s; Supported: Go (go.mod), Rust (Cargo.toml), Python (requirements.txt, setup.py, Pipfile)", info.Subdir)
-		}
-		return nil
-	}
-
-	// No subdirectory — fetch the top-level tree (non-recursive) to find generator indicators.
-	treeURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/%s", info.Owner, info.Repo, info.Branch)
-
+	// Fetch the full recursive tree in one call.
+	treeURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/%s?recursive=1", info.Owner, info.Repo, info.Branch)
 	data, err := MakeGitHubRequest[map[string]interface{}](repository.GithubRequest{URL: treeURL})
 	if err != nil {
 		return fmt.Errorf("failed to fetch repository tree: %w", err)
@@ -188,35 +157,77 @@ func fetchSourceGenerator(info *repository.RepoInfo) error {
 		return fmt.Errorf("unexpected tree response format")
 	}
 
-	for _, item := range treeItems {
-		itemMap, ok := item.(map[string]interface{})
-		if !ok {
-			continue
+	// scanItems walks treeItems and returns the first matching generator.
+	// When prefix is non-empty only paths under that prefix are considered.
+	scanItems := func(prefix string) (repository.SourceGenerator, bool) {
+		for _, item := range treeItems {
+			itemMap, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			p, _ := itemMap["path"].(string)
+			itemType, _ := itemMap["type"].(string)
+
+			// Apply optional prefix filter.
+			if prefix != "" && !strings.HasPrefix(p, prefix+"/") {
+				continue
+			}
+
+			base := p[strings.LastIndex(p, "/")+1:]
+
+			if gen, ok := fileGenerators[base]; ok && itemType == "blob" {
+				return gen, true
+			}
+			if gen, ok := dirGenerators[base]; ok && itemType == "tree" {
+				return gen, true
+			}
 		}
+		return "", false
+	}
 
-		path, ok := itemMap["path"].(string)
-		if !ok {
-			continue
-		}
+	// When a subdir hint is provided, search under all paths that contain that
+	// directory name — the monorepo may nest it deeper than the subdir alone
+	// (e.g. subdir="otel-allocator" but go.mod lives at otelcollector/otel-allocator/go.mod).
+	if info.Subdir != "" {
+		log.Printf("Searching for source generator under subdir hint '%s'...\n", info.Subdir)
 
-		itemType, _ := itemMap["type"].(string)
-
-		if gen, ok := fileGenerators[path]; ok && itemType == "blob" {
+		// 1. Exact prefix match first (fast path).
+		if gen, ok := scanItems(info.Subdir); ok {
 			info.Generator = gen
-			break
+			return nil
 		}
 
-		if gen, ok := dirGenerators[path]; ok && itemType == "tree" {
-			info.Generator = gen
-			break
+		// 2. Any path component matches the subdir name (handles nested monorepos).
+		subdirBase := info.Subdir[strings.LastIndex(info.Subdir, "/")+1:]
+		for _, item := range treeItems {
+			itemMap, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			p, _ := itemMap["path"].(string)
+			itemType, _ := itemMap["type"].(string)
+			if itemType != "tree" {
+				continue
+			}
+			base := p[strings.LastIndex(p, "/")+1:]
+			if base != subdirBase {
+				continue
+			}
+			// Found a directory with the matching name — search inside it.
+			if gen, ok := scanItems(p); ok {
+				info.Generator = gen
+				return nil
+			}
 		}
 	}
 
-	if info.Generator == "" {
-		return fmt.Errorf("❌  No recognized source generator files found; Supported: Go (go.mod), Rust (Cargo.toml), Python (requirements.txt, setup.py, Pipfile)")
+	// Fall back: search the entire tree (no prefix).
+	if gen, ok := scanItems(""); ok {
+		info.Generator = gen
+		return nil
 	}
 
-	return nil
+	return fmt.Errorf("❌  No recognized source generator files found; Supported: Go (go.mod), Rust (Cargo.toml), Python (requirements.txt, setup.py, Pipfile)")
 }
 
 // fetchTagInfo fetches commit SHA for a specific tag

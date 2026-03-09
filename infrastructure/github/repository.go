@@ -45,7 +45,7 @@ func GetGeneratorPath() (string, error) {
 }
 
 // ExtractRepositorySegments extracts the repository segments from a GitHub URL or path
-func ExtractRepositorySegments(repo string) (owner, name, branch, subdir string) {
+func ExtractRepositorySegments(repo string) (owner, name, branch string) {
 	repo = strings.TrimSuffix(repo, ".git")
 	repo = strings.TrimPrefix(repo, "https://")
 	repo = strings.TrimPrefix(repo, "http://")
@@ -53,33 +53,26 @@ func ExtractRepositorySegments(repo string) (owner, name, branch, subdir string)
 
 	parts := strings.Split(repo, "/")
 	if len(parts) == 2 {
-		url := fmt.Sprintf("https://api.github.com/repos/%s/%s/branches", parts[0], parts[1])
-		branches, err := MakeGitHubRequest[[]map[string]interface{}](repository.GithubRequest{URL: url})
+		url := fmt.Sprintf("https://api.github.com/repos/%s/%s", parts[0], parts[1])
+		repoData, err := MakeGitHubRequest[map[string]interface{}](repository.GithubRequest{URL: url})
 		if err != nil {
-			log.Printf("Error: failed to fetch branches for %s: %v\n", repo, err)
+			log.Printf("Error: failed to fetch repo info for %s: %v\n", repo, err)
 			os.Exit(1)
 		}
 
 		branch := "main"
-		
-		for _, branch := range branches {
-			switch branch["name"].(string) {
-			case "main", "master":
-				branch, ok := branch["name"].(string)
-				if ok {
-					return parts[0], parts[1], branch, ""
-				}
-			}
+		if defaultBranch, ok := repoData["default_branch"].(string); ok && defaultBranch != "" {
+			branch = defaultBranch
 		}
 
-		return parts[0], parts[1], branch, ""
+		return parts[0], parts[1], branch
 	} else if len(parts) >= 4 && parts[2] == "tree" {
-		return parts[0], parts[1], parts[3], strings.Join(parts[4:], "/")
+		return parts[0], parts[1], parts[3]
 	} 
 
 	log.Printf("Warning: unrecognized repository format: %s\n", repo)
 	os.Exit(1)
-	return "", "", "", ""
+	return "", "", ""
 }
 
 // MakeGitHubRequest makes an authenticated HTTP request to the GitHub API.
@@ -199,6 +192,7 @@ func ClearEnvVariables(key string, command *string) {
 			"GOARM64":     true,
 			"OS":          true,
 			"ARCH":        true,
+			"CC":          true, // set globally in build.env via MinGW toolchain source
 		}
 		// Match patterns like KEY=value, KEY=${VAR}, KEY=${VAR:-default}, KEY=$(VAR)
 		envAssignPattern := regexp.MustCompile(`(\w+)=(?:\$[\{\(][^\}\)]*[\}\)]|\S*)`)

@@ -44,7 +44,7 @@ type ChatResponse struct {
 func Populate(ctx context.Context, onboard *onboarding.OnboardingInfo, fileContents *llm.InstructionContents) ([]byte, error) {
 	log.Printf("Running populate for repo: %s", onboard.Repository)
 
-	_, repoName, _, _ := github.ExtractRepositorySegments(onboard.Repository)
+	_, repoName, _ := github.ExtractRepositorySegments(onboard.Repository)
 	resultPath := filepath.Join("result", repoName)
 
 	// Read skill.md
@@ -80,7 +80,7 @@ func Populate(ctx context.Context, onboard *onboarding.OnboardingInfo, fileConte
 func fetchFileContents(onboard *onboarding.OnboardingInfo, paths []string) (map[string]string, error) {
 	contents := make(map[string]string)
 
-	owner, repoName, branch, _ := github.ExtractRepositorySegments(onboard.Repository)
+	owner, repoName, branch := github.ExtractRepositorySegments(onboard.Repository)
 
 	for _, path := range paths {
 		url := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", owner, repoName, branch, path)

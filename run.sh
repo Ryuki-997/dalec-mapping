@@ -26,8 +26,12 @@ run_and_stream() {
 
 echo ""
 
-run_and_stream "Run 2: -path=containernetworkingauto" -path=containernetworkingauto
+run_and_stream "Run 2: -path=containernetworkingauto/azure-cns" -path=containernetworkingauto/azure-cns
 
 echo ""
 
 # run_and_stream "Run 3: -path=prometheus-collector" -path=prometheus-collector
+
+echo ""
+
+run_and_stream "Run 4: -path=containernetworkingauto/azure-cni" -path=containernetworkingauto/azure-cni

@@ -10,7 +10,7 @@ import (
 )
 
 func ResolveOnboardTags(repoPath string, patterns []string) ([]string, error) {
-	owner, repoName, _, _ := github.ExtractRepositorySegments(repoPath)
+	owner, repoName, _ := github.ExtractRepositorySegments(repoPath)
 	releaseTags, allGitTags, err := github.FetchAllTags(owner, repoName)
 	if err != nil {
 		log.Fatalf("❌ Failed to fetch tags: %v", err)

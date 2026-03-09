@@ -43,12 +43,14 @@ func extractBuildSection(defaultSpec *contents.DefaultSpec, makefileInfo *conten
 // Standard vars are always included; LDFLAGS is added when any binary declares ldflags.
 func buildEnv(nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
 	env := map[string]interface{}{
-		"GOPROXY":    "direct",
+		"GOPROXY":      "direct",
 		"GOEXPERIMENT": "systemcrypto",
 		"CGO_ENABLED": "1", // required by GOEXPERIMENT=systemcrypto (FIPS)
-		"VERSION":    "${VERSION}",
-		"GOOS":       "${TARGETOS}",
-		"GOARCH":     "${TARGETARCH}",
+		"VERSION":     "${VERSION}",
+		"GOOS":        "${TARGETOS}",
+		"GOARCH":      "${TARGETARCH}",
+		// CC is NOT set globally — for Linux builds the native gcc is used automatically.
+		// For Windows cross-builds it is injected per-step by injectBinSuffix.
 	}
 
 	if nonDeterministicValues != nil {
@@ -64,12 +66,10 @@ func buildEnv(nonDeterministicValues *llm.NonDeterministicValues) map[string]int
 
 // buildSteps converts NonDeterministicValues binaries into Dalec `steps` entries.
 // Each binary becomes one step. Also returns the combined command text for var scanning.
-// baseDir is repo (or repo/subdir when a tree-subdir URL was used).
+// baseDir is always the repo source name (the root of the cloned source). The LLM-provided
+// build command's `cd` paths are always relative to the repo root, not the Dockerfile subdir.
 func buildSteps(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) ([]map[string]interface{}, string) {
 	baseDir := defaultSpec.Repo
-	if defaultSpec.Subdir != "" {
-		baseDir = defaultSpec.Repo + "/" + defaultSpec.Subdir
-	}
 
 	rawSteps := rawBuildCommands(nonDeterministicValues)
 
@@ -151,14 +151,22 @@ func rawBuildCommands(nonDeterministicValues *llm.NonDeterministicValues) []stri
 }
 
 // injectBinSuffix rewrites `-o /go/bin/<name>` → `-o /go/bin/<name>${BIN_SUFFIX}`
-// and prepends the BIN_SUFFIX shell assignment so one step handles both platforms.
+// and prepends a preamble that:
+//   - sets BIN_SUFFIX (".exe" on Windows, else "")
+//   - exports CC to the prebuilt MinGW cross-compiler only on Windows builds
+//     (for Linux builds, native gcc is picked up automatically via PATH)
 func injectBinSuffix(cmd string, re *regexp.Regexp) string {
 	loc := re.FindStringSubmatchIndex(cmd)
 	if loc == nil {
 		return cmd
 	}
 	cmd = cmd[:loc[3]] + "${BIN_SUFFIX}" + cmd[loc[3]:]
-	return "BIN_SUFFIX=\"\"\nif [ \"${GOOS}\" = \"windows\" ]; then BIN_SUFFIX=\".exe\"; fi\n" + cmd
+	preamble := `BIN_SUFFIX=""
+if [ "${GOOS}" = "windows" ]; then
+  BIN_SUFFIX=".exe"
+  export CC=` + MingwGCCPath + `
+fi`
+	return preamble + "\n" + cmd
 }
 
 // scanVarReferences finds all ${VAR}/(VAR) references in command text and env values.

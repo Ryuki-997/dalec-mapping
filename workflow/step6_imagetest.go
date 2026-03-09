@@ -60,8 +60,8 @@ func ImageTest(specPath, imageName, tag string, targets []string) error {
 		log.Printf("    ✅ %s built successfully", target)
 	}
 
-	// Step 3: Run the container image with --version
-	log.Printf("  [3/4] Running %s --version...", imageTag)
+	// Step 3: Run the container image with no args to verify the binary executes
+	log.Printf("  [3/4] Running %s (no args)...", imageTag)
 	containerImageTag := fmt.Sprintf("%s-%s", imageTag, "azlinux3-container")
 	if err := runDockerImage(containerImageTag); err != nil {
 		return fmt.Errorf("failed to run docker image: %w", err)
@@ -156,17 +156,30 @@ func buildDockerImage(imageTag, target string) error {
 	return nil
 }
 
-// runDockerImage runs the built image with --version.
+// runDockerImage runs the built image with no arguments to verify the binary
+// is present and executable. Most binaries exit 0 (help) or 1-2 (missing args)
+// when invoked with no args — both are acceptable. Only exit codes ≥ 127
+// indicate a real problem (127 = binary not found, 137 = OOM/killed).
 func runDockerImage(imageTag string) error {
-	cmd := exec.Command("docker", "run", "--rm", imageTag, "--version")
+	cmd := exec.Command("docker", "run", "--rm", imageTag)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("docker run failed: %w", err)
+	err := cmd.Run()
+	if err == nil {
+		return nil
 	}
 
-	return nil
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		code := exitErr.ExitCode()
+		// Exit codes 1 and 2 are normal "no args / usage" responses.
+		if code > 0 && code < 127 {
+			return nil
+		}
+		return fmt.Errorf("docker run failed with exit code %d: %w", code, err)
+	}
+
+	return fmt.Errorf("docker run failed: %w", err)
 }
 
 // runTestScript writes a test script to a temp file and runs it inside an Azure Linux

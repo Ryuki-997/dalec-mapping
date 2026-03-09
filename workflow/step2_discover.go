@@ -3,6 +3,7 @@ package workflow
 import (
 	"fmt"
 	"os"
+	"path"
 
 	"dalec-mapping/domain/llm"
 	"dalec-mapping/domain/onboarding"
@@ -20,8 +21,9 @@ func Discover(onboard *onboarding.OnboardingInfo, fileContents *llm.InstructionC
 		fmt.Printf("⚠️  Warning: %v\n", err)
 	}
 
+	subdir := path.Dir(onboard.Dockerfile)
 	// Parse repo info (just need owner, repo, branch)
-	repoInfo, err := github.FetchRepoInfo(onboard.Repository, tag)
+	repoInfo, err := github.FetchRepoInfo(onboard.Repository, subdir, tag)
 	if err != nil {
 		fmt.Printf("❌ Error fetching repository info: %v\n", err)
 		os.Exit(1)
@@ -29,8 +31,8 @@ func Discover(onboard *onboarding.OnboardingInfo, fileContents *llm.InstructionC
 
 	// Run DFS to find all Dockerfiles and Makefiles if not provided in onboarding info
 	root := onboard.Repository
-	owner, repo, branch, subdirectory := github.ExtractRepositorySegments(root)
-	path := fmt.Sprintf("%s/%s/%s/%s", owner, repo, branch, subdirectory)
+	owner, repo, branch := github.ExtractRepositorySegments(root)
+	path := fmt.Sprintf("%s/%s/%s", owner, repo, branch)
 	dockerfileURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s", path, onboard.Dockerfile)
 	dockerfileContent, err := github.FetchRawContent(dockerfileURL)
 	if err != nil {

@@ -3,6 +3,7 @@ package workflow
 import (
 	"fmt"
 	"os"
+	"path"
 
 	"dalec-mapping/domain/llm"
 	"dalec-mapping/domain/onboarding"
@@ -16,9 +17,10 @@ import (
 // Returns the resolved build target strings for downstream use (e.g. image test).
 func Generate(onboard *onboarding.OnboardingInfo, fileContents *llm.InstructionContents, agentResponse []byte, tag string) ([]string, error) {
 	fmt.Println("=== GENERATE MODE ===")
+	subdir := path.Dir(onboard.Dockerfile)
 
 	// Fetch GitHub repository info
-	repoInfo, err := github.FetchRepoInfo(onboard.Repository, tag)
+	repoInfo, err := github.FetchRepoInfo(onboard.Repository, subdir, tag)
 	if err != nil {
 		fmt.Printf("❌ Error fetching repository info: %v\n", err)
 		os.Exit(1)

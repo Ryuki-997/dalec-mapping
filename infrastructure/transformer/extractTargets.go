@@ -251,6 +251,9 @@ func windowsDeps(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.
 	buildDeps := map[string]interface{}{}
 	if defaultSpec.Generator == repository.GoModGenerator {
 		buildDeps["msft-golang"] = map[string]interface{}{}
+		// The prebuilt aarch64-w64-mingw32 MinGW toolchain is fetched as an http
+		// source (see extractSources.go) and copied to /build/top/BUILD/ during %prep.
+		// CC is set in build.env to point to that gcc binary directly — no apt dep needed.
 	}
 	if nonDeterministicValues != nil {
 		if ts := findTargetSpecByOS(nonDeterministicValues.Targets, "windowscross"); ts != nil {

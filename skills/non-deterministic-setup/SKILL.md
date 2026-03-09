@@ -237,11 +237,11 @@ azure-npm-binary:
 The image being built is `azure-cns`. The correct extraction:
 
 ```yaml
-# ✅ CORRECT: Only the azure-cns target is extracted
+# ✅ CORRECT: Only the azure-cns target is extracted, *_VERSION normalized to ${VERSION}
 binaries:
   - name: "azure-cns"
-    outputPath: "output/cns/azure-cns"
-    buildCommand: "cd ${CNS_DIR} && go build -v -o output/cns/azure-cns -ldflags \"-X main.version=${VERSION} -X ${CNS_AI_PATH}=${CNS_AI_ID} -X ${CNI_AI_PATH}=${CNI_AI_ID} ${LD_BUILD_FLAGS}\" -gcflags=\"-dwarflocationlists=true\""
+    outputPath: "/go/bin/azure-cns"
+    buildCommand: "cd ${CNS_DIR} && go build -v -o /go/bin/azure-cns -ldflags \"-X main.version=${VERSION} -X ${CNS_AI_PATH}=${CNS_AI_ID} -X ${CNI_AI_PATH}=${CNI_AI_ID} ${LD_BUILD_FLAGS}\" -gcflags=\"-dwarflocationlists=true\""
     ldFlags: "-X main.version=${VERSION} -X ${CNS_AI_PATH}=${CNS_AI_ID} -X ${CNI_AI_PATH}=${CNI_AI_ID} ${LD_BUILD_FLAGS}"
 ```
 
@@ -260,12 +260,12 @@ binaries:
 ```
 
 ```yaml
-# ❌ WRONG: Picking the wrong target (azure-vnet instead of azure-cns)
+# ❌ WRONG: Picking the wrong target (azure-vnet instead of azure-cni)
 binaries:
   - name: "azure-vnet"
     outputPath: "output/cni/azure-vnet"
     buildCommand: "cd ${CNI_NET_DIR} && go build ..."
-    ldFlags: "-X main.version=${CNI_VERSION} ${LD_BUILD_FLAGS}"
+    ldFlags: "-X main.version=${VERSION} ${LD_BUILD_FLAGS}"
 ```
 
 #### 1.3 Extraction Checklist
@@ -353,7 +353,6 @@ go build ./cmd/myapp
 
 ```yaml
 # ❌ WRONG: Any platform variable remaining in outputPath or buildCommand -o path
-outputPath: "bin/${GOOS}_${GOARCH}/kubelogin"
 outputPath: "_output/${ARCH}/blobplugin"
 outputPath: "out/$(GOOS)/$(GOARCH)/myapp"
 buildCommand: "go build -o bin/${GOOS}_${GOARCH}/kubelogin ..."
@@ -611,9 +610,7 @@ The build command in Dockerfile and Makefile is **deterministic** — it has a c
 2. **Remove environment variable assignments** that Dalec manages: `CGO_ENABLED=`, `GOOS=`, `GOARCH=`, `GOARM=`, `OS=`, `ARCH=`. These are set in the Dalec spec's `build.env` section.
 3. **Remove platform variables from output paths** (`${OS}`, `${ARCH}`, `${TARGETARCH}`, etc.) and collapse any resulting double slashes.
 4. **The `-o <path>` in the build command MUST match the `outputPath` field exactly.** Both describe where the binary is written — they must be identical.
-5. **Preserve `${VERSION}`, `${COMMIT}`, `${REVISION}`** — these are Dalec spec args.
-6. **Replace version-like Makefile variables** (`$(TAG)`, `$(VERSION)`, `$(IMAGE_VERSION)`) with `${VERSION}` in ldflags.
-7. **Replace git commit variables** (`$(GIT_COMMIT)`, `$(COMMIT)`) with `${COMMIT}` in ldflags.
+5. **Convert `$(VAR)` Makefile syntax to `${VAR}` Dalec syntax.** For all variables *except* version variables, keep names exactly as they appear. **Version variables are the exception: any variable whose sole purpose is to carry the image version** (`$(CNS_VERSION)`, `$(CNI_VERSION)`, `$(NPM_VERSION)`, `$(TAG)`, `$(IMAGE_VERSION)`, or any `*_VERSION` / `*_TAG` pattern) **must be replaced with `${VERSION}`**. `${VERSION}` is always available as a top-level Dalec arg — there is no reason to pass through a Makefile-local name.
 
 #### 4.2 Extraction Checklist
 
@@ -631,10 +628,8 @@ The build command in Dockerfile and Makefile is **deterministic** — it has a c
 - [ ] **Remove platform variables from -o path** and collapse `//` → `/`
 - [ ] Parse ldflags:
   - [ ] Extract `-ldflags "..."` content
-  - [ ] Replace `$(TAG)`, `$(VERSION)`, `$(IMAGE_VERSION)` with `${VERSION}`
-  - [ ] Replace `$(GIT_COMMIT)` with `${COMMIT}`
-  - [ ] Preserve `-s -w` strip flags
-- [ ] Convert `$(VAR)` to `${VAR}` syntax
+  - [ ] Preserve `-s -w` strip flags and all other flags verbatim
+- [ ] Convert `$(VAR)` to `${VAR}` syntax — **replace any `*_VERSION`/`*_TAG` variable with `${VERSION}`; keep all other variable names as-is**
 - [ ] **Verify `-o <path>` matches `outputPath`**
 
 #### 4.3 Patterns
@@ -645,7 +640,7 @@ CGO_ENABLED=${CGO_ENABLED} GOOS=linux GOARCH=$(ARCH) go build -a \
     -ldflags "-X ${PKG}/pkg/version.Ver=$(TAG) -s -w" \
     -o _output/${ARCH}/binary ./cmd/main
 
-# Extracted (deterministic, collapsed):
+# Extracted (deterministic, collapsed — *_VERSION/TAG normalized to ${VERSION}):
 # BuildCommand: "go build -a -ldflags \"-X ${PKG}/pkg/version.Ver=${VERSION} -s -w\" -o _output/binary ./cmd/main"
 # LdFlags: "-X ${PKG}/pkg/version.Ver=${VERSION} -s -w"
 # OutputPath: "_output/binary"
@@ -654,12 +649,12 @@ CGO_ENABLED=${CGO_ENABLED} GOOS=linux GOARCH=$(ARCH) go build -a \
 ```makefile
 # Makefile input (with IF/ELSE for arch):
 # if [ "$(ARCH)" = "amd64" ]; then
-#   go build -o bin/amd64/myapp -ldflags "-X main.version=$(VERSION)" ./cmd/myapp
+#   go build -o bin/amd64/myapp -ldflags "-X main.version=$(CNI_VERSION)" ./cmd/myapp
 # else
-#   go build -o bin/arm64/myapp -ldflags "-X main.version=$(VERSION)" ./cmd/myapp
+#   go build -o bin/arm64/myapp -ldflags "-X main.version=$(CNI_VERSION)" ./cmd/myapp
 # fi
 
-# Extracted (collapsed to single step):
+# Extracted (collapsed to single step — *_VERSION normalized to ${VERSION}):
 # BuildCommand: "go build -o bin/myapp -ldflags \"-X main.version=${VERSION}\" ./cmd/myapp"
 # LdFlags: "-X main.version=${VERSION}"
 # OutputPath: "bin/myapp"
@@ -695,7 +690,7 @@ build:
 | Symlink target matches entrypoint | +0.15 |
 | Runtime deps filtered correctly (no shell syntax) | +0.20 |
 | Build command has no `docker run` | +0.20 |
-| LdFlags translated to `${VERSION}` | +0.10 |
+| LdFlags uses `${VAR}` syntax (not `$(VAR)`) | +0.10 |
 | No external tools requiring separate specs | +0.10 |
 
 **Minimum confidence for auto-approval:** 0.8
@@ -707,7 +702,6 @@ build:
 | `WARN_MULTI_BINARY` | Multiple binaries detected | Verify primary binary |
 | `WARN_CONDITIONAL_DEPS` | Architecture-specific deps | Review for target arch |
 | `WARN_EXTERNAL_TOOLS` | External tools found | Create separate Dalec specs |
-| `WARN_NO_LDFLAGS` | No version injection found | May need manual ldflags |
 | `WARN_DOCKER_WRAPPER` | Build uses docker run | Needs manual translation |
 | `WARN_ENTRYPOINT_MISMATCH` | Entrypoint != binary name | Verify correct binary |
 | `WARN_LOW_CONFIDENCE` | Confidence < 0.8 | Manual review required |
@@ -802,7 +796,7 @@ After agent extraction, verify:
 | V3 | `Symlink` target matches `Entrypoint` path | [ ] |
 | V4 | `targets[azlinux3].runtime` excludes: `fi`, `then`, `;`, `install`, `dpkg`, `SymCrypt`, `openssl-libs` | [ ] |
 | V5 | `targets[windowscross].runtime` is empty or `[]` | [ ] |
-| V6 | `LdFlags` uses `${VERSION}` not hardcoded values | [ ] |
+| V6 | `LdFlags` uses `${VAR}` Dalec syntax (not `$(VAR)` Makefile syntax) | [ ] |
 | V7 | `BuildCommand` has no `docker run` commands | [ ] |
 | V8 | All `Binaries` have corresponding build commands | [ ] |
 | V9 | `ExternalTools` documented with TODO comments | [ ] |
@@ -852,12 +846,12 @@ ENTRYPOINT ["/blobplugin"]
 
 binaries:
   - name: "blobplugin"
-    outputPath: "_output/blobplugin"
-    buildCommand: "go build -a -ldflags \"${LDFLAGS}\" -mod vendor -o _output/blobplugin ./pkg/blobplugin"
+    outputPath: "/go/bin/blobplugin"
+    buildCommand: "go build -a -ldflags \"${LDFLAGS}\" -mod vendor -o /go/bin/blobplugin ./pkg/blobplugin"
     ldFlags: "-X sigs.k8s.io/blob-csi-driver/pkg/blob.driverVersion=${VERSION} -s -w"
   - name: "blobfuse-proxy"
-    outputPath: "_output/blobfuse-proxy"
-    buildCommand: "go build -o _output/blobfuse-proxy ./pkg/blobfuse-proxy"
+    outputPath: "/go/bin/blobfuse-proxy"
+    buildCommand: "go build -o /go/bin/blobfuse-proxy ./pkg/blobfuse-proxy"
     ldFlags: ""
 
 targets:

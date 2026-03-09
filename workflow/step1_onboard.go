@@ -17,7 +17,7 @@ import (
 func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, inputPath string) error {
 	// Build path prefix for filtering: always rooted under "specs/"
 	if inputPath != "" {
-		inputPath = "specs"
+		inputPath = "specs/" + inputPath
 	}
 
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/%s?recursive=1", utils.OnboardOwner, utils.OnboardRepo, utils.OnboardBranch)
