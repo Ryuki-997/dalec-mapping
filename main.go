@@ -38,9 +38,9 @@ func main() {
 
 	shellVar := []string{}
 	for _, onboard := range onboardFiles {
-		fmt.Printf("Onboard Documents: %v\n", onboard)
+		log.Printf("Onboard Documents: %v\n", onboard)
 		for _, tag := range onboard.Tag {
-			fmt.Printf("▶ Running pipeline for %s @ %s\n", onboard.Repository, tag)
+			log.Printf("▶ Running pipeline for %s @ %s\n", onboard.Repository, tag)
 			remotePath, resolvedTargets := generateSpec(&onboard, tag)
 			shellVar = append(shellVar, remotePath)
 
@@ -52,7 +52,7 @@ func main() {
 		}
 	}
 
-	fmt.Printf("specPaths=%s\n", strings.Join(shellVar, ","))
+	log.Printf("specPaths=%s\n", strings.Join(shellVar, ","))
 
 	// test()
 }
