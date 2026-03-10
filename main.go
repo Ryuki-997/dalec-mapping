@@ -21,6 +21,8 @@ func main() {
 	inputPath := flag.String("path", "", "Input path to search for onboarding files (e.g. specs/containernetworking and specs/containernetworking/azure-cns both work. It is the difference between building all components vs one). Omit to fetch all under specs/")
 	flag.Parse()
 
+	log.Println("Input path for onboarding files:", *inputPath)
+	
 	wd, _ := os.Getwd()
 	log.Printf("Working directory: %s", wd)
 
@@ -28,7 +30,7 @@ func main() {
 	if err != nil {
 		log.Printf("⚠️  .env file not found at %s/.env: %v", wd, err)
 	}
-
+	
 	onboardFiles := []onboarding.OnboardingInfo{}
 
 	err = workflow.FetchOnboardFiles(&onboardFiles, *inputPath)
