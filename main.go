@@ -5,6 +5,7 @@ import (
 	"dalec-mapping/domain/llm"
 	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/domain/repository"
+	"dalec-mapping/infrastructure/semver"
 	"dalec-mapping/workflow"
 	"flag"
 	"fmt"
@@ -36,25 +37,27 @@ func main() {
 		log.Fatalf("❌ Failed to fetch onboard data: %v", err)
 	}
 
+	if len(onboardFiles) == 0 {
+		log.Fatalf("No onboarding files found at path: %s", *inputPath)
+	}
+
 	shellVar := []string{}
 	for _, onboard := range onboardFiles {
 		fmt.Printf("Onboard Documents: %v\n", onboard)
 		for _, tag := range onboard.Tag {
+			// shortTag is the plain "vX.Y.Z" used for image naming and spec paths;
+			// the full tag (e.g. "azure-ipam/v0.4.0") is passed into the pipeline
+			// so git ref lookups work without a second API call.
+			shortTag := semver.StripToSemver(tag)
 			fmt.Printf("▶ Running pipeline for %s @ %s\n", onboard.Repository, tag)
 			remotePath, resolvedTargets := generateSpec(&onboard, tag)
 			shellVar = append(shellVar, remotePath)
 
-			// Step 6: build, run, and test the image
-			if err := workflow.ImageTest(remotePath, onboard.SpecImageName, tag, resolvedTargets); err != nil {
-				log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
-			}
-			_ = resolvedTargets // TODO: use resolvedTargets in ImageTest once implemented
+			testAndPush(&onboard, remotePath, shortTag, tag, resolvedTargets)
 		}
 	}
 
 	fmt.Printf("specPaths=%s\n", strings.Join(shellVar, ","))
-
-	// test()
 }
 
 func generateSpec(onboard *onboarding.OnboardingInfo, tag string) (string, []string) {
@@ -96,21 +99,28 @@ func generateSpec(onboard *onboarding.OnboardingInfo, tag string) (string, []str
 	log.Println("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	log.Printf("✅ Generation Complete at %s", time.Now().Format(time.RFC3339))
 
-	// Step 4: Push to remote repository
-	err = workflow.GitPush(onboard.SpecRepository, onboard.SpecImageName, tag)
-	if err != nil {
-		log.Fatalf("❌ Step 4 failed: %v", err)
-	}
-
 	log.Printf("✅ Spec created successfully for repository %s @ %s", onboard.Repository, onboard.Tag)
 
-	// // Step 5: Output a shell variable consist of a list of remote generated spec path separated by comma for CI integration
+	// // Step 4: Output a shell variable consist of a list of remote generated spec path separated by comma for CI integration
 	// // specs/{repository}/{image}/{image}-{tag}-specfile.yml
+	shortTag := semver.StripToSemver(tag)
 	var specPath string
 	if onboard.SpecRepository == "" {
-		specPath = fmt.Sprintf("specs/%s/%s-%s-specfile.yml", onboard.SpecImageName, onboard.SpecImageName, tag)
+		specPath = fmt.Sprintf("specs/%s/%s-%s-specfile.yml", onboard.SpecImageName, onboard.SpecImageName, shortTag)
 	} else {
-		specPath = fmt.Sprintf("specs/%s/%s/%s-%s-specfile.yml", onboard.SpecRepository, onboard.SpecImageName, onboard.SpecImageName, tag)
+		specPath = fmt.Sprintf("specs/%s/%s/%s-%s-specfile.yml", onboard.SpecRepository, onboard.SpecImageName, onboard.SpecImageName, shortTag)
 	}
 	return specPath, resolvedTargets
+}
+
+func testAndPush(onboard *onboarding.OnboardingInfo, remotePath, shortTag, tag string, resolvedTargets []string) {
+	// Step 5: build, run, and test the image before pushing
+	if err := workflow.ImageTest(remotePath, onboard.SpecImageName, shortTag, resolvedTargets); err != nil {
+		log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, shortTag, err)
+	}
+
+	// Step 6: Push to remote repository (only after image test passes)
+	if err := workflow.GitPush(onboard.SpecRepository, onboard.SpecImageName, tag); err != nil {
+		log.Fatalf("❌ Step 6 failed: %v", err)
+	}
 }

@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 
 	"dalec-mapping/domain/repository"
@@ -47,33 +48,36 @@ func ImageTest(specPath, imageName, tag string, targets []string) error {
 	}
 	imageTag := fmt.Sprintf("%s:%s", imageName, tag)
 	for i, target := range targets {
-		// windowscross requires a Windows build host; skip on Linux/macOS
-		if strings.HasPrefix(target, "windowscross") {
-			log.Printf("  [2/4] Skipping windowscross target (requires Windows host): %s", target)
-			continue
-		}
 		targetImageTag := fmt.Sprintf("%s-%s", imageTag, strings.ReplaceAll(target, "/", "-"))
-		log.Printf("  [2/4] Building target %d/%d: %s (image: %s)...", i+1, len(targets), target, targetImageTag)
-		if err := buildDockerImage(targetImageTag, target); err != nil {
+		platform := platformForTarget(target)
+		log.Printf("  [2/4] Building target %d/%d: %s (image: %s, platform: %s)...", i+1, len(targets), target, targetImageTag, platform)
+		if err := buildDockerImage(targetImageTag, target, platform); err != nil {
 			return fmt.Errorf("failed to build docker image for target %s: %w", target, err)
 		}
 		log.Printf("    ✅ %s built successfully", target)
 	}
 
 	// Step 3: Run the container image with no args to verify the binary executes
-	log.Printf("  [3/4] Running %s (no args)...", imageTag)
+	log.Printf("  [3/5] Running %s (no args)...", imageTag)
 	containerImageTag := fmt.Sprintf("%s-%s", imageTag, "azlinux3-container")
-	if err := runDockerImage(containerImageTag); err != nil {
+	if err := runDockerImage(containerImageTag, platformForTarget("azlinux3/container")); err != nil {
 		return fmt.Errorf("failed to run docker image: %w", err)
 	}
 
-	// Step 4: Apply test scripts (if any)
+	// Step 4: Run FIPS checker against the azlinux3 container image
+	log.Printf("  [4/5] Running FIPS checker against %s...", containerImageTag)
+	if err := runFipsChecker(containerImageTag); err != nil {
+		return fmt.Errorf("FIPS check failed for %s: %w", containerImageTag, err)
+	}
+	log.Printf("    ✅ FIPS check passed for %s", containerImageTag)
+
+	// Step 5: Apply test scripts (if any)
 	if len(shellScripts) == 0 {
-		log.Println("  [4/4] No test scripts found, skipping.")
+		log.Println("  [5/5] No test scripts found, skipping.")
 		return nil
 	}
 
-	// log.Printf("  [4/4] Running %d test script(s)...", len(shellScripts))
+	// log.Printf("  [5/5] Running %d test script(s)...", len(shellScripts))
 	// for name, content := range shellScripts {
 	// 	if err := runTestScript(imageTag, name, content); err != nil {
 	// 		return fmt.Errorf("test script %s failed: %w", name, err)
@@ -82,6 +86,21 @@ func ImageTest(specPath, imageName, tag string, targets []string) error {
 	// }
 
 	log.Println("  ✅ All image tests passed")
+	return nil
+}
+
+// runFipsChecker runs fips-check/build-and-check.sh <runtimeImage> to validate FIPS compliance.
+// The script uses "." as its Docker build context, so it must be run from the fips-check/ directory.
+func runFipsChecker(runtimeImage string) error {
+	cmd := exec.Command("bash", "build-and-check.sh", runtimeImage)
+	cmd.Dir = "fips-check"
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("build-and-check.sh failed: %w", err)
+	}
+
 	return nil
 }
 
@@ -137,10 +156,24 @@ func clearDockerImages() error {
 	return nil
 }
 
+// platformForTarget returns the --platform value for a given Dalec build target.
+// For windowscross, this must be "windows/amd64": Dalec resolves the output base
+// image (nanoserver:1809) using this platform, and nanoserver only ships Windows
+// manifests. Dalec's LLB frontend handles running the actual compilation on a
+// Linux worker regardless; the platform flag only controls the output image target.
+// All other targets use the native host architecture.
+func platformForTarget(target string) string {
+	if strings.HasPrefix(target, "windowscross") {
+		return "windows/amd64"
+	}
+	return "linux/" + runtime.GOARCH
+}
+
 // buildDockerImage builds a container/artifact using the Dalec spec via docker build.
 // Targets: azlinux3/container, azlinux3/rpm, deb, windowscross
-func buildDockerImage(imageTag, target string) error {
+func buildDockerImage(imageTag, target, platform string) error {
 	cmd := exec.Command("docker", "build",
+		"--platform", platform,
 		"-t", imageTag,
 		"-f", utils.ResultDir+"/output.yml",
 		"--target", target,
@@ -160,8 +193,8 @@ func buildDockerImage(imageTag, target string) error {
 // is present and executable. Most binaries exit 0 (help) or 1-2 (missing args)
 // when invoked with no args — both are acceptable. Only exit codes ≥ 127
 // indicate a real problem (127 = binary not found, 137 = OOM/killed).
-func runDockerImage(imageTag string) error {
-	cmd := exec.Command("docker", "run", "--rm", imageTag)
+func runDockerImage(imageTag, platform string) error {
+	cmd := exec.Command("docker", "run", "--platform", platform, "--rm", imageTag)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 

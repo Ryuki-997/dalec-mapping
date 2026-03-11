@@ -109,11 +109,20 @@ func assembleStep(block, baseDir string) string {
 }
 
 // rawBuildCommands cleans each binary's fields and returns one command string per binary.
-// Output is always /go/bin/<name>${BIN_SUFFIX} — BIN_SUFFIX is injected here so
-// the same step works for both Linux (BIN_SUFFIX="") and windowscross (BIN_SUFFIX=".exe").
+// Output is always /go/bin/<canonicalName>${BIN_SUFFIX} — the canonical name is derived
+// from the primary linux entrypoint when it differs from the LLM binary name (e.g.
+// "dropgz" when binaries[0].Name is "azure-ipam"). BIN_SUFFIX is injected so the same
+// step works for both Linux (BIN_SUFFIX="") and windowscross (BIN_SUFFIX=".exe").
 func rawBuildCommands(nonDeterministicValues *llm.NonDeterministicValues) []string {
 	if nonDeterministicValues == nil {
 		return nil
+	}
+
+	// Canonical binary name from the primary linux symlinks key (the real installed binary).
+	// lt.Symlink is the Dalec symlinks map key = the target path = where artifacts land.
+	epBase := ""
+	if lt := findPrimaryLinuxTarget(nonDeterministicValues.Targets); lt != nil {
+		epBase = canonicalBase(lt.Symlink)
 	}
 
 	var cmds []string
@@ -140,6 +149,16 @@ func rawBuildCommands(nonDeterministicValues *llm.NonDeterministicValues) []stri
 			)
 		}
 
+		// When the entrypoint reveals a canonical name different from the LLM binary name
+		// (e.g. the build should produce "dropgz" but the LLM recorded "azure-ipam"),
+		// rename the -o output path so it matches the declared artifacts.binaries entry.
+		if cmd != "" && epBase != "" && epBase != aux.Name {
+			cmd = strings.ReplaceAll(cmd,
+				"/go/bin/"+aux.Name+"${BIN_SUFFIX}",
+				"/go/bin/"+epBase+"${BIN_SUFFIX}",
+			)
+		}
+
 		if cmd != "" {
 			cmds = append(cmds, cmd)
 			fmt.Printf("Build step: %v\n", cmd)
@@ -149,14 +168,20 @@ func rawBuildCommands(nonDeterministicValues *llm.NonDeterministicValues) []stri
 }
 
 // injectBinSuffix rewrites `-o /go/bin/<name>` → `-o /go/bin/<name>${BIN_SUFFIX}`
-// and prepends a BIN_SUFFIX shell assignment so one step handles both platforms.
+// and prepends a preamble that sets BIN_SUFFIX and, when GOOS=windows, exports CC
+// pointing to the MinGW x86_64-w64-mingw32-clang wrapper (windows/amd64 only).
 func injectBinSuffix(cmd string, re *regexp.Regexp) string {
 	loc := re.FindStringSubmatchIndex(cmd)
 	if loc == nil {
 		return cmd
 	}
 	cmd = cmd[:loc[3]] + "${BIN_SUFFIX}" + cmd[loc[3]:]
-	return "BIN_SUFFIX=\"\"\nif [ \"${GOOS}\" = \"windows\" ]; then BIN_SUFFIX=\".exe\"; fi\n" + cmd
+	preamble := `BIN_SUFFIX=""
+if [ "${GOOS}" = "windows" ]; then
+  BIN_SUFFIX=".exe"
+  export CC=` + MingwBinDir + `/x86_64-w64-mingw32-clang
+fi`
+	return preamble + "\n" + cmd
 }
 
 // scanVarReferences finds all ${VAR}/(VAR) references in command text and env values.

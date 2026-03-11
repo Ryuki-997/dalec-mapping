@@ -230,20 +230,40 @@ func fetchSourceGenerator(info *repository.RepoInfo) error {
 	return fmt.Errorf("❌  No recognized source generator files found; Supported: Go (go.mod), Rust (Cargo.toml), Python (requirements.txt, setup.py, Pipfile)")
 }
 
-// fetchTagInfo fetches commit SHA for a specific tag
+// fetchTagInfo fetches the commit SHA for a tag and populates info.LatestCommit and info.Version.
+// tag is the stripped semver (e.g. "v0.4.0"). It first tries a direct git ref lookup;
+// if that 404s (e.g. the actual ref is "azure-ipam/v0.4.0"), it calls FetchAllTags once
+// to find the matching full ref and retries. Version is set to the plain semver (e.g. "0.4.0").
 func fetchTagInfo(info *repository.RepoInfo, tag string) error {
 	if tag == "" {
 		return fmt.Errorf("Tag must be specified")
 	}
 
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/ref/tags/%s", info.Owner, info.Repo, tag)
-
+	fullTag := tag
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/ref/tags/%s", info.Owner, info.Repo, fullTag)
 	data, err := MakeGitHubRequest[map[string]interface{}](repository.GithubRequest{URL: url})
 	if err != nil {
-		return err
+		// Direct lookup failed — search all git tags for one whose semver portion matches.
+		_, allGitTags, fetchErr := FetchAllTags(info.Owner, info.Repo)
+		if fetchErr != nil {
+			return fmt.Errorf("tag %q not found and could not fetch tag list: %w", tag, fetchErr)
+		}
+		for _, t := range allGitTags {
+			if semverInTag.FindString(t) == tag {
+				fullTag = t
+				break
+			}
+		}
+		if fullTag == tag {
+			return fmt.Errorf("tag %q not found in repository", tag)
+		}
+		url = fmt.Sprintf("https://api.github.com/repos/%s/%s/git/ref/tags/%s", info.Owner, info.Repo, fullTag)
+		data, err = MakeGitHubRequest[map[string]interface{}](repository.GithubRequest{URL: url})
+		if err != nil {
+			return err
+		}
 	}
 
-	// Extract SHA from object
 	if object, ok := data["object"].(map[string]interface{}); ok {
 		if sha, ok := object["sha"].(string); ok {
 			info.LatestCommit = sha

@@ -200,6 +200,53 @@ targets:
 7. **Always set `outputPath` to `/go/bin/<binary-name>` and use the same path in `buildCommand -o`.** This path always exists in every Go builder image (it is `$GOPATH/bin`), requires no `mkdir`, and works correctly regardless of which subdir the build `cd`s into. Never use a relative path like `output/cns/azure-cns` — the parent directory may not exist in the build sandbox.
 8. **Single `command:` block.** The entire build for a binary must be one string: `cd <subdir> && go build -o /go/bin/<name> <flags> <pkg>`. Do NOT split into multiple lines that become separate `command:` entries — each `command:` runs in its own shell.
 
+9. **Packaging wrapper binaries (e.g. `dropgz`): use the wrapper module's own `cd <subdir>`, not the primary binary's subdir.** When the Dockerfile has a multi-stage build where the final binary is a packaging wrapper living in a SEPARATE Go module (its own `go.mod`) under a different subdirectory in the same repo, emit the build command rooted at the wrapper module's subdirectory. Do NOT try to build the wrapper binary from the primary binary's subdir.
+
+   **How to identify this pattern:**
+   - The Dockerfile has a distinct stage that runs `go mod download <module>@<version>` or sets `WORKDIR` to a different module path before building the final binary.
+   - The final binary's ldflags reference a different module path than the primary binary (e.g. `dropgz/internal/buildinfo.Version` vs `azure-ipam/internal/buildinfo.Version`).
+   - The final image `ENTRYPOINT` name (e.g. `dropgz`) does NOT match the binary name built in the primary build stage (e.g. `azure-ipam`).
+
+   **What to emit:**
+   - Look up the wrapper module's directory in the source repo (e.g. if the module is `github.com/Azure/azure-container-networking/dropgz`, the subdir is `dropgz`).
+   - Use that subdir literally in the `buildCommand`: `cd dropgz && go build -a -o /go/bin/dropgz ... main.go`.
+   - The literal `cd dropgz` (no `${}` variable) tells the transformer to add a second `gomod generate { subpath: dropgz }` entry automatically — no extra action needed.
+   - Set `name` and `outputPath` to the wrapper binary name, not the primary binary name.
+
+   **Example: azure-ipam image using dropgz wrapper**
+
+   The Dockerfile has three stages:
+   - `azure-ipam`: builds `azure-ipam` binary from `./azure-ipam/` with `go build ... .`
+   - `compressor`: compresses the artifact  
+   - `dropgz`: downloads `dropgz` module, builds `dropgz` wrapper with `go build ... main.go`
+
+   The `dropgz` module lives at `azure-container-networking/dropgz/` (its own `go.mod`, separate from `azure-ipam/go.mod`).
+
+   ```yaml
+   # ✅ CORRECT: binary is the dropgz wrapper; buildCommand rooted at dropgz/ subdir
+   binaries:
+     - name: "dropgz"
+       outputPath: "/go/bin/dropgz"
+       buildCommand: "cd dropgz && go build -a -o /go/bin/dropgz -trimpath -ldflags \"-s -w -X github.com/Azure/azure-container-networking/dropgz/internal/buildinfo.Version=${VERSION}\" -gcflags=\"-dwarflocationlists=true\" main.go"
+       ldFlags: "-s -w -X github.com/Azure/azure-container-networking/dropgz/internal/buildinfo.Version=${VERSION}"
+   ```
+
+   Note: `cd dropgz` is a **literal** path (no `${}` variable) — the transformer auto-adds `gomod { subpath: dropgz }` to the spec's sources when it detects this.
+
+   ```yaml
+   # ❌ WRONG: using the primary binary's variable-based subdir for the wrapper build
+   buildCommand: "cd ${AZURE_IPAM_DIR} && go build ... ./cmd/dropgz"
+   # ./cmd/dropgz doesn't exist in azure-ipam/; dropgz lives in its own module at dropgz/
+
+   # ❌ WRONG: package path that doesn't exist in the module
+   buildCommand: "cd dropgz && go build ... ./cmd/dropgz"
+   # dropgz/main.go is at the module root; correct package is main.go or .
+
+   # ❌ WRONG: mixing ldflags from wrapper module with the primary binary's build path
+   buildCommand: "cd ${AZURE_IPAM_DIR} && go build -o /go/bin/dropgz -ldflags \"-X .../dropgz/internal/buildinfo...\" ..."
+   # dropgz ldflags only make sense when building the dropgz module, not azure-ipam
+   ```
+
 #### 1.2 Multi-Binary Makefile: Selecting the Correct Target
 
 **Scenario:** A single Makefile defines many build targets, each producing a different binary (e.g. `azure-cns`, `azure-npm`, `azure-vnet`, `acncli`). The pipeline generates **one spec per image**, so only the target matching the requested image name is relevant.
@@ -215,58 +262,94 @@ targets:
 - If the matching target has prerequisites (e.g. `bpf-lib`), note them but do not extract their build commands as separate binaries.
 - The `ldflags`, `outputPath`, and `buildCommand` must come from the matched target only — not from a different target in the same Makefile.
 
-**Example: azure-container-networking Makefile (building `azure-cns` image)**
+#### 1.2.1 Multi-Subdir Repos: Finding the Most Specific Target
+
+Many repos (not just azure-container-networking) use a root Makefile that defines many `*-binary` targets and many `*_DIR` variables, each pointing to a different source subdirectory. Every image has exactly **one** most-relevant target, and therefore exactly **one** `cd <dir>` in its build command.
+
+**How to identify the most specific target — ranked by signal strength:**
+
+1. **Dockerfile ENTRYPOINT/COPY** *(strongest).* The binary name in the final stage `COPY` or `ENTRYPOINT` directly identifies the correct target. Find the `*-binary` Makefile target whose `-o` output matches that name.
+
+2. **Target name similarity.** Find the `*-binary` target whose name most closely matches the `SpecImageName`. Prefer exact matches over partial ones.
+   - Image `azure-ipam` → target `azure-ipam-binary` ✅ (exact match)
+   - Image `azure-cns` → target `azure-cns-binary` ✅ (exact match)
+
+3. **Comments above the target.** When multiple targets share similar names, read the comment on the line immediately above each target. Pick the one described as the "primary" or "main" binary for the image profile.
+   - `# Build the Azure CNI network binary.\nazure-vnet-binary:` wins over `azure-vnet-ipam-binary`, `azure-vnet-telemetry-binary`, etc. for an image described as the "container networking" plugin — even though several targets have `azure-vnet` in their name.
+
+4. **`-o` output path.** The target whose `-o` flag produces a filename matching the image name or Dockerfile COPY destination is the right one.
+
+**Resolution steps:**
+
+1. Read `SpecImageName` and the Dockerfile's final stage `ENTRYPOINT`/`COPY`.
+2. List all `*-binary` targets in the Makefile.
+3. Apply the signals above (ENTRYPOINT match → name match → comment → `-o` path) to identify the single best target.
+4. That target contains exactly one `cd $(X_DIR)` — identify which `*_DIR` variable it uses.
+5. Keep the **variable name** (not the resolved path) in the buildCommand: `cd ${X_DIR}`.
+   The transformer promotes it to a Dalec top-level arg automatically.
+6. **Never use more than one `cd` per buildCommand.** One `cd` before `go build` is the entire subdir navigation.
+
+**Example A: exact name match (azure-ipam)**
 
 ```makefile
-# The Makefile has 12+ binary targets:
-azure-block-iptables-binary:
-	cd $(AZURE_BLOCK_IPTABLES_DIR) && CGO_ENABLED=0 go build -v -o $(AZURE_BLOCK_IPTABLES_BUILD_DIR)/azure-block-iptables$(EXE_EXT) -ldflags "-X main.version=$(AZURE_BLOCK_IPTABLES_VERSION)"
+# Variables:
+AZURE_IPAM_DIR     = $(REPO_ROOT)/azure-ipam
+AZURE_IPAM_BUILD_DIR = $(BUILD_DIR)/azure-ipam   # BUILD_DIR contains platform vars — strip
 
-azure-vnet-binary:
-	cd $(CNI_NET_DIR) && CGO_ENABLED=0 go build -v -o $(CNI_BUILD_DIR)/azure-vnet$(EXE_EXT) -ldflags "-X main.version=$(CNI_VERSION) $(LD_BUILD_FLAGS)"
-
-azure-cns-binary:                                           # ← This is the correct target for image "azure-cns"
-	cd $(CNS_DIR) && CGO_ENABLED=0 go build -v -o $(CNS_BUILD_DIR)/azure-cns$(EXE_EXT) -ldflags "-X main.version=$(CNS_VERSION) -X $(CNS_AI_PATH)=$(CNS_AI_ID) -X $(CNI_AI_PATH)=$(CNI_AI_ID) $(LD_BUILD_FLAGS)"
-
-azure-npm-binary:
-	cd $(CNI_TELEMETRY_DIR) && CGO_ENABLED=0 go build -v -o $(NPM_BUILD_DIR)/azure-npm$(EXE_EXT) -ldflags "-X main.version=$(NPM_VERSION) $(LD_BUILD_FLAGS)"
-
-# ... 8+ more targets
+azure-ipam-binary:
+    cd $(AZURE_IPAM_DIR) && CGO_ENABLED=0 go build -v \
+        -o $(AZURE_IPAM_BUILD_DIR)/azure-ipam$(EXE_EXT) \
+        -ldflags "-X .../buildinfo.Version=$(AZURE_IPAM_VERSION) $(LD_BUILD_FLAGS)" \
+        -gcflags="-dwarflocationlists=true"
 ```
 
-The image being built is `azure-cns`. The correct extraction:
+The Dockerfile's production stage uses `dropgz` as the entrypoint (a packaging wrapper built from the same subdir). Take the binary name from the Dockerfile's `go build -o /go/bin/dropgz`; take the subdir from the Makefile's `cd $(AZURE_IPAM_DIR)`.
 
 ```yaml
-# ✅ CORRECT: Only the azure-cns target is extracted, *_VERSION normalized to ${VERSION}
+# ✅ CORRECT
 binaries:
-  - name: "azure-cns"
-    outputPath: "/go/bin/azure-cns"
-    buildCommand: "cd ${CNS_DIR} && go build -v -o /go/bin/azure-cns -ldflags \"-X main.version=${VERSION} -X ${CNS_AI_PATH}=${CNS_AI_ID} -X ${CNI_AI_PATH}=${CNI_AI_ID} ${LD_BUILD_FLAGS}\" -gcflags=\"-dwarflocationlists=true\""
-    ldFlags: "-X main.version=${VERSION} -X ${CNS_AI_PATH}=${CNS_AI_ID} -X ${CNI_AI_PATH}=${CNI_AI_ID} ${LD_BUILD_FLAGS}"
+  - name: "dropgz"
+    outputPath: "/go/bin/dropgz"
+    buildCommand: "cd ${AZURE_IPAM_DIR} && go build -v -o /go/bin/dropgz -ldflags \"-X .../buildinfo.Version=${VERSION} ${LD_BUILD_FLAGS}\" -gcflags=\"-dwarflocationlists=true\""
+    ldFlags: "-X .../buildinfo.Version=${VERSION} ${LD_BUILD_FLAGS}"
 ```
 
-```yaml
-# ❌ WRONG: Extracting all 12 binaries from the Makefile
-binaries:
-  - name: "azure-block-iptables"
-    ...
-  - name: "azure-vnet"
-    ...
-  - name: "azure-cns"
-    ...
-  - name: "azure-npm"
-    ...
-  # ... 8 more unrelated binaries
+**Example B: comment-guided selection among similar targets (azure-cni-plugin)**
+
+```makefile
+# Multiple targets share the "azure-vnet" prefix:
+azure-vnet-binary:           # ← "# Build the Azure CNI network binary." comment above this
+    cd $(CNI_NET_DIR) && go build -v -o $(CNI_BUILD_DIR)/azure-vnet$(EXE_EXT) ...
+
+azure-vnet-ipam-binary:      # IPAM plugin only
+    cd $(CNI_IPAM_DIR) && go build ...
+
+azure-vnet-telemetry-binary: # Telemetry sidecar only
+    cd $(CNI_TELEMETRY_DIR) && go build ...
 ```
 
+For an image described as the main "container networking" plugin, `azure-vnet-binary` is the most specific match — its comment says it IS the CNI network binary. The others are support binaries.
+
 ```yaml
-# ❌ WRONG: Picking the wrong target (azure-vnet instead of azure-cni)
+# ✅ CORRECT: primary CNI network binary selected by comment signal
 binaries:
   - name: "azure-vnet"
-    outputPath: "output/cni/azure-vnet"
-    buildCommand: "cd ${CNI_NET_DIR} && go build ..."
-    ldFlags: "-X main.version=${VERSION} ${LD_BUILD_FLAGS}"
+    outputPath: "/go/bin/azure-vnet"
+    buildCommand: "cd ${CNI_NET_DIR} && go build -v -o /go/bin/azure-vnet -ldflags \"...\" ..."
 ```
+
+```yaml
+# ❌ WRONG: picking a support binary (telemetry, ipam plugin) instead of the primary one
+binaries:
+  - name: "azure-vnet-telemetry"
+    buildCommand: "cd ${CNI_TELEMETRY_DIR} && go build ..."
+```
+
+**Rules:**
+- **Always one `cd <dir>` per buildCommand.** Never chain two `cd` calls.
+- Keep the `*_DIR` variable name in the command — do not resolve it to a literal path.
+- If target names are ambiguous, comments and Dockerfile ENTRYPOINT are the deciding signals.
+- Extract the single most specific/relatable target — do not extract prerequisites or sibling targets.
 
 #### 1.3 Extraction Checklist
 

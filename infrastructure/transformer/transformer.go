@@ -57,7 +57,7 @@ func TransformToDalec(defaultSpec *contents.DefaultSpec, makefileInfo *contents.
 	spec["x-build-extensions"] = extractBuildExtensions(defaultSpec)
 
 	// Transform Dockerfile content to Dalec sections
-	spec["sources"] = extractSources(defaultSpec)
+	spec["sources"] = extractSources(defaultSpec, nonDeterministicValues)
 	spec["dependencies"] = extractDependencies()
 	spec["artifacts"] = extractArtifacts(defaultSpec, nonDeterministicValues)
 	spec["targets"] = extractTargets(defaultSpec, makefileInfo, nonDeterministicValues)

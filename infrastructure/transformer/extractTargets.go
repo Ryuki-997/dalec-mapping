@@ -61,8 +61,12 @@ func buildTargetEntry(osName string, tp testPaths, defaultSpec *contents.Default
 }
 
 // resolveTestPaths determines the binary name and install paths used in file tests.
-// Dalec installs artifacts.binaries to /usr/bin/ (the real file, tested with permissions).
-// image.post.symlinks creates /usr/local/bin/ as a symlink (tested for existence only).
+// Dalec's image.post.symlinks format: key = real installed binary path (e.g. /usr/bin/dropgz),
+// path value = where the symlink is created (e.g. /dropgz). This means:
+//   - lt.Symlink (map key) = real binary → tested with permissions 0755
+//   - lt.Entrypoint (map path value) = the symlink location → tested for existence only
+//
+// The canonical binary name is derived from lt.Symlink's base (e.g. "dropgz" from "/usr/bin/dropgz").
 func resolveTestPaths(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) testPaths {
 	tp := testPaths{
 		binaryName:  defaultSpec.SpecImageName,
@@ -77,16 +81,36 @@ func resolveTestPaths(defaultSpec *contents.DefaultSpec, nonDeterministicValues 
 		tp.binaryPath = "/usr/bin/" + tp.binaryName
 		tp.symlinkPath = "/usr/local/bin/" + tp.binaryName
 	}
-	if lt := findPrimaryLinuxTarget(nonDeterministicValues.Targets); lt != nil {
-		if lt.Symlink != "" {
-			tp.binaryPath = lt.Symlink
-			tp.symlinkPath = lt.Entrypoint
-		} else if lt.Entrypoint != "" {
-			tp.binaryPath = lt.Entrypoint
-			tp.symlinkPath = ""
+	if lt := findPrimaryLinuxTarget(nonDeterministicValues.Targets); lt != nil && lt.Symlink != "" {
+		// Dalec symlinks format: key = target (real binary), path = symlink location.
+		// lt.Symlink = map key = real installed binary path (permissions test).
+		// lt.Entrypoint = map path value = the symlink created in the image (existence test).
+		tp.binaryPath = lt.Symlink
+		tp.symlinkPath = lt.Entrypoint
+		if base := canonicalBase(lt.Symlink); base != "" {
+			tp.binaryName = base
+		}
+	} else if lt := findPrimaryLinuxTarget(nonDeterministicValues.Targets); lt != nil && lt.Entrypoint != "" {
+		// No symlink — entrypoint is the only path, test it with permissions.
+		tp.binaryPath = lt.Entrypoint
+		tp.symlinkPath = ""
+		if base := canonicalBase(lt.Entrypoint); base != "" {
+			tp.binaryName = base
 		}
 	}
 	return tp
+}
+
+// canonicalBase extracts the file name component from a container path.
+// e.g. "/dropgz" → "dropgz", "/usr/local/bin/azure-ipam" → "azure-ipam".
+func canonicalBase(entrypoint string) string {
+	if entrypoint == "" {
+		return ""
+	}
+	if i := strings.LastIndex(entrypoint, "/"); i >= 0 {
+		return entrypoint[i+1:]
+	}
+	return entrypoint
 }
 
 // parseTargetOS splits "os/platform" and returns the OS portion.
@@ -176,6 +200,9 @@ func mergeTargetDeps(buildDeps, runtimeDeps map[string]interface{}, osName strin
 }
 
 // linuxImageConfig builds the image map (entrypoint + symlinks) for a Linux target.
+// Entrypoint and symlink values from the LLM are only used when they reference the
+// actual binary name being built. Paths to unrelated packaging wrappers (e.g. a
+// Dockerfile-level bundler binary) are ignored in favour of the binaryName defaults.
 func linuxImageConfig(osName, binaryName string, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
 	entrypoint := "/usr/local/bin/" + binaryName
 	symlink := "/usr/bin/" + binaryName

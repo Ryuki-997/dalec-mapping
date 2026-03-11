@@ -157,12 +157,14 @@ func getOnboardFileContent(path string) ([]byte, error) {
 func getFilteredTags(resolvedTags []string, specRepo, specImage string, existingPaths map[string]bool) []string {
 	var filteredTags []string
 	for _, tag := range resolvedTags {
+		// Strip to plain semver for the spec file path check (e.g. "azure-ipam/v0.4.0" → "v0.4.0").
+		// The full tag is preserved in filteredTags for downstream git operations.
+		shortTag := semver.StripToSemver(tag)
 		var specPath string
 		if specRepo != "" {
-			specPath = fmt.Sprintf("specs/%s/%s/%s-%s-specfile.yml", specRepo, specImage, specImage, tag)
+			specPath = fmt.Sprintf("specs/%s/%s/%s-%s-specfile.yml", specRepo, specImage, specImage, shortTag)
 		} else {
-			specPath = fmt.Sprintf("specs/%s/%s-%s-specfile.yml", specImage, specImage, tag)
-
+			specPath = fmt.Sprintf("specs/%s/%s-%s-specfile.yml", specImage, specImage, shortTag)
 		}
 		if existingPaths[specPath] {
 			fmt.Printf("⏭  Skipping %s @ %s: spec file already exists at %s\n", specImage, tag, specPath)

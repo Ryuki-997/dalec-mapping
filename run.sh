@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
+
+overall_exit=0
 
 run_and_stream() {
   local label="$1"; shift
@@ -19,19 +21,18 @@ run_and_stream() {
 
   echo "specPaths=${specPaths}"
 
-  return $pipe_exit
+  if [ $pipe_exit -ne 0 ]; then
+    echo "❌ $label failed with exit code $pipe_exit"
+    overall_exit=1
+  fi
+
+  return 0
 }
 
+run_and_stream "Run All Container-Networking Specs" -path=containernetworkingauto
 # run_and_stream "Run 1: default (all onboard files)"
-
-echo ""
-
-run_and_stream "Run 2: -path=containernetworkingauto/azure-cns" -path=containernetworkingauto/azure-cns
-
-echo ""
-
+# run_and_stream "Run 2: -path=containernetworkingauto/azure-cns" -path=containernetworkingauto/azure-cns
 # run_and_stream "Run 3: -path=prometheus-collector" -path=prometheus-collector
-
-echo ""
-
-run_and_stream "Run 4: -path=containernetworkingauto/azure-cni" -path=containernetworkingauto/azure-cni
+# run_and_stream "Run 4: -path=containernetworkingauto/azure-cni" -path=containernetworkingauto/azure-cni
+# run_and_stream "Run 5: -path=containernetworkingauto/azure-ipam" -path=containernetworkingauto/azure-ipam
+exit $overall_exit

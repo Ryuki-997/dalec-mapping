@@ -10,9 +10,22 @@ import (
 )
 
 // computeArtifactPaths returns the Linux binary artifact paths (no .exe).
-// cleanOutputPath always produces /go/bin/<name>, so paths are always absolute.
+// When the primary linux entrypoint names a different binary than binaries[0]
+// (e.g. the build wraps "azure-ipam" into a "dropgz" container binary), the
+// artifact path is rewritten to /go/bin/<entrypointBase> so it matches the
+// file actually produced by the build step.
 func computeArtifactPaths(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
 	paths := make(map[string]interface{})
+
+	// Canonical binary name derived from the symlinks key (the real installed binary path).
+	// This is the map KEY in image.post.symlinks, which is the target path that artifacts
+	// get installed to (e.g. "/usr/bin/dropgz"). The entrypoint is where the symlink lives.
+	epBase := ""
+	if nonDeterministicValues != nil {
+		if lt := findPrimaryLinuxTarget(nonDeterministicValues.Targets); lt != nil {
+			epBase = canonicalBase(lt.Symlink)
+		}
+	}
 
 	addPath := func(outputPath string) {
 		if outputPath == "" {
@@ -35,6 +48,12 @@ func computeArtifactPaths(defaultSpec *contents.DefaultSpec, nonDeterministicVal
 				} else {
 					outputPath = "/go/bin/" + aux.Name
 				}
+			}
+
+			// Override when the entrypoint reveals a different canonical name
+			// (e.g. "dropgz" when outputPath ends in "azure-ipam").
+			if epBase != "" && canonicalBase(outputPath) != epBase {
+				outputPath = "/go/bin/" + epBase
 			}
 
 			addPath(outputPath)

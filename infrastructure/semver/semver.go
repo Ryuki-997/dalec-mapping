@@ -23,11 +23,13 @@ func ResolveOnboardTags(repoPath string, patterns []string) ([]string, error) {
 			// Check if the pattern matches git tags that have no release
 			gitOnly := resolvePattern(pattern, allGitTags)
 			for _, tag := range gitOnly {
-				fmt.Printf("⏭  Skipping %s @ %s (stripped: %s): tag exists but has no associated GitHub release\n", repoPath, tag, stripToSemver(tag))
+				fmt.Printf("⏭  Skipping %s @ %s (stripped: %s): tag exists but has no associated GitHub release\n", repoPath, tag, StripToSemver(tag))
 			}
 		}
 		for _, resolved := range matched {
-			resolvedTags[resolved] = true
+			// Strip prefix (e.g. "azure-ipam/v0.4.0" → "v0.4.0") so all downstream
+			// naming (image tags, spec paths, git commits) uses a plain semver.
+			resolvedTags[StripToSemver(resolved)] = true
 		}
 	}
 
@@ -62,26 +64,28 @@ func resolvePattern(pattern string, existingTags []string) []string {
 	return findAllMatches(existingTags, re)
 }
 
-// findAllMatches returns all tags whose stripped semver (vX.Y.Z) matches the regex.
+// findAllMatches returns all tags that match the regex.
+// It checks the original tag first (to support prefixed patterns like "azure-ipam/v0.4.0"),
+// then falls back to the stripped semver (to support plain "v0\.4\.\d+" patterns against
+// prefixed tags like "azure-ipam/v0.4.0").
 func findAllMatches(existingTags []string, re *regexp.Regexp) []string {
 	var matches []string
 	for _, tag := range existingTags {
-		stripped := stripToSemver(tag)
-		if re.MatchString(stripped) {
+		if re.MatchString(tag) || re.MatchString(StripToSemver(tag)) {
 			matches = append(matches, tag)
 		}
 	}
 	return matches
 }
 
-// findLargestMatch returns the largest tag whose stripped semver (vX.Y.Z) matches the regex.
+// findLargestMatch returns the largest tag that matches the regex.
+// It checks the original tag first, then falls back to the stripped semver.
 func findLargestMatch(existingTags []string, re *regexp.Regexp) string {
 	var largest string
 	var largestNums []int
 
 	for _, tag := range existingTags {
-		stripped := stripToSemver(tag)
-		if !re.MatchString(stripped) {
+		if !re.MatchString(tag) && !re.MatchString(StripToSemver(tag)) {
 			continue
 		}
 
@@ -119,10 +123,10 @@ func parseSemver(tag string) []int {
 	return nums
 }
 
-// stripToSemver extracts just the "v{major}.{minor}.{patch}" portion from anywhere
-// in a tag, discarding any surrounding text or suffix.
+// StripToSemver extracts just the "v{major}.{minor}.{patch}" portion from anywhere
+// in a tag, discarding any surrounding prefix or suffix (e.g. "azure-ipam/v0.4.0" → "v0.4.0").
 // Returns the original tag unchanged if no semver is found.
-func stripToSemver(tag string) string {
+func StripToSemver(tag string) string {
 	nums := parseSemver(tag)
 	if nums == nil {
 		return tag
