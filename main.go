@@ -22,6 +22,8 @@ func main() {
 	inputPath := flag.String("path", "", "Input path to search for onboarding files (e.g. specs/containernetworking and specs/containernetworking/azure-cns both work. It is the difference between building all components vs one). Omit to fetch all under specs/")
 	flag.Parse()
 
+	log.Println("Input path for onboarding files:", *inputPath)
+	
 	wd, _ := os.Getwd()
 	log.Printf("Working directory: %s", wd)
 
@@ -29,7 +31,7 @@ func main() {
 	if err != nil {
 		log.Printf("⚠️  .env file not found at %s/.env: %v", wd, err)
 	}
-
+	
 	onboardFiles := []onboarding.OnboardingInfo{}
 
 	err = workflow.FetchOnboardFiles(&onboardFiles, *inputPath)
@@ -43,13 +45,13 @@ func main() {
 
 	shellVar := []string{}
 	for _, onboard := range onboardFiles {
-		fmt.Printf("Onboard Documents: %v\n", onboard)
+		log.Printf("Onboard Documents: %v\n", onboard)
 		for _, tag := range onboard.Tag {
 			// shortTag is the plain "vX.Y.Z" used for image naming and spec paths;
 			// the full tag (e.g. "azure-ipam/v0.4.0") is passed into the pipeline
 			// so git ref lookups work without a second API call.
 			shortTag := semver.StripToSemver(tag)
-			fmt.Printf("▶ Running pipeline for %s @ %s\n", onboard.Repository, tag)
+			log.Printf("▶ Running pipeline for %s @ %s\n", onboard.Repository, tag)
 			remotePath, resolvedTargets := generateSpec(&onboard, tag)
 			shellVar = append(shellVar, remotePath)
 
@@ -57,7 +59,9 @@ func main() {
 		}
 	}
 
-	fmt.Printf("specPaths=%s\n", strings.Join(shellVar, ","))
+	log.Printf("specPaths=%s\n", strings.Join(shellVar, ","))
+
+	// test()
 }
 
 func generateSpec(onboard *onboarding.OnboardingInfo, tag string) (string, []string) {

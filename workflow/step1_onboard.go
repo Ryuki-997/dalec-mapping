@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"log"
 
 	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/domain/repository"
@@ -15,9 +16,9 @@ import (
 )
 
 func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, inputPath string) error {
-	// Build path prefix for filtering: always rooted under "specs/"
-	if inputPath != "" {
-		inputPath = "specs/" + inputPath
+	// If no input path is provided, search the entire repository
+	if inputPath == "" {
+		inputPath = "specs" // default to specs directory
 	}
 
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/%s?recursive=1", utils.OnboardOwner, utils.OnboardRepo, utils.OnboardBranch)
@@ -45,11 +46,13 @@ func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, inputPath str
 		if !ok {
 			return fmt.Errorf("unexpected item format: 'path' field is missing or not a string")
 		}
-
+		
+		log.Printf("Found file in repo: %s\n", path)
 		// Filter paths to only include those within the specified input path
 		if !strings.HasPrefix(path, inputPath) {
 			continue
 		}
+		log.Printf("Processing onboard file: %s\n", path)
 
 		specRepository, specImageName, err := getOnboardFilepath(path)
 		if err != nil {
@@ -62,7 +65,7 @@ func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, inputPath str
 		}
 
 		if len(content) == 0 {
-			fmt.Printf("⚠️  Skipping empty onboard file: %s\n", path)
+			log.Printf("⚠️  Skipping empty onboard file: %s\n", path)
 			continue
 		}
 
@@ -85,10 +88,10 @@ func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, inputPath str
 
 		resolvedTags, err := semver.ResolveOnboardTags(onboard.Repository, onboard.Tag)
 		if err != nil {
-			fmt.Printf("⚠️  Failed to resolve tags for %s: %v\n", onboard.Repository, err)
+			log.Printf("⚠️  Failed to resolve tags for %s: %v\n", onboard.Repository, err)
 			continue
 		}
-		fmt.Printf("✅ Resolved tags for %s: %v (from patterns: %v)\n", onboard.Repository, resolvedTags, onboard.Tag)
+		log.Printf("✅ Resolved tags for %s: %v (from patterns: %v)\n", onboard.Repository, resolvedTags, onboard.Tag)
 
 		// Filter out resolved tags whose spec files already exist in the remote repo
 		filteredTags := getFilteredTags(resolvedTags, onboard.SpecRepository, onboard.SpecImageName, treePaths)
@@ -98,7 +101,7 @@ func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, inputPath str
 			*onboardImages = append(*onboardImages, onboard)
 		}
 
-		fmt.Printf("Onboard Data: %v\n", onboard)
+		log.Printf("Onboard Data: %v\n", onboard)
 	}
 	return nil
 }
@@ -167,7 +170,7 @@ func getFilteredTags(resolvedTags []string, specRepo, specImage string, existing
 			specPath = fmt.Sprintf("specs/%s/%s-%s-specfile.yml", specImage, specImage, shortTag)
 		}
 		if existingPaths[specPath] {
-			fmt.Printf("⏭  Skipping %s @ %s: spec file already exists at %s\n", specImage, tag, specPath)
+			log.Printf("⏭  Skipping %s @ %s: spec file already exists at %s\n", specImage, tag, specPath)
 			continue
 		}
 		filteredTags = append(filteredTags, tag)
