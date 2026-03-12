@@ -13,40 +13,39 @@ This guide explains how partner teams can onboard their repositories to the DALE
 
 ### Step 1: Create Your Configuration File
 
-Create a file named `default.yml` in your team's directory with the following structure:
+Create a file named `onboard.yml` under `specs/<team>/<project>/` with the following structure:
 
 ```yaml
-# Required: Repository reference
-repository: owner/repo                # Basic format (preferred)
-# OR
-repository: owner/repo/branch         # With specific branch
-# OR 
-repository: owner/repo/branch/subdir  # Wtih Sub-directory
+# specs/<your-team>/<your-project>/onboard.yml
 
-# Optional: Dockerfile paths (list)
-dockerfiles:
-  - path/to/Dockerfile
-  - another/path/to/Dockerfile
+# Required: GitHub repository (owner/repo)
+repository: owner/repo
 
-# Optional: Makefile paths (list)
-makefiles:
-  - Makefile
-  - build/Makefile
+# Required: One or more release tags to generate specs for
+tags:
+  - v1.2.3
+  - v1.3.0
+
+# Optional: Path to the Dockerfile (single)
+dockerfile: Dockerfile
+
+# Optional: Path to the Makefile (single)
+makefile: Makefile
 ```
 
 ### Step 2: Submit Pull Request
 
 1. Fork or clone [azure-management-and-platforms/aks-dalec-build-defs](https://github.com/azure-management-and-platforms/aks-dalec-build-defs)
 
-2. Add your `default.yml` file:
+2. Add your `onboard.yml` file:
 
    ```bash
-   definitions/
+   specs/
    └── your-team-name/
        └── project1/
-           └── default.yml
+           └── onboard.yml
        └── project2/
-           └── default.yml
+           └── onboard.yml
    ```
 
 3. Create a pull request targeting the repository
@@ -62,22 +61,20 @@ Once your PR is merged, your repository is onboarded and ready for DALEC spec ge
 ### Minimal Configuration
 
 ```yaml
-# definitions/my-team/default.yml
+# specs/my-team/my-project/onboard.yml
 repository: myorg/myrepo
+tags:
+  - v1.0.0
 ```
 
 ### Full Configuration
 
 ```yaml
-# definitions/my-team/default.yml
-repository: myorg/myrepo/main
-
-dockerfiles:
-  - Dockerfile
-  - docker/Dockerfile.alpine
-  - docker/Dockerfile.ubuntu
-
-makefiles:
-  - Makefile
-  - src/Makefile
+# specs/my-team/my-project/onboard.yml
+repository: myorg/myrepo
+tags:
+  - v1.2.3
+  - v1.3.0
+dockerfile: Dockerfile
+makefile: Makefile
 ```
