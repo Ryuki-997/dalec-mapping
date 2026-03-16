@@ -6,7 +6,6 @@ result/
 correct/
 fips-check/
 onboard.yml
-tmp.go
 
 TODO
 ISSUES.md

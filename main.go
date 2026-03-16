@@ -43,6 +43,9 @@ func main() {
 		log.Fatalf("No onboarding files found at path: %s", *inputPath)
 	}
 
+	// tmp return 
+	return;
+
 	shellVar := []string{}
 	for _, onboard := range onboardFiles {
 		log.Printf("Onboard Documents: %v\n", onboard)

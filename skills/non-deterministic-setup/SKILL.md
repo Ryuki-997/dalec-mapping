@@ -170,10 +170,18 @@ targets:
 
 ### Task 1: Binary Output Extraction
 
-**Input:** Makefile and Dockerfile content provided in prompt
+**Input:** Dockerfile and Makefile content provided in prompt
 
-- Makefile content - Search for build commands  
-- Dockerfile content - Search for COPY and ENTRYPOINT instructions
+> **CRITICAL — Dockerfile-first rule:** Always check the Dockerfile **before** the Makefile for the actual `go build` command. The Dockerfile contains the canonical, unambiguous build command exactly as executed. The Makefile is primarily used for variable definitions (e.g. `VERSION`, `LDFLAGS`, directory variables) — its build targets often substitute variables, omit package paths, or use patterns that differ from what is actually run inside Docker. If a `RUN go build` or `RUN GOOS=... go build` statement appears in the Dockerfile, that command is authoritative. Use the Makefile only to resolve variable values referenced in that command.
+>
+> **Example:** The Dockerfile contains:
+> ```dockerfile
+> RUN GOOS=$OS CGO_ENABLED=0 go build -a -o /go/bin/azure-cns -ldflags "-s -w -X main.version=\"$VERSION\" -X \"$CNS_AI_PATH\"=\"$CNS_AI_ID\"" -gcflags="-dwarflocationlists=true" cns/service/*.go
+> ```
+> The package path is `cns/service/*.go`. This must be taken verbatim from the Dockerfile. The Makefile may reference `$(CNS_DIR)` or use a different invocation that omits this path — do not use the Makefile's version.
+
+- Makefile content - Used to resolve variable values (e.g. `CNS_AI_PATH`, `CNS_AI_ID`, version vars)
+- Dockerfile content - **Primary source for the actual `go build` command and package path**
 
 **Output:** `Binaries` (YAML fields in output)
 
@@ -297,7 +305,7 @@ AZURE_IPAM_DIR     = $(REPO_ROOT)/azure-ipam
 AZURE_IPAM_BUILD_DIR = $(BUILD_DIR)/azure-ipam   # BUILD_DIR contains platform vars — strip
 
 azure-ipam-binary:
-    cd $(AZURE_IPAM_DIR) && CGO_ENABLED=0 go build -v \
+    cd $(AZURE_IPAM_DIR) && CGO_ENABLED=0 go build -a \
         -o $(AZURE_IPAM_BUILD_DIR)/azure-ipam$(EXE_EXT) \
         -ldflags "-X .../buildinfo.Version=$(AZURE_IPAM_VERSION) $(LD_BUILD_FLAGS)" \
         -gcflags="-dwarflocationlists=true"
@@ -310,7 +318,7 @@ The Dockerfile's production stage uses `dropgz` as the entrypoint (a packaging w
 binaries:
   - name: "dropgz"
     outputPath: "/go/bin/dropgz"
-    buildCommand: "cd ${AZURE_IPAM_DIR} && go build -v -o /go/bin/dropgz -ldflags \"-X .../buildinfo.Version=${VERSION} ${LD_BUILD_FLAGS}\" -gcflags=\"-dwarflocationlists=true\""
+    buildCommand: "cd ${AZURE_IPAM_DIR} && go build -a -o /go/bin/dropgz -ldflags \"-X .../buildinfo.Version=${VERSION} ${LD_BUILD_FLAGS}\" -gcflags=\"-dwarflocationlists=true\""
     ldFlags: "-X .../buildinfo.Version=${VERSION} ${LD_BUILD_FLAGS}"
 ```
 
@@ -319,7 +327,7 @@ binaries:
 ```makefile
 # Multiple targets share the "azure-vnet" prefix:
 azure-vnet-binary:           # ← "# Build the Azure CNI network binary." comment above this
-    cd $(CNI_NET_DIR) && go build -v -o $(CNI_BUILD_DIR)/azure-vnet$(EXE_EXT) ...
+    cd $(CNI_NET_DIR) && go build -a -o $(CNI_BUILD_DIR)/azure-vnet$(EXE_EXT) ...
 
 azure-vnet-ipam-binary:      # IPAM plugin only
     cd $(CNI_IPAM_DIR) && go build ...
@@ -335,7 +343,7 @@ For an image described as the main "container networking" plugin, `azure-vnet-bi
 binaries:
   - name: "azure-vnet"
     outputPath: "/go/bin/azure-vnet"
-    buildCommand: "cd ${CNI_NET_DIR} && go build -v -o /go/bin/azure-vnet -ldflags \"...\" ..."
+    buildCommand: "cd ${CNI_NET_DIR} && go build -a -o /go/bin/azure-vnet -ldflags \"...\" ..."
 ```
 
 ```yaml
@@ -353,9 +361,12 @@ binaries:
 
 #### 1.3 Extraction Checklist
 
+- [ ] **Check Dockerfile first** for a `RUN go build` command — this is the canonical build command
+- [ ] Extract the package path (e.g. `cns/service/*.go`, `./cmd/main`, `.`) directly from the Dockerfile `RUN` instruction — do NOT infer it from the Makefile
+- [ ] Use the Makefile only to resolve variable values referenced in the Dockerfile command (e.g. `$CNS_AI_PATH`, `$(VERSION)`)
 - [ ] Identify which image/binary is being built (from image name or Dockerfile ENTRYPOINT)
 - [ ] If the Makefile has multiple binary targets, select **only** the one matching the image name
-- [ ] Find the `go build -o <path>` command in the matched target
+- [ ] Find the `go build -o <path>` command in the matched Dockerfile `RUN` or Makefile target
 - [ ] Extract binary name from `-o` flag path (last path segment)
 - [ ] If no `-o` flag, infer from `./cmd/<name>` package path
 - [ ] **Collapse conditional branches** — pick the single production build path
@@ -403,7 +414,7 @@ go build -o bin/${OS}_${ARCH}${GOARM:+v${GOARM}}/kubelogin -ldflags "-X main.git
 # Always rewrite outputPath to /go/bin/<binaryname>:
 # → binaries[0].name: "azure-cns"
 # → binaries[0].outputPath: "/go/bin/azure-cns"
-# → binaries[0].buildCommand: "cd ${CNS_DIR} && go build -v -o /go/bin/azure-cns -ldflags \"...\" ..."
+# → binaries[0].buildCommand: "cd ${CNS_DIR} && go build -a -o /go/bin/azure-cns -ldflags \"...\" ..."
 #
 # Artifact key (transformer): /go/bin/azure-cns   (Linux)
 #                              /go/bin/azure-cns.exe  (windowscross)
@@ -421,7 +432,7 @@ go build -o $(TEMP_DIR)/pod_nanny main.go
 # Applies to ALL patterns above regardless of what the Makefile specifies.
 #
 # → binaries[0].outputPath: "/go/bin/azure-cns"
-# → binaries[0].buildCommand: "cd ${CNS_DIR} && go build -v -o /go/bin/azure-cns -ldflags \"...\" ..."
+# → binaries[0].buildCommand: "cd ${CNS_DIR} && go build -a -o /go/bin/azure-cns -ldflags \"...\" ..."
 #
 # /go/bin/ always exists, absolute, works from any cd subdir.
 # Artifact keys: /go/bin/azure-cns (global/Linux), /go/bin/azure-cns.exe (windowscross)
@@ -473,11 +484,11 @@ buildCommand: |-
 
 # ❌ WRONG: Relative path — output/cns/ may not exist in the build sandbox
 outputPath: "output/cns/azure-cns"
-buildCommand: "cd ${CNS_DIR} && go build -v -o output/cns/azure-cns -ldflags \"...\" ..."
+buildCommand: "cd ${CNS_DIR} && go build -a -o output/cns/azure-cns -ldflags \"...\" ..."
 
 # ✅ CORRECT: /go/bin/ path — always exists, no mkdir needed, works from any cd subdir
 outputPath: "/go/bin/azure-cns"
-buildCommand: "cd ${CNS_DIR} && go build -v -o /go/bin/azure-cns -ldflags \"...\" ..."
+buildCommand: "cd ${CNS_DIR} && go build -a -o /go/bin/azure-cns -ldflags \"...\" ..."
 
 # ❌ WRONG: Conditional preserved in build command  
 buildCommand: "if [ \"$ARCH\" = \"amd64\" ]; then go build -o bin/amd64/app; else go build -o bin/arm64/app; fi"
@@ -694,9 +705,29 @@ The build command in Dockerfile and Makefile is **deterministic** — it has a c
 3. **Remove platform variables from output paths** (`${OS}`, `${ARCH}`, `${TARGETARCH}`, etc.) and collapse any resulting double slashes.
 4. **The `-o <path>` in the build command MUST match the `outputPath` field exactly.** Both describe where the binary is written — they must be identical.
 5. **Convert `$(VAR)` Makefile syntax to `${VAR}` Dalec syntax.** For all variables *except* version variables, keep names exactly as they appear. **Version variables are the exception: any variable whose sole purpose is to carry the image version** (`$(CNS_VERSION)`, `$(CNI_VERSION)`, `$(NPM_VERSION)`, `$(TAG)`, `$(IMAGE_VERSION)`, or any `*_VERSION` / `*_TAG` pattern) **must be replaced with `${VERSION}`**. `${VERSION}` is always available as a top-level Dalec arg — there is no reason to pass through a Makefile-local name.
+6. **Replace shell glob patterns (`*.go`) with Go package path `.`**. Dalec build steps execute `go build` directly — there is no shell glob expansion. If the Dockerfile uses `go build ... path/to/*.go`, replace the glob with the equivalent Go package path:
+   - If the `cd` already puts you in the directory containing the `.go` files, use `.` (current directory).
+   - If building from the repo root, use `./path/to/` (package directory path, no glob).
+   - **Never emit `*.go` in a `buildCommand`** — it causes `malformed import path: invalid char '*'`.
+   
+   **Example:**
+   ```dockerfile
+   # Dockerfile has:
+   RUN cd cns/service && go build -o /go/bin/azure-cns ... cns/service/*.go
+   ```
+   After `cd cns/service`, the glob `cns/service/*.go` is redundant (you're already in that directory). Emit:
+   ```yaml
+   buildCommand: "cd ${CNS_DIR} && go build -a -o /go/bin/azure-cns ... ."
+   ```
+   **Not:**
+   ```yaml
+   buildCommand: "cd ${CNS_DIR} && go build -a -o /go/bin/azure-cns ... cns/service/*.go"  # ❌ glob breaks go build
+   ```
 
 #### 4.2 Extraction Checklist
 
+- [ ] **Check Dockerfile first** for the `RUN go build` command — it is the canonical source of flags, ldflags, and package path
+- [ ] Extract the build command verbatim from the Dockerfile `RUN` instruction; use the Makefile only to resolve variable values
 - [ ] Find primary build target:
   1. `.PHONY: container` or `container:` target
   2. `.PHONY: build` or `build:` target
@@ -706,7 +737,7 @@ The build command in Dockerfile and Makefile is **deterministic** — it has a c
 - [ ] **Collapse all conditional branches** to a single command
 - [ ] Remove Docker wrappers:
   - `docker run golang:... /bin/bash -c "..."`
-  - `docker run --rm -v ... go build`
+  - `docker run --rm -a ... go build`
 - [ ] Remove env var assignments: `CGO_ENABLED=... GOOS=... GOARCH=...`
 - [ ] **Remove platform variables from -o path** and collapse `//` → `/`
 - [ ] Parse ldflags:

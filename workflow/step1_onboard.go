@@ -3,11 +3,12 @@ package workflow
 import (
 	"encoding/base64"
 	"fmt"
-	"strings"
 	"log"
+	"strings"
 
 	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/domain/repository"
+	"dalec-mapping/infrastructure/ado"
 	"dalec-mapping/infrastructure/github"
 	"dalec-mapping/infrastructure/semver"
 	"dalec-mapping/utils"
@@ -19,6 +20,8 @@ func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, inputPath str
 	// If no input path is provided, search the entire repository
 	if inputPath == "" {
 		inputPath = "specs" // default to specs directory
+	} else {
+		inputPath = "specs/" + inputPath
 	}
 
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/%s?recursive=1", utils.OnboardOwner, utils.OnboardRepo, utils.OnboardBranch)
@@ -46,13 +49,11 @@ func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, inputPath str
 		if !ok {
 			return fmt.Errorf("unexpected item format: 'path' field is missing or not a string")
 		}
-		
-		log.Printf("Found file in repo: %s\n", path)
 		// Filter paths to only include those within the specified input path
 		if !strings.HasPrefix(path, inputPath) {
 			continue
 		}
-		log.Printf("Processing onboard file: %s\n", path)
+		log.Printf("Found file in repo: %s\n", path)
 
 		specRepository, specImageName, err := getOnboardFilepath(path)
 		if err != nil {
@@ -86,7 +87,7 @@ func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, inputPath str
 			onboard.Tag = append(onboard.Tag, "latest")
 		}
 
-		resolvedTags, err := semver.ResolveOnboardTags(onboard.Repository, onboard.Tag)
+		resolvedTags, err := resolveTagsForRepo(onboard.Repository, onboard.Tag)
 		if err != nil {
 			log.Printf("⚠️  Failed to resolve tags for %s: %v\n", onboard.Repository, err)
 			continue
@@ -177,3 +178,37 @@ func getFilteredTags(resolvedTags []string, specRepo, specImage string, existing
 	}
 	return filteredTags
 }
+
+// isADORepo returns true when the repository URL points to an Azure DevOps repo
+// (e.g. https://dev.azure.com/... or dev.azure.com/...).
+func isADORepo(repoURL string) bool {
+	normalized := strings.TrimPrefix(strings.TrimPrefix(repoURL, "https://"), "http://")
+	return strings.HasPrefix(normalized, "dev.azure.com/") ||
+		strings.HasPrefix(normalized, "ssh.dev.azure.com/") ||
+		strings.Contains(normalized, ".visualstudio.com/")
+}
+
+// resolveTagsForRepo fetches tags from the appropriate source (ADO or GitHub)
+// and resolves the onboard tag patterns against them.
+func resolveTagsForRepo(repoURL string, patterns []string) ([]string, error) {
+	if isADORepo(repoURL) {
+		tagInfos, err := ado.FetchAllTags(repoURL)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch tags for %s: %w", repoURL, err)
+		}
+		// ADO: every tag is tied to a commit, so all tags are valid candidates
+		allTags := make([]string, len(tagInfos))
+		for i, t := range tagInfos {
+			allTags[i] = t.Name
+		}
+		return semver.ResolveOnboardTags(allTags, allTags, repoURL, patterns)
+	}
+
+	owner, repoName, _ := github.ExtractRepositorySegments(repoURL)
+	releaseTags, allTags, err := github.FetchAllTags(owner, repoName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch tags for %s: %w", repoURL, err)
+	}
+	return semver.ResolveOnboardTags(releaseTags, allTags, repoURL, patterns)
+}
+

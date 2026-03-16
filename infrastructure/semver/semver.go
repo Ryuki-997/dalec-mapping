@@ -3,19 +3,16 @@ package semver
 import (
 	"fmt"
 
-	"dalec-mapping/infrastructure/github"
 	"log"
 	"regexp"
 	"strconv"
 )
 
-func ResolveOnboardTags(repoPath string, patterns []string) ([]string, error) {
-	owner, repoName, _ := github.ExtractRepositorySegments(repoPath)
-	releaseTags, allGitTags, err := github.FetchAllTags(owner, repoName)
-	if err != nil {
-		log.Fatalf("❌ Failed to fetch tags: %v", err)
-	}
-
+// ResolveOnboardTags resolves tag patterns against pre-fetched release and git tag lists.
+// releaseTags are tags with an associated release (GitHub) or annotated tags (ADO).
+// allGitTags are every tag in the repo.
+// Patterns are matched against releaseTags first; tags that exist only in allGitTags are skipped with a warning.
+func ResolveOnboardTags(releaseTags, allGitTags []string, repoPath string, patterns []string) ([]string, error) {
 	resolvedTags := make(map[string]bool)
 	for _, pattern := range patterns {
 		matched := resolvePattern(pattern, releaseTags)
@@ -23,7 +20,7 @@ func ResolveOnboardTags(repoPath string, patterns []string) ([]string, error) {
 			// Check if the pattern matches git tags that have no release
 			gitOnly := resolvePattern(pattern, allGitTags)
 			for _, tag := range gitOnly {
-				fmt.Printf("⏭  Skipping %s @ %s (stripped: %s): tag exists but has no associated GitHub release\n", repoPath, tag, StripToSemver(tag))
+				fmt.Printf("⏭  Skipping %s @ %s (stripped: %s): tag exists but has no associated release\n", repoPath, tag, StripToSemver(tag))
 			}
 		}
 		for _, resolved := range matched {

@@ -237,8 +237,8 @@ func runTestScript(imageTag, scriptName, scriptContent string) error {
 
 	// Build docker run args: base flags + per-arg env vars from the spec
 	args := []string{"run", "--rm",
-		"-v", "/var/run/docker.sock:/var/run/docker.sock",
-		"-v", tmpFile.Name() + ":/test.sh:ro",
+		"-a", "/var/run/docker.sock:/var/run/docker.sock",
+		"-a", tmpFile.Name() + ":/test.sh:ro",
 		"-e", "IMAGE_TAG=" + imageTag,
 	}
 
