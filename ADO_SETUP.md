@@ -1,5 +1,11 @@
 # ADO Setup for OneBranch Pipeline
 
+## Why OneBranch?
+
+The DALEC spec generation service needs to read tags and metadata from partner repositories. For public GitHub repos this works via the GitHub API, but internal ADO repos are not publicly accessible. OneBranch runs the pipeline inside a Microsoft-managed build agent that has implicit access to internal ADO repos — no PATs, no shared credentials, no environment variables. The pipeline simply executes `git ls-remote` against the ADO repo URL and the agent's identity handles authentication automatically.
+
+Partner teams need to complete the steps below so that the OneBranch agent identity (`OneBranch.Platform.Installer`) is granted access to their ADO organization. Without this, the pipeline cannot reach internal repos to fetch tags and commits.
+
 ## Step 1: Join Your ADO Organization to Microsoft Enterprise
 
 1. Go to **Organization settings** → **Azure Active Directory** (`https://<your-account>.visualstudio.com/_settings/organizationAad`).
@@ -28,7 +34,7 @@
 
 ## Step 5: Onboard Your Repository
 
-Once your ADO organization is set up (Steps 1–4), follow the standard onboarding process in [ONBOARDING.md](ONBOARDING.md) to register your repository. The only difference for ADO repos is the `repository` field in `onboard.yml` — use the full ADO URL instead of a GitHub `owner/repo` path:
+Once your ADO organization is set up (Steps 1–4), follow the standard onboarding process in [[ONBOARDING.md](https://github.com/Ryuki-997/dalec-mapping/blob/main/ONBOARDING.md)] to register your repository. The only difference for ADO repos is the `repository` field in `onboard.yml` — use the full ADO URL instead of a GitHub `owner/repo` path:
 
 ```yaml
 # specs/<your-team>/<your-project>/onboard.yml
@@ -38,7 +44,3 @@ tags:
 dockerfile: Dockerfile
 makefile: Makefile
 ```
-
-## Reference
-
-- Full OneBranch onboarding guide: https://eng.ms/docs/products/onebranch/onboarding/onboardonebranchtoazdoaccount/onboardonebranchtoazdoaccount
