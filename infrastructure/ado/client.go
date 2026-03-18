@@ -1,9 +1,14 @@
 package ado
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 )
 
 // TagInfo holds a tag name and its associated commit SHA.
@@ -12,11 +17,54 @@ type TagInfo struct {
 	Commit string
 }
 
+// fetchUAMIToken acquires an Azure DevOps OAuth token using the given UAMI
+// client ID via azidentity. Works on VMs (IMDS), App Service, Container Apps,
+// and AKS with Workload Identity.
+func fetchUAMIToken(clientID string) (string, error) {
+	cred, err := azidentity.NewManagedIdentityCredential(&azidentity.ManagedIdentityCredentialOptions{
+		ID: azidentity.ClientID(clientID),
+	})
+
+	if err != nil {
+		return "", fmt.Errorf("creating managed identity credential: %w", err)
+	}
+
+	token, err := cred.GetToken(context.Background(), policy.TokenRequestOptions{
+		Scopes: []string{"499b84ac-1321-427f-aa17-267ca6975798/.default"},
+	})
+
+	fmt.Println("Acquired token for client ID", token)
+
+	if err != nil {
+		return "", fmt.Errorf("acquiring token: %w", err)
+	}
+
+
+	return token.Token, nil
+}
+
 // FetchAllTags queries a remote ADO repository for all tags using git ls-remote.
-// In ADO every tag is guaranteed to be tied to a commit, so all tags are valid.
+// If UAMI_CLIENT_ID is set in the environment, it acquires an OAuth token via
+// Azure IMDS and passes it to git. Otherwise it falls back to ambient credentials.
 // For annotated tags the dereferenced commit (^{}) is used as the commit SHA.
 func FetchAllTags(repoURL string) ([]TagInfo, error) {
+	clientID := os.Getenv("UAMI_CLIENT_ID")
+	if clientID == "" {
+		return nil, fmt.Errorf("UAMI_CLIENT_ID is not set")
+	}
+
+	token, err := fetchUAMIToken(clientID)
+	if err != nil {
+		return nil, fmt.Errorf("UAMI token acquisition failed: %w", err)
+	}
 	cmd := exec.Command("git", "ls-remote", "--tags", repoURL)
+	cmd.Env = append(os.Environ(),
+		"GIT_ASKPASS=true",
+		"GCM_INTERACTIVE=Never",
+		"GIT_TERMINAL_PROMPT=0",
+		"AZURE_DEVOPS_EXT_PAT="+token,
+	)
+
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git ls-remote --tags failed for %s: %w", repoURL, err)
