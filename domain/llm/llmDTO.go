@@ -1,12 +1,5 @@
 package llm
 
-// ExternalTool represents external binaries downloaded via curl/wget
-type ExternalTool struct {
-	Name              string `yaml:"name"`
-	DownloadURL       string `yaml:"downloadURL"`
-	NeedsSeparateSpec bool   `yaml:"needsSeparateSpec"`
-}
-
 // Binary represents additional binaries built alongside the primary binary
 type Binary struct {
 	Name         string `yaml:"name"`
@@ -42,16 +35,16 @@ type TargetSpec struct {
 
 // NonDeterministicValues holds agent-extracted values from Dockerfile/Makefile
 type NonDeterministicValues struct {
-	// Build Artifacts
+	// Build Artifacts — one entry per go build in the primary build stage.
 	Binaries []Binary `yaml:"binaries"`
+
+	// PipelineSteps are ordered shell commands for intermediate and wrapper
+	// stages that run AFTER the primary binaries are built.
+	// Covers file gathering, compression, embedding, and the wrapper go build.
+	// Each entry is one shell command (may be multi-line with \n).
+	PipelineSteps []string `yaml:"pipelineSteps,omitempty"`
 
 	// Targets is the ordered list of build targets, each carrying its full per-target configuration:
 	// targetOS, entrypoint, symlink, and application-specific build/runtime dependencies.
 	Targets []TargetSpec `yaml:"targets"`
-
-	ExternalTools []ExternalTool `yaml:"externalTools"`
-
-	// Validation
-	Warnings   []string `yaml:"warnings"`
-	Confidence float64  `yaml:"confidence"`
 }

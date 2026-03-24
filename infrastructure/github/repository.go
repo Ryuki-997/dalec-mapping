@@ -1,90 +1,60 @@
 package github
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// repository.go — GitHub API client and repository metadata fetching.
+//
+//   Chunk 1 · HTTP CLIENT              FetchRawContent(), FetchJSON(), FetchJSONArray()
+//     Public Fetch wrappers over private makeGitHubRequest().
+//
+//   Chunk 2 · REPOSITORY INFO          FetchRepoInfo(), FetchRepositorySegments()
+//     Entry-point for populating RepoInfo; URL/path parsing.
+//
+//   Chunk 3 · METADATA                 fetchRepoMetadata(), fetchReleaseMetadata(),
+//                                       fetchSourceGenerator()
+//     Branch, license, version, commit SHA, and source-generator detection.
+//
+//   Chunk 4 · TAGS                     fetchTagInfo(), FetchTagCommit(), FetchAllTags()
+//     Tag-to-commit resolution and paginated tag listing.
+// ═══════════════════════════════════════════════════════════════════════════════
+
 import (
 	"bytes"
-	"dalec-mapping/domain/llm"
-	"dalec-mapping/domain/repository"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
+
+	"dalec-mapping/domain/repository"
 )
 
-// GetGeneratorPath returns the absolute path to the generator directory
-func GetGeneratorPath() (string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("failed to get working directory: %w", err)
-	}
+// semverInTag extracts a clean vX.Y.Z from tags that may have suffixes (e.g. v1.2.3-main-date-hash).
+var semverInTag = regexp.MustCompile(`v(\d+)\.(\d+)\.(\d+)`)
 
-	generatorPath := filepath.Join(cwd, "generator")
-	if info, err := os.Stat(generatorPath); err == nil && info.IsDir() {
-		absPath, _ := filepath.Abs(generatorPath)
-		return absPath, nil
-	}
+const githubAPIBase = "https://api.github.com"
 
-	if info, err := os.Stat(filepath.Join(cwd, "main.go")); err == nil && !info.IsDir() {
-		if _, err := os.Stat(filepath.Join(cwd, "cli")); err == nil {
-			absPath, _ := filepath.Abs(cwd)
-			return absPath, nil
-		}
-	}
+// ─── Chunk 1 · HTTP CLIENT ──────────────────────────────────────────────────
 
-	parentPath := filepath.Join(cwd, "..", "generator")
-	if info, err := os.Stat(parentPath); err == nil && info.IsDir() {
-		absPath, _ := filepath.Abs(parentPath)
-		return absPath, nil
-	}
+// GithubReturnType controls how makeGitHubRequest decodes the response body.
+type GithubReturnType int
 
-	return "", fmt.Errorf("generator directory not found (cwd: %s)", cwd)
-}
+const (
+	ReturnJSON      GithubReturnType = iota 	// → map[string]interface{}
+	ReturnJSONArray                          	// → []map[string]interface{}
+	ReturnRaw                                	// → []byte
+)
 
-// ExtractRepositorySegments extracts the repository segments from a GitHub URL or path
-func ExtractRepositorySegments(repo string) (owner, name, branch string) {
-	repo = strings.TrimSuffix(repo, ".git")
-	repo = strings.TrimPrefix(repo, "https://")
-	repo = strings.TrimPrefix(repo, "http://")
-	repo = strings.TrimPrefix(repo, "github.com/")
-
-	parts := strings.Split(repo, "/")
-	if len(parts) == 2 {
-		url := fmt.Sprintf("https://api.github.com/repos/%s/%s", parts[0], parts[1])
-		repoData, err := MakeGitHubRequest[map[string]interface{}](repository.GithubRequest{URL: url})
-		if err != nil {
-			log.Printf("Error: failed to fetch repo info for %s: %v\n", repo, err)
-			os.Exit(1)
-		}
-
-		branch := "main"
-		if defaultBranch, ok := repoData["default_branch"].(string); ok && defaultBranch != "" {
-			branch = defaultBranch
-		}
-
-		return parts[0], parts[1], branch
-	} else if len(parts) >= 4 && parts[2] == "tree" {
-		return parts[0], parts[1], parts[3]
-	} 
-
-	log.Printf("Warning: unrecognized repository format: %s\n", repo)
-	os.Exit(1)
-	return "", "", ""
-}
-
-// MakeGitHubRequest makes an authenticated HTTP request to the GitHub API.
-func MakeGitHubRequest[T any](request repository.GithubRequest) (T, error) {
-	var result T
-
-	// Build request body for methods that need one
+// makeGitHubRequest is the single internal HTTP entry-point.
+// All public Fetch* functions delegate here.
+func makeGitHubRequest(request repository.GithubRequest, returnType GithubReturnType) (interface{}, error) {
 	var bodyReader io.Reader
 	if request.Payload != nil && (request.Method == repository.POST || request.Method == repository.PUT) {
 		jsonBody, err := json.Marshal(request.Payload)
 		if err != nil {
-			return result, fmt.Errorf("failed to marshal request body: %w", err)
+			return nil, fmt.Errorf("failed to marshal request body: %w", err)
 		}
 		bodyReader = bytes.NewReader(jsonBody)
 	}
@@ -96,48 +66,17 @@ func MakeGitHubRequest[T any](request repository.GithubRequest) (T, error) {
 
 	req, err := http.NewRequest(string(method), request.URL, bodyReader)
 	if err != nil {
-		return result, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-
-	githubToken := os.Getenv("GH_TOKEN")
-	req.Header.Set("Authorization", "token "+githubToken)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return result, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return result, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return result, fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	if err := json.Unmarshal(body, &result); err != nil {
-		return result, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
-	return result, nil
-}
-
-// FetchRawContent fetches raw content from a URL (e.g. raw.githubusercontent.com)
-func FetchRawContent(url string) ([]byte, error) {
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	githubToken := os.Getenv("GH_TOKEN")
-	if githubToken != "" {
-		req.Header.Set("Authorization", "token "+githubToken)
+	if token := os.Getenv("GH_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "token "+token)
+	}
+
+	if returnType != ReturnRaw {
+		req.Header.Set("Accept", "application/vnd.github.v3+json")
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	}
 
 	resp, err := http.DefaultClient.Do(req)
@@ -151,90 +90,390 @@ func FetchRawContent(url string) ([]byte, error) {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	return body, nil
-}
-
-// Helper function to clean ldflags
-func cleanLdFlags(ldflags string) string {
-	// Only clean quotes, preserve all env variables including ${VERSION}
-	cleaned := strings.Trim(ldflags, `"'`)
-	return cleaned
-}
-
-// cleanedCache retains the last cleaned LdFlags value so the BuildCommand
-// case can substitute ${LDFLAGS} references in the build command.
-var cleanedCache = llm.CleanedValuesCache{}
-
-func ClearEnvVariables(key string, command *string) {
-	if command == nil || *command == "" {
-		return
-	}
-
-	switch key {
-	case "LdFlags":
-		cleanedCache.LdFlags = cleanLdFlags(*command)
-		*command = cleanedCache.LdFlags
-
-	case "BuildCommand":
-		ldFlagsVarPattern := regexp.MustCompile(`\$\{LDFLAGS\}`)
-		*command = ldFlagsVarPattern.ReplaceAllString(*command, cleanedCache.LdFlags)
-
-		// Remove prebuilt runtime/OS env assignments that Dalec handles natively
-		removeEnvs := map[string]bool{
-			"CGO_ENABLED": true,
-			"GOOS":        true,
-			"GOARCH":      true,
-			"GOARM":       true,
-			"GOARM64":     true,
-			"OS":          true,
-			"ARCH":        true,
-			"CC":          true, // set globally in build.env via MinGW toolchain source
+	switch returnType {
+	case ReturnRaw:
+		return body, nil
+	case ReturnJSONArray:
+		var result []map[string]interface{}
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal JSON array: %w", err)
 		}
-		// Match patterns like KEY=value, KEY=${VAR}, KEY=${VAR:-default}, KEY=$(VAR)
-		envAssignPattern := regexp.MustCompile(`(\w+)=(?:\$[\{\(][^\}\)]*[\}\)]|\S*)`)
-		*command = envAssignPattern.ReplaceAllStringFunc(*command, func(match string) string {
-			eqIdx := strings.Index(match, "=")
-			if eqIdx > 0 {
-				varName := match[:eqIdx]
-				if removeEnvs[varName] {
-					return ""
-				}
+		return result, nil
+	default: // ReturnJSON
+		var result map[string]interface{}
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal JSON: %w", err)
+		}
+		return result, nil
+	}
+}
+
+// FetchRawContent fetches raw bytes from a URL (e.g. raw.githubusercontent.com).
+func FetchRawContent(url string) ([]byte, error) {
+	result, err := makeGitHubRequest(repository.GithubRequest{URL: url}, ReturnRaw)
+	if err != nil {
+		return nil, err
+	}
+	return result.([]byte), nil
+}
+
+// FetchJSON performs an authenticated GET to the GitHub API and returns a JSON object.
+// path is relative to api.github.com (e.g. "repos/owner/repo/contents/file").
+func FetchJSON(path string) (map[string]interface{}, error) {
+	result, err := makeGitHubRequest(repository.GithubRequest{URL: githubAPIBase + "/" + path}, ReturnJSON)
+	if err != nil {
+		return nil, err
+	}
+	return result.(map[string]interface{}), nil
+}
+
+// FetchJSONArray performs an authenticated GET to the GitHub API and returns a JSON array.
+// path is relative to api.github.com.
+func FetchJSONArray(path string) ([]map[string]interface{}, error) {
+	result, err := makeGitHubRequest(repository.GithubRequest{URL: githubAPIBase + "/" + path}, ReturnJSONArray)
+	if err != nil {
+		return nil, err
+	}
+	return result.([]map[string]interface{}), nil
+}
+
+// WriteJSON performs a write (PUT/POST) to the GitHub API and returns a JSON object.
+// path is relative to api.github.com.
+func WriteJSON(path string, method repository.CRUDRequest, payload interface{}) (map[string]interface{}, error) {
+	result, err := makeGitHubRequest(repository.GithubRequest{
+		URL:     githubAPIBase + "/" + path,
+		Method:  method,
+		Payload: payload,
+	}, ReturnJSON)
+	if err != nil {
+		return nil, err
+	}
+	return result.(map[string]interface{}), nil
+}
+
+// ─── Chunk 2 · REPOSITORY INFO ──────────────────────────────────────────────
+
+// FetchRepoInfo fetches repository metadata from the GitHub API.
+func FetchRepoInfo(repoPath, subdir, tag string) (*repository.RepoInfo, error) {
+	owner, repo, branch := FetchRepositorySegments(repoPath)
+
+	fmt.Printf("Parsed - Owner: %s, Repo: %s, Branch: %s, Subdir: %s\n", owner, repo, branch, subdir)
+
+	info := &repository.RepoInfo{
+		Owner:  owner,
+		Repo:   repo,
+		Branch: branch,
+		Subdir: subdir,
+		GitURL: fmt.Sprintf("https://github.com/%s/%s", owner, repo),
+	}
+
+	if err := fetchRepoMetadata(info); err != nil {
+		return nil, fmt.Errorf("failed to fetch repo metadata: %w", err)
+	}
+	if err := fetchReleaseMetadata(info); err != nil {
+		return nil, fmt.Errorf("failed to fetch latest commit: %w", err)
+	}
+	if err := fetchSourceGenerator(info); err != nil {
+		return nil, fmt.Errorf("failed to fetch source generator: %w", err)
+	}
+	if err := fetchTagInfo(info, tag); err != nil {
+		return nil, fmt.Errorf("failed to fetch tag when tag is provided: %w", err)
+	}
+	return info, nil
+}
+
+// FetchRepositorySegments extracts the repository segments from a GitHub URL or path.
+func FetchRepositorySegments(repo string) (owner, name, branch string) {
+	repo = strings.TrimSuffix(repo, ".git")
+	repo = strings.TrimPrefix(repo, "https://")
+	repo = strings.TrimPrefix(repo, "http://")
+	repo = strings.TrimPrefix(repo, "github.com/")
+
+	parts := strings.Split(repo, "/")
+	if len(parts) == 2 {
+		repoData, err := FetchJSON(fmt.Sprintf("repos/%s/%s", parts[0], parts[1]))
+		if err != nil {
+			log.Printf("Error: failed to fetch repo info for %s: %v\n", repo, err)
+			os.Exit(1)
+		}
+
+		branch := "main"
+		if defaultBranch, ok := repoData["default_branch"].(string); ok && defaultBranch != "" {
+			branch = defaultBranch
+		}
+
+		return parts[0], parts[1], branch
+	} else if len(parts) >= 4 && parts[2] == "tree" {
+		return parts[0], parts[1], parts[3]
+	}
+
+	log.Printf("Warning: unrecognized repository format: %s\n", repo)
+	os.Exit(1)
+	return "", "", ""
+}
+
+// ─── Chunk 3 · METADATA ────────────────────────────────────────────────────
+
+// fetchRepoMetadata acquires default branch, description, URL, and license.
+func fetchRepoMetadata(info *repository.RepoInfo) error {
+	data, err := FetchJSON(fmt.Sprintf("repos/%s/%s", info.Owner, info.Repo))
+	if err != nil {
+		return err
+	}
+
+	if info.Branch == "" {
+		if defaultBranch, ok := data["default_branch"].(string); ok {
+			info.Branch = defaultBranch
+		} else {
+			info.Branch = "main"
+		}
+	}
+
+	if desc, ok := data["description"].(string); ok {
+		info.Description = desc
+	} else {
+		info.Description = fmt.Sprintf("This is the %s project.", info.Repo)
+	}
+
+	if url, ok := data["html_url"].(string); ok && url != "" {
+		info.GitURL = url
+	}
+
+	info.License = "foo-license"
+	if license, ok := data["license"].(map[string]interface{}); ok {
+		if spdxID, ok := license["spdx_id"].(string); ok && spdxID != "NOASSERTION" {
+			info.License = spdxID
+		}
+	}
+
+	return nil
+}
+
+// fetchReleaseMetadata acquires the latest release version and commit SHA.
+func fetchReleaseMetadata(info *repository.RepoInfo) error {
+	data, err := FetchJSON(fmt.Sprintf("repos/%s/%s/releases/latest", info.Owner, info.Repo))
+	if err != nil {
+		return err
+	}
+
+	if releaseURL, ok := data["url"].(string); !ok || releaseURL == "" {
+		return fmt.Errorf("url not found in response")
+	}
+
+	tag, ok := data["tag_name"].(string)
+	if !ok {
+		return fmt.Errorf("tag_name not found in response")
+	}
+	if m := semverInTag.FindString(tag); m != "" {
+		info.Version = m
+	} else {
+		info.Version = tag
+	}
+
+	data, err = FetchJSON(fmt.Sprintf("repos/%s/%s/commits/%s", info.Owner, info.Repo, tag))
+	if err != nil {
+		return err
+	}
+
+	if sha, ok := data["sha"].(string); ok {
+		info.LatestCommit = sha
+	}
+
+	return nil
+}
+
+// fetchSourceGenerator detects the project's build system by scanning the repo tree.
+func fetchSourceGenerator(info *repository.RepoInfo) error {
+	fileGenerators := map[string]repository.SourceGenerator{
+		"go.mod":           repository.GoModGenerator,
+		"main.go":          repository.GoModGenerator,
+		"Gopkg.toml":       repository.GoModGenerator,
+		"Cargo.toml":       repository.CargoHomeGenerator,
+		"Cargo.lock":       repository.CargoHomeGenerator,
+		"requirements.txt": repository.PipGenerator,
+		"setup.py":         repository.PipGenerator,
+		"Pipfile":          repository.PipGenerator,
+	}
+	dirGenerators := map[string]repository.SourceGenerator{
+		"Godeps": repository.GoModGenerator,
+		"vendor": repository.GoModGenerator,
+	}
+
+	data, err := FetchJSON(fmt.Sprintf("repos/%s/%s/git/trees/%s?recursive=1", info.Owner, info.Repo, info.Branch))
+	if err != nil {
+		return fmt.Errorf("failed to fetch repository tree: %w", err)
+	}
+
+	treeItems, ok := data["tree"].([]interface{})
+	if !ok {
+		return fmt.Errorf("unexpected tree response format")
+	}
+
+	scanItems := func(prefix string) (repository.SourceGenerator, bool) {
+		for _, item := range treeItems {
+			itemMap, ok := item.(map[string]interface{})
+			if !ok {
+				continue
 			}
-			return match
-		})
-		// Clean up leftover extra whitespace
-		spacePattern := regexp.MustCompile(`\s{2,}`)
-		*command = strings.TrimSpace(spacePattern.ReplaceAllString(*command, " "))
+			p, _ := itemMap["path"].(string)
+			itemType, _ := itemMap["type"].(string)
 
-		// Remove stray braces left behind from env var removal (e.g. "} }" from "${GOARMSUFFIX:+v${GOARM}}")
-		strayBraces := regexp.MustCompile(`[{}]`)
-		// Only remove braces that are NOT part of a valid ${...} reference
-		// Temporarily protect valid ${...} patterns, strip remaining braces, restore
-		validVarRef := regexp.MustCompile(`\$\{[^}]+\}`)
-		placeholders := map[string]string{}
-		idx := 0
-		cleaned := validVarRef.ReplaceAllStringFunc(*command, func(match string) string {
-			key := fmt.Sprintf("__VARREF_%d__", idx)
-			placeholders[key] = match
-			idx++
-			return key
-		})
-		cleaned = strayBraces.ReplaceAllString(cleaned, "")
-		for key, val := range placeholders {
-			cleaned = strings.ReplaceAll(cleaned, key, val)
+			if prefix != "" && !strings.HasPrefix(p, prefix+"/") {
+				continue
+			}
+
+			base := p[strings.LastIndex(p, "/")+1:]
+
+			if gen, ok := fileGenerators[base]; ok && itemType == "blob" {
+				return gen, true
+			}
+			if gen, ok := dirGenerators[base]; ok && itemType == "tree" {
+				return gen, true
+			}
 		}
-		// Final whitespace cleanup after brace removal
-		cleaned = regexp.MustCompile(`\s{2,}`).ReplaceAllString(cleaned, " ")
-		// Collapse double slashes in paths (e.g. bin//kubelogin -> bin/kubelogin)
-		cleaned = regexp.MustCompile(`/{2,}`).ReplaceAllString(cleaned, "/")
-		*command = strings.TrimSpace(cleaned)
-
-	default:
-		fmt.Printf("Warning: unrecognized key for ClearEnvVariables: %s\n", key)
-		return 
+		return "", false
 	}
+
+	if info.Subdir != "" {
+		log.Printf("Searching for source generator under subdir hint '%s'...\n", info.Subdir)
+
+		if gen, ok := scanItems(info.Subdir); ok {
+			info.Generator = gen
+			return nil
+		}
+
+		subdirBase := info.Subdir[strings.LastIndex(info.Subdir, "/")+1:]
+		for _, item := range treeItems {
+			itemMap, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			p, _ := itemMap["path"].(string)
+			itemType, _ := itemMap["type"].(string)
+			if itemType != "tree" {
+				continue
+			}
+			base := p[strings.LastIndex(p, "/")+1:]
+			if base != subdirBase {
+				continue
+			}
+			if gen, ok := scanItems(p); ok {
+				info.Generator = gen
+				return nil
+			}
+		}
+	}
+
+	if gen, ok := scanItems(""); ok {
+		info.Generator = gen
+		return nil
+	}
+
+	return fmt.Errorf("❌  No recognized source generator files found; Supported: Go (go.mod), Rust (Cargo.toml), Python (requirements.txt, setup.py, Pipfile)")
+}
+
+// ─── Chunk 4 · TAGS ────────────────────────────────────────────────────────
+
+// fetchTagInfo resolves `tag` to a commit SHA and populates info.LatestCommit and info.Version.
+// If a direct ref lookup 404s (e.g. the actual ref is "azure-ipam/v0.4.0"), it searches
+// FetchAllTags for a matching semver and retries.
+func fetchTagInfo(info *repository.RepoInfo, tag string) error {
+	if tag == "" {
+		return fmt.Errorf("Tag must be specified")
+	}
+
+	fullTag := tag
+	data, err := FetchJSON(fmt.Sprintf("repos/%s/%s/git/ref/tags/%s", info.Owner, info.Repo, fullTag))
+	if err != nil {
+		_, allGitTags, fetchErr := FetchAllTags(info.Owner, info.Repo)
+		if fetchErr != nil {
+			return fmt.Errorf("tag %q not found and could not fetch tag list: %w", tag, fetchErr)
+		}
+		for _, t := range allGitTags {
+			if semverInTag.FindString(t) == tag {
+				fullTag = t
+				break
+			}
+		}
+		if fullTag == tag {
+			return fmt.Errorf("tag %q not found in repository", tag)
+		}
+		data, err = FetchJSON(fmt.Sprintf("repos/%s/%s/git/ref/tags/%s", info.Owner, info.Repo, fullTag))
+		if err != nil {
+			return err
+		}
+	}
+
+	if object, ok := data["object"].(map[string]interface{}); ok {
+		if sha, ok := object["sha"].(string); ok {
+			if m := semverInTag.FindString(tag); m != "" {
+				info.Version = strings.TrimPrefix(m, "v")
+			} else {
+				info.Version = strings.TrimPrefix(tag, "v")
+			}
+			info.LatestCommit = sha
+			return nil
+		}
+	}
+
+	return fmt.Errorf("failed to extract commit SHA from tag")
+}
+
+// FetchTagCommit resolves a git tag to its commit SHA for the given owner/repo.
+func FetchTagCommit(owner, repo, tagRef string) (string, error) {
+	data, err := FetchJSON(fmt.Sprintf("repos/%s/%s/git/ref/tags/%s", owner, repo, tagRef))
+	if err != nil {
+		return "", fmt.Errorf("tag %q not found in %s/%s: %w", tagRef, owner, repo, err)
+	}
+	if object, ok := data["object"].(map[string]interface{}); ok {
+		if sha, ok := object["sha"].(string); ok {
+			return sha, nil
+		}
+	}
+	return "", fmt.Errorf("failed to extract commit SHA from tag %q", tagRef)
+}
+
+// FetchAllTags fetches all tags for a repository, returning both
+// release-filtered tags and the full set of git tags.
+func FetchAllTags(owner, repo string) (releaseTags []string, allGitTags []string, err error) {
+	releaseSet := make(map[string]bool)
+	page := 1
+	for {
+		data, err := FetchJSONArray(fmt.Sprintf("repos/%s/%s/releases?per_page=100&page=%d", owner, repo, page))
+		if err != nil || len(data) == 0 {
+			break
+		}
+		for _, release := range data {
+			if tag, ok := release["tag_name"].(string); ok {
+				releaseSet[tag] = true
+			}
+		}
+		if len(data) < 100 {
+			break
+		}
+		page++
+	}
+
+	tagData, fetchErr := FetchJSONArray(fmt.Sprintf("repos/%s/%s/git/refs/tags", owner, repo))
+	if fetchErr != nil {
+		return nil, nil, fmt.Errorf("failed to fetch tags for %s/%s: %w", owner, repo, fetchErr)
+	}
+	for _, item := range tagData {
+		ref, ok := item["ref"].(string)
+		if !ok {
+			continue
+		}
+		ref = strings.TrimPrefix(ref, "refs/tags/")
+		allGitTags = append(allGitTags, ref)
+
+		if len(releaseSet) > 0 && !releaseSet[ref] {
+			continue
+		}
+		releaseTags = append(releaseTags, ref)
+	}
+	return releaseTags, allGitTags, nil
 }

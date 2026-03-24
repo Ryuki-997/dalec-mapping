@@ -1,5 +1,28 @@
 package transformer
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// extractDefaults.go — Generates top-level metadata + args for a Dalec spec.
+//
+//   Chunk 1 · ORCHESTRATION          extractDefaultsSection()
+//     Writes metadata into the spec map and returns the resolved args map.
+//     Calls → extractMetadata(), extractArgs()
+//
+//   Chunk 2 · METADATA               extractMetadata()
+//     Fixed fields: name, packager, vendor, license, website, description,
+//     version, revision.
+//
+//   Chunk 3 · ARGS ASSEMBLY          extractArgs()
+//     Builds the top-level args map from defaults, Dockerfile ARGs, and
+//     Makefile variables that are actually referenced in build commands.
+//     Calls → effectiveMakefileInfo(), mergeDockerfileArgs(), mergeMakefileVars()
+//
+//   Chunk 4 · VARIABLE RESOLUTION    expandVarRefs()
+//     Iteratively expands $(VAR)/${VAR} references using Makefile + Dockerfile values.
+//     Strips Make built-in function calls. Exits on unresolvable references.
+//     Decomposes into: parseNextVarRef() → stripMakeFuncCall() | substituteVar()
+//     Helpers: findVarRefStart(), isMakeFunction(), resolveVarRef()
+// ═══════════════════════════════════════════════════════════════════════════════
+
 import (
 	"dalec-mapping/domain/contents"
 	"fmt"
@@ -30,8 +53,19 @@ var makeFunctions = []string{
 	"error ", "warning ", "info ",
 }
 
-// populateMetadata writes the fixed metadata fields into the spec map.
-func populateMetadata(defaultSpec *contents.DefaultSpec, spec map[string]interface{}) {
+// ─── Chunk 1 · ORCHESTRATION ─────────────────────────────────────────────────
+
+// extractDefaultsSection writes metadata into the spec and returns the resolved args map.
+func extractDefaultsSection(defaultSpec *contents.DefaultSpec, makefileInfo *contents.MakefileInfo, referencedVars map[string]bool, goModDownloads []GoModDownloadInfo, spec map[string]interface{}) map[string]interface{} {
+	extractMetadata(defaultSpec, spec)
+	args := extractArgs(defaultSpec, makefileInfo, referencedVars, goModDownloads)
+	return args
+}
+
+// ─── Chunk 2 · METADATA ─────────────────────────────────────────────────────
+
+// extractMetadata writes the fixed metadata fields into the spec map.
+func extractMetadata(defaultSpec *contents.DefaultSpec, spec map[string]interface{}) {
 	spec["name"] = strings.ToLower(defaultSpec.Repo)
 	spec["packager"] = "Azure Container Upstream"
 	spec["vendor"] = "Microsoft Corporation"
@@ -42,10 +76,12 @@ func populateMetadata(defaultSpec *contents.DefaultSpec, spec map[string]interfa
 	spec["revision"] = "${REVISION}"
 }
 
-// populateArgs builds the top-level args map.
+// ─── Chunk 3 · ARGS ASSEMBLY ─────────────────────────────────────────────────
+
+// extractArgs builds the top-level args map.
 // referencedVars is the set of variable names actually used in build commands/ldflags;
 // only Makefile variables in this set are promoted to args with their resolved values.
-func populateArgs(defaultSpec *contents.DefaultSpec, makefileInfo *contents.MakefileInfo, referencedVars map[string]bool) map[string]interface{} {
+func extractArgs(defaultSpec *contents.DefaultSpec, makefileInfo *contents.MakefileInfo, referencedVars map[string]bool, goModDownloads []GoModDownloadInfo) map[string]interface{} {
 	args := map[string]interface{}{
 		"REVISION":   defaultSpec.Revision,
 		"VERSION":    defaultSpec.Version,
@@ -55,15 +91,23 @@ func populateArgs(defaultSpec *contents.DefaultSpec, makefileInfo *contents.Make
 		"TARGETARCH": "",
 	}
 
-	makefileInfo = effectiveMakefileInfo(makefileInfo)
+	makefileInfo = initializeMakefileInfo(makefileInfo)
 	args = mergeDockerfileArgs(args, defaultSpec, makefileInfo)
 	args = mergeMakefileVars(args, makefileInfo, referencedVars, defaultSpec)
+
+	// Add resolved commit SHAs for sub-module sources (e.g. DROPGZ_COMMIT).
+	for _, dl := range goModDownloads {
+		if dl.CommitSHA != "" {
+			args[dl.CommitArgName] = dl.CommitSHA
+		}
+	}
+
 	return args
 }
 
-// effectiveMakefileInfo returns a non-nil MakefileInfo, seeding platform
+// initializeMakefileInfo returns a non-nil MakefileInfo, seeding platform
 // variables to empty so callers never see unresolved ${ARCH}/${OS} references.
-func effectiveMakefileInfo(makefileInfo *contents.MakefileInfo) *contents.MakefileInfo {
+func initializeMakefileInfo(makefileInfo *contents.MakefileInfo) *contents.MakefileInfo {
 	if makefileInfo == nil {
 		makefileInfo = &contents.MakefileInfo{Variables: make(map[string]string)}
 	}
@@ -85,7 +129,7 @@ func mergeDockerfileArgs(args map[string]interface{}, defaultSpec *contents.Defa
 		if value == "" {
 			value = makefileInfo.Variables[k]
 		}
-		value = NestedValueReplacement(defaultSpec, makefileInfo, value)
+		value = expandVarRefs(defaultSpec, makefileInfo, value)
 		if value == "" {
 			continue
 		}
@@ -106,7 +150,7 @@ func mergeMakefileVars(args map[string]interface{}, makefileInfo *contents.Makef
 			continue
 		}
 		if rawValue, exists := makefileInfo.Variables[varName]; exists {
-			resolved := NestedValueReplacement(defaultSpec, makefileInfo, rawValue)
+			resolved := expandVarRefs(defaultSpec, makefileInfo, rawValue)
 			args[varName] = resolved
 			fmt.Printf("key (from Makefile): %s, value: %v\n", varName, resolved)
 		}
@@ -114,58 +158,100 @@ func mergeMakefileVars(args map[string]interface{}, makefileInfo *contents.Makef
 	return args
 }
 
-// NestedValueReplacement expands all $(VAR) and ${VAR} references in value using
-// makefileInfo and defaultSpec.Args. Make built-in function calls are stripped.
-// Exits on unresolvable variable references or malformed syntax.
-func NestedValueReplacement(defaultSpec *contents.DefaultSpec, makefileInfo *contents.MakefileInfo, value string) string {
+// ─── Chunk 4 · VARIABLE RESOLUTION ───────────────────────────────────────────
+
+// varRef describes a single $(VAR) or ${VAR} reference found in a string.
+type varRef struct {
+	pos      int    // index of the leading '$'
+	key      string // variable name between delimiters
+	openTok  string // "$(" or "${"
+	closeTok string // ")" or "}"
+	span     int    // total length of the reference including delimiters
+	escaped  bool   // true when preceded by another '$' (e.g. $${VAR})
+}
+
+// expandVarRefs iteratively expands all $(VAR)/${VAR} references in value
+// using Makefile variables and Dockerfile ARGs. Make built-in function calls
+// (e.g. $(shell ...)) are stripped rather than expanded.
+func expandVarRefs(defaultSpec *contents.DefaultSpec, makefileInfo *contents.MakefileInfo, value string) string {
 	fmt.Printf("Before: %s\n", value)
 
 	for {
-		start, startPat, endPat := nextVarRef(value)
-		if start == -1 {
+		ref, ok := parseNextVarRef(value)
+		if !ok || ref.escaped {
 			break
 		}
 
-		// Skip escaped variables ($${ or $$()
-		if start > 0 && value[start-1] == '$' {
-			fmt.Printf("Skipping escaped variable at index %d\n", start)
-			break
-		}
-
-		endOffset := strings.Index(value[start:], endPat)
-		if endOffset == -1 {
-			fmt.Printf("Broken makefile variable reference in value: %s\n", value)
-			os.Exit(1)
-		}
-
-		key := value[start+2 : start+endOffset]
-
-		if isMakeFunction(key) {
-			fmt.Printf("Skipping Make function: %s%s%s\n", startPat, key, endPat)
-			value = value[:start] + value[start+endOffset+len(endPat):]
-			value = strings.TrimLeft(value, "/")
-			value = strings.TrimSpace(value)
+		if isMakeFunction(ref.key) {
+			value = stripMakeFuncCall(value, ref)
 			continue
 		}
 
-		fmt.Printf("Nested replacement found at index: %d (pattern: %s)\n", start, startPat)
-
-		replacement, ok := resolveVarRef(key, makefileInfo, defaultSpec)
-		if !ok {
-			fmt.Printf("Undefined makefile variable %s referenced in value: %s\n", key, value)
-			os.Exit(1)
-		}
-		value = strings.ReplaceAll(value, startPat+key+endPat, replacement)
-		fmt.Printf("Value after nested replacement: %s\n", value)
+		value = substituteVar(value, ref, makefileInfo, defaultSpec)
 	}
 
 	fmt.Printf("After: %s\n", value)
 	return value
 }
 
-// nextVarRef finds the earliest $( or ${ in value.
-// Returns (index, startPattern, endPattern) or (-1,"","") if none found.
-func nextVarRef(value string) (int, string, string) {
+// parseNextVarRef finds the earliest $( or ${ reference in value, extracts the
+// key name, and returns a populated varRef. Returns (_, false) when no reference
+// exists. Exits on malformed syntax (missing closing delimiter).
+func parseNextVarRef(value string) (varRef, bool) {
+	pos, openTok, closeTok := findVarRefStart(value)
+	if pos == -1 {
+		return varRef{}, false
+	}
+
+	if pos > 0 && value[pos-1] == '$' {
+		return varRef{escaped: true}, true
+	}
+
+	endOff := strings.Index(value[pos:], closeTok)
+	if endOff == -1 {
+		fmt.Printf("Broken makefile variable reference in value: %s\n", value)
+		os.Exit(1)
+	}
+
+	key := value[pos+2 : pos+endOff]
+	return varRef{
+		pos:      pos,
+		key:      key,
+		openTok:  openTok,
+		closeTok: closeTok,
+		span:     endOff + len(closeTok),
+	}, true
+}
+
+// stripMakeFuncCall removes a Make built-in function call (e.g. $(shell ...))
+// from value and trims any resulting leading slashes or whitespace.
+func stripMakeFuncCall(value string, ref varRef) string {
+	fmt.Printf("Skipping Make function: %s%s%s\n", ref.openTok, ref.key, ref.closeTok)
+	value = value[:ref.pos] + value[ref.pos+ref.span:]
+	value = strings.TrimLeft(value, "/")
+	return strings.TrimSpace(value)
+}
+
+// substituteVar replaces every occurrence of the variable reference in value
+// with its resolved value from Makefile variables or Dockerfile ARGs.
+// Exits if the variable cannot be resolved.
+func substituteVar(value string, ref varRef, makefileInfo *contents.MakefileInfo, defaultSpec *contents.DefaultSpec) string {
+	fmt.Printf("Nested replacement found at index: %d (pattern: %s)\n", ref.pos, ref.openTok)
+
+	replacement, ok := resolveVarRef(ref.key, makefileInfo, defaultSpec)
+	if !ok {
+		fmt.Printf("Undefined makefile variable %s referenced in value: %s\n", ref.key, value)
+		os.Exit(1)
+	}
+
+	value = strings.ReplaceAll(value, ref.openTok+ref.key+ref.closeTok, replacement)
+	fmt.Printf("Value after nested replacement: %s\n", value)
+	return value
+}
+
+// findVarRefStart finds the earliest $( or ${ in value.
+// Returns (index, openToken, closeToken) or (-1, "", "") if none found.
+func findVarRefStart(value string) (int, string, string) {
 	pi := strings.Index(value, "$(")
 	bi := strings.Index(value, "${")
 	switch {

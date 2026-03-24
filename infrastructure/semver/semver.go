@@ -8,6 +8,10 @@ import (
 	"strconv"
 )
 
+// fullTag is "azure-ipam/v0.4.0"
+// tag is plain "v0.4.0"
+// semTag is "0.4.0" (no leading "v")
+
 // ResolveOnboardTags resolves tag patterns against pre-fetched release and git tag lists.
 // releaseTags are tags with an associated release (GitHub) or annotated tags (ADO).
 // allGitTags are every tag in the repo.
@@ -24,9 +28,7 @@ func ResolveOnboardTags(releaseTags, allGitTags []string, repoPath string, patte
 			}
 		}
 		for _, resolved := range matched {
-			// Strip prefix (e.g. "azure-ipam/v0.4.0" → "v0.4.0") so all downstream
-			// naming (image tags, spec paths, git commits) uses a plain semver.
-			resolvedTags[StripToSemver(resolved)] = true
+			resolvedTags[resolved] = true
 		}
 	}
 

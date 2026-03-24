@@ -1,5 +1,36 @@
 package transformer
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// extractTargets.go — Generates the `targets:` section of a Dalec spec.
+//
+//   Chunk 1 · ORCHESTRATION            extractTargetsSection(), buildTargetEntry()
+//     Deduplicates OS names from BuildTargets, dispatches to per-OS builders.
+//     buildTargetEntry routes Linux vs Windows assembly.
+//     Calls → resolveTestPaths(), linuxDeps/ImageConfig, windowsDeps/Artifacts/ImageConfig
+//
+//   Chunk 2 · TEST PATHS               testPaths, resolveTestPaths()
+//     Determines the binary name, install path, and symlink path used in
+//     per-target file-existence tests.
+//     Calls → findPrimaryLinuxTarget(), canonicalBase()
+//
+//   Chunk 3 · LINUX TARGETS            linuxDeps(), mergeTargetDeps(), linuxImageConfig()
+//     Dependencies, image config, and extra repos for AZLinux / Debian / Ubuntu.
+//     Calls → msftLinuxExtraRepo(), extractLinuxSymlinks()
+//
+//   Chunk 4 · WINDOWS TARGET           windowsDeps(), windowsArtifacts(), windowsImageConfig()
+//     Dependencies, artifacts, and image config for the windowscross target.
+//     Calls → computeWindowsArtifactBinaries(), extractWindowsSymlinks()
+//
+//   Chunk 5 · EXTRA REPOS              msftLinuxExtraRepo(), microsoftRepoURI(),
+//                                       msftWindowsExtraRepo()
+//     Microsoft package repository definitions for apt sources.
+//
+//   Chunk 6 · UTILITIES                parseTargetOS(), findTargetSpecByOS(),
+//                                       findPrimaryLinuxTarget(),
+//                                       entrypointBinaryName(), canonicalBase()
+//     Target lookup helpers and shared functions used by other extract* files.
+// ═══════════════════════════════════════════════════════════════════════════════
+
 import (
 	"dalec-mapping/domain/contents"
 	"dalec-mapping/domain/llm"
@@ -11,16 +42,11 @@ import (
 	"strings"
 )
 
-// testPaths holds the resolved binary paths used for per-target file tests.
-type testPaths struct {
-	binaryName  string
-	binaryPath  string // real installed file (has permissions)
-	symlinkPath string // symlink (existence-only test)
-}
+// ─── Chunk 1 · ORCHESTRATION ─────────────────────────────────────────────────
 
-// extractTargets builds the `targets:` map for every build target in the spec.
+// extractTargetsSection builds the `targets:` map for every build target in the spec.
 // Each unique OS (azlinux3, windowscross, jammy, …) gets exactly one entry.
-func extractTargets(defaultSpec *contents.DefaultSpec, makefileInfo *contents.MakefileInfo, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
+func extractTargetsSection(defaultSpec *contents.DefaultSpec,  nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
 	tp := resolveTestPaths(defaultSpec, nonDeterministicValues)
 
 	targets := make(map[string]interface{})
@@ -58,6 +84,15 @@ func buildTargetEntry(osName string, tp testPaths, defaultSpec *contents.Default
 		test.TestCheckFiles(osName, tp.binaryName, tp.binaryPath, tp.symlinkPath, 0755),
 	}
 	return target
+}
+
+// ─── Chunk 2 · TEST PATHS ───────────────────────────────────────────────────
+
+// testPaths holds the resolved binary paths used for per-target file tests.
+type testPaths struct {
+	binaryName  string
+	binaryPath  string // real installed file (has permissions)
+	symlinkPath string // symlink (existence-only test)
 }
 
 // resolveTestPaths determines the binary name and install paths used in file tests.
@@ -101,48 +136,7 @@ func resolveTestPaths(defaultSpec *contents.DefaultSpec, nonDeterministicValues 
 	return tp
 }
 
-// canonicalBase extracts the file name component from a container path.
-// e.g. "/dropgz" → "dropgz", "/usr/local/bin/azure-ipam" → "azure-ipam".
-func canonicalBase(entrypoint string) string {
-	if entrypoint == "" {
-		return ""
-	}
-	if i := strings.LastIndex(entrypoint, "/"); i >= 0 {
-		return entrypoint[i+1:]
-	}
-	return entrypoint
-}
-
-// parseTargetOS splits "os/platform" and returns the OS portion.
-func parseTargetOS(buildTarget string) (string, bool) {
-	parts := strings.SplitN(buildTarget, "/", 2)
-	if len(parts) != 2 {
-		return "", false
-	}
-	return parts[0], true
-}
-
-// findTargetSpecByOS returns the TargetSpec whose TargetOS prefix matches osName.
-func findTargetSpecByOS(targets []llm.TargetSpec, osName string) *llm.TargetSpec {
-	for i, ts := range targets {
-		if strings.SplitN(ts.TargetOS, "/", 2)[0] == osName {
-			return &targets[i]
-		}
-	}
-	return nil
-}
-
-// findPrimaryLinuxTarget returns the first non-windowscross TargetSpec.
-func findPrimaryLinuxTarget(targets []llm.TargetSpec) *llm.TargetSpec {
-	for i, ts := range targets {
-		if !strings.HasPrefix(ts.TargetOS, "windowscross") {
-			return &targets[i]
-		}
-	}
-	return nil
-}
-
-// ── Linux targets ────────────────────────────────────────────────────────────
+// ─── Chunk 3 · LINUX TARGETS ────────────────────────────────────────────────
 
 // linuxDeps builds the dependencies map for a Linux target.
 func linuxDeps(osName string, defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
@@ -227,50 +221,7 @@ func linuxImageConfig(osName, binaryName string, nonDeterministicValues *llm.Non
 	return image
 }
 
-// msftLinuxExtraRepo returns the Microsoft apt extra_repos entry for a Debian/Ubuntu distro.
-func msftLinuxExtraRepo(distro string) map[string]interface{} {
-	return map[string]interface{}{
-		"keys": map[string]interface{}{
-			"microsoft.asc": map[string]interface{}{
-				"http": map[string]interface{}{
-					"url": "https://packages.microsoft.com/keys/microsoft.asc",
-				},
-			},
-		},
-		"config": map[string]interface{}{
-			"microsoft-prod": map[string]interface{}{
-				"inline": map[string]interface{}{
-					"file": map[string]interface{}{
-						"contents": fmt.Sprintf("deb [trusted=yes] %s %s main\n", microsoftRepoURI(distro), distro),
-					},
-				},
-			},
-		},
-		"envs": []string{"build", "install", "test"},
-	}
-}
-
-// microsoftRepoURI returns the packages.microsoft.com apt repo base URL for a distro.
-func microsoftRepoURI(distro string) string {
-	switch distro {
-	case "bookworm":
-		return "https://packages.microsoft.com/debian/12/prod"
-	case "bullseye":
-		return "https://packages.microsoft.com/debian/11/prod"
-	case "noble":
-		return "https://packages.microsoft.com/ubuntu/24.04/prod"
-	case "jammy":
-		return "https://packages.microsoft.com/ubuntu/22.04/prod"
-	case "focal":
-		return "https://packages.microsoft.com/ubuntu/20.04/prod"
-	case "bionic":
-		return "https://packages.microsoft.com/ubuntu/18.04/prod"
-	default:
-		return "https://packages.microsoft.com/" + distro + "/apt/prod"
-	}
-}
-
-// ── windowscross target ───────────────────────────────────────────────────────
+// ─── Chunk 4 · WINDOWS TARGET ───────────────────────────────────────────────
 
 // windowsDeps builds the dependencies map for the windowscross target.
 // Runtime deps are never allowed on windowscross — Dalec rejects them.
@@ -323,6 +274,51 @@ func windowsImageConfig(binaryName string, nonDeterministicValues *llm.NonDeterm
 	}
 }
 
+// ─── Chunk 5 · EXTRA REPOS ─────────────────────────────────────────────────
+
+// msftLinuxExtraRepo returns the Microsoft apt extra_repos entry for a Debian/Ubuntu distro.
+func msftLinuxExtraRepo(distro string) map[string]interface{} {
+	return map[string]interface{}{
+		"keys": map[string]interface{}{
+			"microsoft.asc": map[string]interface{}{
+				"http": map[string]interface{}{
+					"url": "https://packages.microsoft.com/keys/microsoft.asc",
+				},
+			},
+		},
+		"config": map[string]interface{}{
+			"microsoft-prod": map[string]interface{}{
+				"inline": map[string]interface{}{
+					"file": map[string]interface{}{
+						"contents": fmt.Sprintf("deb [trusted=yes] %s %s main\n", microsoftRepoURI(distro), distro),
+					},
+				},
+			},
+		},
+		"envs": []string{"build", "install", "test"},
+	}
+}
+
+// microsoftRepoURI returns the packages.microsoft.com apt repo base URL for a distro.
+func microsoftRepoURI(distro string) string {
+	switch distro {
+	case "bookworm":
+		return "https://packages.microsoft.com/debian/12/prod"
+	case "bullseye":
+		return "https://packages.microsoft.com/debian/11/prod"
+	case "noble":
+		return "https://packages.microsoft.com/ubuntu/24.04/prod"
+	case "jammy":
+		return "https://packages.microsoft.com/ubuntu/22.04/prod"
+	case "focal":
+		return "https://packages.microsoft.com/ubuntu/20.04/prod"
+	case "bionic":
+		return "https://packages.microsoft.com/ubuntu/18.04/prod"
+	default:
+		return "https://packages.microsoft.com/" + distro + "/apt/prod"
+	}
+}
+
 // msftWindowsExtraRepo returns the Microsoft Jammy apt extra_repos entry for the windowscross builder.
 func msftWindowsExtraRepo() map[string]interface{} {
 	return map[string]interface{}{
@@ -344,4 +340,60 @@ func msftWindowsExtraRepo() map[string]interface{} {
 		},
 		"envs": []string{"build", "install", "test"},
 	}
+}
+
+// ─── Chunk 6 · UTILITIES ────────────────────────────────────────────────────
+
+// parseTargetOS splits "os/platform" and returns the OS portion.
+func parseTargetOS(buildTarget string) (string, bool) {
+	parts := strings.SplitN(buildTarget, "/", 2)
+	if len(parts) != 2 {
+		return "", false
+	}
+	return parts[0], true
+}
+
+// findTargetSpecByOS returns the TargetSpec whose TargetOS prefix matches osName.
+func findTargetSpecByOS(targets []llm.TargetSpec, osName string) *llm.TargetSpec {
+	for i, ts := range targets {
+		if strings.SplitN(ts.TargetOS, "/", 2)[0] == osName {
+			return &targets[i]
+		}
+	}
+	return nil
+}
+
+// findPrimaryLinuxTarget returns the first non-windowscross TargetSpec.
+func findPrimaryLinuxTarget(targets []llm.TargetSpec) *llm.TargetSpec {
+	for i, ts := range targets {
+		if !strings.HasPrefix(ts.TargetOS, "windowscross") {
+			return &targets[i]
+		}
+	}
+	return nil
+}
+
+// entrypointBinaryName derives the canonical binary name from the primary
+// linux target's symlink path (the Dalec symlinks map key = real installed binary).
+// Returns "" when no linux target or symlink is set.
+func entrypointBinaryName(ndv *llm.NonDeterministicValues) string {
+	if ndv == nil {
+		return ""
+	}
+	if lt := findPrimaryLinuxTarget(ndv.Targets); lt != nil {
+		return canonicalBase(lt.Symlink)
+	}
+	return ""
+}
+
+// canonicalBase extracts the file name component from a container path.
+// e.g. "/dropgz" → "dropgz", "/usr/local/bin/azure-ipam" → "azure-ipam".
+func canonicalBase(entrypoint string) string {
+	if entrypoint == "" {
+		return ""
+	}
+	if i := strings.LastIndex(entrypoint, "/"); i >= 0 {
+		return entrypoint[i+1:]
+	}
+	return entrypoint
 }

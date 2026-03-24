@@ -9,7 +9,6 @@ import (
 	"runtime"
 	"strings"
 
-	"dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/github"
 	"dalec-mapping/utils"
 )
@@ -109,12 +108,10 @@ func runFipsChecker(runtimeImage string) error {
 func fetchTestScripts(testDir string) (map[string]string, error) {
 	scripts := make(map[string]string)
 
-	dirURL := fmt.Sprintf(
-		"https://api.github.com/repos/%s/%s/contents/%s?ref=%s",
+	items, err := github.FetchJSONArray(fmt.Sprintf(
+		"repos/%s/%s/contents/%s?ref=%s",
 		utils.OnboardOwner, utils.OnboardRepo, testDir, utils.OnboardBranch,
-	)
-
-	items, err := github.MakeGitHubRequest[[]map[string]interface{}](repository.GithubRequest{URL: dirURL})
+	))
 	if err != nil {
 		return nil, err // directory likely doesn't exist
 	}

@@ -3,7 +3,6 @@ package workflow
 import (
 	"bytes"
 	"context"
-	"dalec-mapping/domain/llm"
 	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/infrastructure/github"
 	"dalec-mapping/utils"
@@ -41,10 +40,10 @@ type ChatResponse struct {
 }
 
 // Populate analyzes dockerfiles and makefiles using LLM to extract non-deterministic values
-func Populate(ctx context.Context, onboard *onboarding.OnboardingInfo, fileContents *llm.InstructionContents) ([]byte, error) {
+func Populate(ctx context.Context, onboard *onboarding.OnboardingInfo) ([]byte, error) {
 	log.Printf("Running populate for repo: %s", onboard.Repository)
 
-	_, repoName, _ := github.ExtractRepositorySegments(onboard.Repository)
+	_, repoName, _ := github.FetchRepositorySegments(onboard.Repository)
 	resultPath := filepath.Join("result", repoName)
 
 	// Read skill.md
@@ -54,7 +53,7 @@ func Populate(ctx context.Context, onboard *onboarding.OnboardingInfo, fileConte
 	}
 
 	// Build user prompt
-	userPrompt := buildPrompt(fileContents.Dockerfile, fileContents.Makefile, onboard.SpecImageName)
+	userPrompt := buildPrompt(onboard.DockerfileContent, onboard.MakefileContent, onboard.SpecImageName)
 
 	// Call Azure Foundry API
 	log.Println("Calling Azure OpenAI API...")
@@ -80,7 +79,7 @@ func Populate(ctx context.Context, onboard *onboarding.OnboardingInfo, fileConte
 func fetchFileContents(onboard *onboarding.OnboardingInfo, paths []string) (map[string]string, error) {
 	contents := make(map[string]string)
 
-	owner, repoName, branch := github.ExtractRepositorySegments(onboard.Repository)
+	owner, repoName, branch := github.FetchRepositorySegments(onboard.Repository)
 
 	for _, path := range paths {
 		url := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", owner, repoName, branch, path)

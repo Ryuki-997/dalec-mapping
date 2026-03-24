@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"dalec-mapping/domain/llm"
 	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/semver"
@@ -22,8 +21,7 @@ func main() {
 	inputPath := flag.String("path", "", "Input path to search for onboarding files (e.g. specs/containernetworking and specs/containernetworking/azure-cns both work. It is the difference between building all components vs one). Omit to fetch all under specs/")
 	flag.Parse()
 
-	log.Println("Input path for onboarding files:", *inputPath)
-	
+	// Step 0: Load environment variables
 	wd, _ := os.Getwd()
 	log.Printf("Working directory: %s", wd)
 
@@ -32,8 +30,8 @@ func main() {
 		log.Printf("⚠️  .env file not found at %s/.env: %v", wd, err)
 	}
 	
+	// Step 1: Fetch onboarding files from the onboard repo
 	onboardFiles := []onboarding.OnboardingInfo{}
-
 	err = workflow.FetchOnboardFiles(&onboardFiles, *inputPath)
 	if err != nil {
 		log.Fatalf("❌ Failed to fetch onboard data: %v", err)
@@ -43,18 +41,35 @@ func main() {
 		log.Fatalf("No onboarding files found at path: %s", *inputPath)
 	}
 
-	// tmp return 
-	return;
-
 	shellVar := []string{}
 	for _, onboard := range onboardFiles {
 		log.Printf("Onboard Documents: %v\n", onboard)
 		for _, tag := range onboard.Tag {
-			// shortTag is the plain "vX.Y.Z" used for image naming and spec paths;
-			// the full tag (e.g. "azure-ipam/v0.4.0") is passed into the pipeline
-			// so git ref lookups work without a second API call.
+
 			shortTag := semver.StripToSemver(tag)
 			log.Printf("▶ Running pipeline for %s @ %s\n", onboard.Repository, tag)
+
+			// Step 2: Discover — also sets onboard.Mode based on sibling diff.
+			repoInfo := &repository.RepoInfo{}
+			if err := workflow.Discover(&onboard, repoInfo, tag); err != nil {
+				log.Fatalf("❌ Discover failed: %v", err)
+			}
+
+			if onboard.Mode == onboarding.CommitBump {
+				// Fast path: Dockerfile/Makefile unchanged — bump revision + commit only.
+				remotePath, err := workflow.CommitBump(&onboard, tag)
+				if err != nil {
+					log.Fatalf("❌ Revision bump failed: %v", err)
+				}
+				shellVar = append(shellVar, remotePath)
+				if err := workflow.GitPush(&onboard, shortTag); err != nil {
+					log.Fatalf("❌ Push failed: %v", err)
+				}
+				log.Printf("✅ Revision bump pushed for %s @ %s\n", onboard.SpecImageName, shortTag)
+				continue
+			}
+
+			// Full pipeline: LLM populate → generate → test → push.
 			remotePath, resolvedTargets := generateSpec(&onboard, tag)
 			shellVar = append(shellVar, remotePath)
 
@@ -63,8 +78,6 @@ func main() {
 	}
 
 	log.Printf("specPaths=%s\n", strings.Join(shellVar, ","))
-
-	// test()
 }
 
 func generateSpec(onboard *onboarding.OnboardingInfo, tag string) (string, []string) {
@@ -72,23 +85,11 @@ func generateSpec(onboard *onboarding.OnboardingInfo, tag string) (string, []str
 	log.Printf("Started at: %s", time.Now().Format(time.RFC3339))
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-	// Step 1: Discover build files
-	fileContents := &llm.InstructionContents{
-		Dockerfile: []byte{},
-		Makefile:   []byte{},
-	}
-	repositoryInfo := &repository.RepoInfo{}
-	log.Println("\n=== Step 1: Discover Build Files ===")
-	err := workflow.Discover(onboard, fileContents, repositoryInfo, tag)
-	if err != nil {
-		log.Fatalf("❌ Step 1 failed: %v", err)
-	}
-
 	ctx := context.Background()
 
 	// Step 2: Populate non-deterministic fields using LLM
 	log.Println("\n=== Step 2: Populate Non-Deterministic Fields ===")
-	agentResponse, err := workflow.Populate(ctx, onboard, fileContents)
+	agentResponse, err := workflow.Populate(ctx, onboard)
 	if err != nil {
 		log.Fatalf("❌ Step 2 failed: %v", err)
 		os.Exit(1)
@@ -98,7 +99,7 @@ func generateSpec(onboard *onboarding.OnboardingInfo, tag string) (string, []str
 
 	// Step 3: Generate Dalec spec
 	log.Println("\n=== Step 3: Generate Dalec Spec ===")
-	resolvedTargets, err := workflow.Generate(onboard, fileContents, agentResponse, tag)
+	resolvedTargets, err := workflow.Generate(onboard, agentResponse, tag)
 	if err != nil {
 		log.Fatalf("❌ Step 3 failed: %v", err)
 	}
@@ -108,8 +109,6 @@ func generateSpec(onboard *onboarding.OnboardingInfo, tag string) (string, []str
 
 	log.Printf("✅ Spec created successfully for repository %s @ %s", onboard.Repository, onboard.Tag)
 
-	// // Step 4: Output a shell variable consist of a list of remote generated spec path separated by comma for CI integration
-	// // specs/{repository}/{image}/{image}-{tag}-specfile.yml
 	shortTag := semver.StripToSemver(tag)
 	var specPath string
 	if onboard.SpecRepository == "" {
@@ -127,7 +126,7 @@ func testAndPush(onboard *onboarding.OnboardingInfo, remotePath, shortTag, tag s
 	}
 
 	// Step 6: Push to remote repository (only after image test passes)
-	if err := workflow.GitPush(onboard.SpecRepository, onboard.SpecImageName, tag); err != nil {
+	if err := workflow.GitPush(onboard, shortTag); err != nil {
 		log.Fatalf("❌ Step 6 failed: %v", err)
 	}
 }

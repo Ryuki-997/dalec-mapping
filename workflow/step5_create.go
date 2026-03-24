@@ -5,32 +5,18 @@ import (
 	"fmt"
 	"os"
 
+	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/github"
 	"dalec-mapping/utils"
 )
 
-// GitPush commits the spec file directly to the base branch.
-func GitPush(specRepository, specImageName, tag string) error {
-	// 1. Read the local spec file content
-	specContent, err := os.ReadFile(utils.SpecPath)
-	if err != nil {
-		return fmt.Errorf("failed to read spec file: %w", err)
-	}
-
-	encoded := base64.StdEncoding.EncodeToString(specContent)
-	file := fmt.Sprintf("%s-%s-specfile.yml", specImageName, tag)
-	var filePath string
-	if specRepository != "" {
-		filePath = fmt.Sprintf("specs/%s/%s/%s", specRepository, specImageName, file)
-	} else {
-		filePath = fmt.Sprintf("specs/%s/%s", specImageName, file)
-	}
-
-	// 2. Check if file exists and get SHA
-	contentsURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s", utils.OnboardOwner, utils.OnboardRepo, filePath)
+// commitFile pushes a single file to the onboard repo via the GitHub Contents API.
+func commitFile(filePath, message string, content []byte) error {
+	encoded := base64.StdEncoding.EncodeToString(content)
+	contentsPath := fmt.Sprintf("repos/%s/%s/contents/%s", utils.OnboardOwner, utils.OnboardRepo, filePath)
 	putPayload := map[string]interface{}{
-		"message": fmt.Sprintf("Add %s-%s-specfile.yml", specImageName, tag),
+		"message": message,
 		"committer": map[string]string{
 			"name":  "spec generation",
 			"email": "ryukikoda@microsoft.com",
@@ -39,28 +25,71 @@ func GitPush(specRepository, specImageName, tag string) error {
 		"branch":  utils.OnboardBranch,
 	}
 
-	// Try to get existing file SHA
-	existingFile, err := github.MakeGitHubRequest[map[string]interface{}](repository.GithubRequest{
-		URL: fmt.Sprintf("%s?ref=%s", contentsURL, utils.OnboardBranch),
-	})
-
-	// use existing file's SHA if it exists 
+	existingFile, err := github.FetchJSON(fmt.Sprintf("%s?ref=%s", contentsPath, utils.OnboardBranch))
 	if err == nil {
 		if sha, ok := existingFile["sha"].(string); ok {
 			putPayload["sha"] = sha
 		}
 	}
 
-	// 3. Commit the file  
-	_, err = github.MakeGitHubRequest[map[string]interface{}](repository.GithubRequest{
-		URL:     contentsURL,
-		Method:  repository.PUT,
-		Payload: putPayload,
-	})
+	_, err = github.WriteJSON(contentsPath, repository.PUT, putPayload)
 	if err != nil {
-		return fmt.Errorf("failed to commit file via GitHub API: %w", err)
+		return fmt.Errorf("failed to commit %s via GitHub API: %w", filePath, err)
+	}
+	fmt.Printf("Committed %s to %s\n", filePath, utils.OnboardBranch)
+	return nil
+}
+
+// GitPush commits the spec file and its sibling Dockerfile/Makefile to the base branch.
+func GitPush(onboard *onboarding.OnboardingInfo, tag string) error {
+	specRepository := onboard.SpecRepository
+	specImageName := onboard.SpecImageName
+	// 1. Read the local spec file content
+	specContent, err := os.ReadFile(utils.SpecPath)
+	if err != nil {
+		return fmt.Errorf("failed to read spec file: %w", err)
 	}
 
-	fmt.Printf("Committed %s to %s\n", filePath, utils.OnboardBranch)
+	// Build the directory prefix for all files.
+	var dir string
+	if specRepository != "" {
+		dir = fmt.Sprintf("specs/%s/%s", specRepository, specImageName)
+	} else {
+		dir = fmt.Sprintf("specs/%s", specImageName)
+	}
+
+	specFile := fmt.Sprintf("%s-%s-specfile.yml", specImageName, tag)
+
+	// 2. Push the spec file.
+	if err := commitFile(
+		fmt.Sprintf("%s/%s", dir, specFile),
+		fmt.Sprintf("Add %s-%s-specfile.yml", specImageName, tag),
+		specContent,
+	); err != nil {
+		return err
+	}
+
+	// 3. Push sibling Dockerfile (if present).
+	if len(onboard.DockerfileContent) > 0 {
+		if err := commitFile(
+			fmt.Sprintf("%s/Dockerfile", dir),
+			fmt.Sprintf("Add Dockerfile for %s", specImageName),
+			onboard.DockerfileContent,
+		); err != nil {
+			return err
+		}
+	}
+
+	// 4. Push sibling Makefile (if present).
+	if len(onboard.MakefileContent) > 0 {
+		if err := commitFile(
+			fmt.Sprintf("%s/Makefile", dir),
+			fmt.Sprintf("Add Makefile for %s", specImageName),
+			onboard.MakefileContent,
+		); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }

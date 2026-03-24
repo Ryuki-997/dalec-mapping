@@ -1,68 +1,92 @@
 package transformer
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// extractArtifacts.go — Generates the `artifacts:` section of a Dalec spec.
+//
+//   Chunk 1 · ORCHESTRATION            extractArtifactsSection()
+//     Assembles the global artifacts map: Linux binaries + license.
+//     Calls → computeArtifactPaths()
+//
+//   Chunk 2 · PATH RESOLUTION          computeArtifactPaths()
+//     Determines which built files become RPM artifacts.
+//     Priority: wrapper pipeline output > per-binary outputs > fallback.
+//     Calls → lastGoBuildOutputInPipeline(), resolveOutputPath(),
+//             entrypointBinaryName(), canonicalBase()
+//
+//   Chunk 3 · WINDOWS ARTIFACTS        computeWindowsArtifactBinaries()
+//     Derives .exe artifact paths from Linux paths (used by extractTargets).
+//
+//   Chunk 4 · UTILITIES                resolveOutputPath(), lastGoBuildOutputInPipeline()
+//     Helpers for extracting output paths from binary fields and pipeline steps.
+// ═══════════════════════════════════════════════════════════════════════════════
+
 import (
 	"dalec-mapping/domain/contents"
 	"dalec-mapping/domain/llm"
-	"dalec-mapping/infrastructure/github"
 
 	"fmt"
 	"path/filepath"
+	"regexp"
+	"strings"
 )
 
+// goBuildOutputRe matches `-o /go/bin/<name>` in go build commands.
+var goBuildOutputRe = regexp.MustCompile(`-o\s+(/go/bin/[^\s]+)`)
+
+// ─── Chunk 1 · ORCHESTRATION ─────────────────────────────────────────────────
+
+// extractArtifactsSection returns the global artifacts section (Linux binaries + license).
+func extractArtifactsSection(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
+	binaries := make(map[string]interface{})
+	for path := range computeArtifactPaths(defaultSpec, nonDeterministicValues) {
+		binaries[path] = map[string]interface{}{}
+	}
+	return map[string]interface{}{
+		"binaries": binaries,
+		"licenses": map[string]interface{}{
+			defaultSpec.Repo + "/LICENSE": map[string]interface{}{},
+		},
+	}
+}
+
+// ─── Chunk 2 · PATH RESOLUTION ──────────────────────────────────────────────
+
 // computeArtifactPaths returns the Linux binary artifact paths (no .exe).
-// When the primary linux entrypoint names a different binary than binaries[0]
-// (e.g. the build wraps "azure-ipam" into a "dropgz" container binary), the
-// artifact path is rewritten to /go/bin/<entrypointBase> so it matches the
-// file actually produced by the build step.
 func computeArtifactPaths(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
 	paths := make(map[string]interface{})
 
-	// Canonical binary name derived from the symlinks key (the real installed binary path).
-	// This is the map KEY in image.post.symlinks, which is the target path that artifacts
-	// get installed to (e.g. "/usr/bin/dropgz"). The entrypoint is where the symlink lives.
-	epBase := ""
-	if nonDeterministicValues != nil {
-		if lt := findPrimaryLinuxTarget(nonDeterministicValues.Targets); lt != nil {
-			epBase = canonicalBase(lt.Symlink)
+	// Wrapper pipeline: the LAST go build output from pipeline steps is the final artifact.
+	if nonDeterministicValues != nil && len(nonDeterministicValues.PipelineSteps) > 0 {
+		if wrapperPath := lastGoBuildOutputInPipeline(nonDeterministicValues.PipelineSteps); wrapperPath != "" {
+			paths[filepath.ToSlash(wrapperPath)] = struct{}{}
+			fmt.Printf("ARTIFACTS: %v\n", wrapperPath)
+			return paths
 		}
 	}
 
-	addPath := func(outputPath string) {
-		if outputPath == "" {
-			return
-		}
-		artifact := filepath.ToSlash(outputPath)
-		paths[artifact] = struct{}{}
-		fmt.Printf("ARTIFACTS: %v\n", artifact)
-	}
-
+	// Standard case: derive from binaries.
 	if nonDeterministicValues != nil && len(nonDeterministicValues.Binaries) > 0 {
-		for _, aux := range nonDeterministicValues.Binaries {
-			outputPath := aux.OutputPath
-			github.ClearEnvVariables("OutputPath", &outputPath)
-
-			// Derive from -o flag if outputPath not set (safety fallback)
-			if outputPath == "" {
-				if flagPath := extractOutputFlag(aux.BuildCommand); flagPath != "" {
-					outputPath = flagPath
-				} else {
-					outputPath = "/go/bin/" + aux.Name
-				}
+		epBase := entrypointBinaryName(nonDeterministicValues)
+		for _, bin := range nonDeterministicValues.Binaries {
+			p := resolveOutputPath(bin)
+			// Single-binary rename when entrypoint differs.
+			if epBase != "" && canonicalBase(p) != epBase && len(nonDeterministicValues.Binaries) == 1 {
+				p = "/go/bin/" + epBase
 			}
-
-			// Override when the entrypoint reveals a different canonical name
-			// (e.g. "dropgz" when outputPath ends in "azure-ipam").
-			if epBase != "" && canonicalBase(outputPath) != epBase {
-				outputPath = "/go/bin/" + epBase
-			}
-
-			addPath(outputPath)
+			artifact := filepath.ToSlash(p)
+			paths[artifact] = struct{}{}
+			fmt.Printf("ARTIFACTS: %v\n", artifact)
 		}
-	} else {
-		addPath("/go/bin/" + defaultSpec.Repo)
+		return paths
 	}
+
+	// Fallback.
+	paths["/go/bin/"+defaultSpec.Repo] = struct{}{}
+	fmt.Printf("ARTIFACTS: /go/bin/%s\n", defaultSpec.Repo)
 	return paths
 }
+
+// ─── Chunk 3 · WINDOWS ARTIFACTS ────────────────────────────────────────────
 
 // computeWindowsArtifactBinaries returns the windowscross artifact binaries map.
 // Appends ".exe" to each Linux artifact key — matches the file written by the
@@ -75,17 +99,29 @@ func computeWindowsArtifactBinaries(defaultSpec *contents.DefaultSpec, nonDeterm
 	return binaries
 }
 
-// extractArtifacts returns the global artifacts section (Linux binaries + license).
-// Windows (.exe) artifacts are emitted per-target under targets.windowscross.artifacts.
-func extractArtifacts(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
-	binaries := make(map[string]interface{})
-	for path := range computeArtifactPaths(defaultSpec, nonDeterministicValues) {
-		binaries[path] = map[string]interface{}{}
+// ─── Chunk 4 · UTILITIES ────────────────────────────────────────────────────
+
+// resolveOutputPath derives the artifact output path from a binary's fields.
+func resolveOutputPath(bin llm.Binary) string {
+	if bin.OutputPath != "" {
+		return bin.OutputPath
 	}
-	return map[string]interface{}{
-		"binaries": binaries,
-		"licenses": map[string]interface{}{
-			defaultSpec.Repo + "/LICENSE": map[string]interface{}{},
-		},
+	if flagPath := extractOutputFlag(bin.BuildCommand); flagPath != "" {
+		return flagPath
 	}
+	return "/go/bin/" + bin.Name
+}
+
+// lastGoBuildOutputInPipeline scans pipeline steps for `go build -o /go/bin/<name>`
+// and returns the LAST output path found (the wrapper binary / final artifact).
+func lastGoBuildOutputInPipeline(steps []string) string {
+	var last string
+	for _, step := range steps {
+		for _, line := range strings.Split(step, "\n") {
+			if m := goBuildOutputRe.FindStringSubmatch(line); m != nil {
+				last = m[1]
+			}
+		}
+	}
+	return last
 }

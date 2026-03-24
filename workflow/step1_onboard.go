@@ -1,13 +1,11 @@
 package workflow
 
 import (
-	"encoding/base64"
 	"fmt"
 	"log"
 	"strings"
 
 	"dalec-mapping/domain/onboarding"
-	"dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/ado"
 	"dalec-mapping/infrastructure/github"
 	"dalec-mapping/infrastructure/semver"
@@ -24,9 +22,7 @@ func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, inputPath str
 		inputPath = "specs/" + inputPath
 	}
 
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/%s?recursive=1", utils.OnboardOwner, utils.OnboardRepo, utils.OnboardBranch)
-
-	data, err := github.MakeGitHubRequest[map[string]interface{}](repository.GithubRequest{URL: url})
+	data, err := github.FetchJSON(fmt.Sprintf("repos/%s/%s/git/trees/%s?recursive=1", utils.OnboardOwner, utils.OnboardRepo, utils.OnboardBranch))
 	if err != nil {
 		return fmt.Errorf("failed to fetch onboard data: %w", err)
 	}
@@ -60,7 +56,8 @@ func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, inputPath str
 			continue
 		}
 
-		content, err := getOnboardFileContent(path)
+		rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", utils.OnboardOwner, utils.OnboardRepo, utils.OnboardBranch, path)
+		content, err := github.FetchRawContent(rawURL)
 		if err != nil {
 			return fmt.Errorf("failed to fetch onboard file %s: %w", path, err)
 		}
@@ -73,14 +70,40 @@ func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, inputPath str
 		onboard := onboarding.OnboardingInfo{
 			Repository: "",
 			Tag:        []string{},
-			Dockerfile: "",
-			Makefile:   "",
+			DockerfileDir: "",
+			MakefileDir:   "",
 			SpecImageName: specImageName,
 			SpecRepository: specRepository,
+			OnboardDir: path[:strings.LastIndex(path, "/")],
 		}
 
 		if err := yaml.Unmarshal(content, &onboard); err != nil {
 			return fmt.Errorf("failed to unmarshal onboard data: %w", err)
+		}
+
+		// Check for sibling Dockerfile and Makefile in the onboard repo folder.
+		// Their presence indicates this image has been onboarded before.
+		siblingDockerfile := onboard.OnboardDir + "/Dockerfile"
+		siblingMakefile := onboard.OnboardDir + "/Makefile"
+		hasDockerfile := treePaths[siblingDockerfile]
+		hasMakefile := treePaths[siblingMakefile]
+
+		if !hasDockerfile || !hasMakefile {
+			log.Printf("No sibling Dockerfile/Makefile found for %s — treating as first-time onboard\n", specImageName)
+		} else {
+			// Existing onboard — fetch cached siblings for diff comparison in Discover.
+			rawBase := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s", utils.OnboardOwner, utils.OnboardRepo, utils.OnboardBranch)
+			cachedDF, err := github.FetchRawContent(rawBase + "/" + siblingDockerfile)
+			if err != nil {
+				return fmt.Errorf("failed to fetch cached Dockerfile %s: %w", siblingDockerfile, err)
+			}
+			cachedMF, err := github.FetchRawContent(rawBase + "/" + siblingMakefile)
+			if err != nil {
+				return fmt.Errorf("failed to fetch cached Makefile %s: %w", siblingMakefile, err)
+			}
+			onboard.DockerfileContent = cachedDF
+			onboard.MakefileContent = cachedMF
+			log.Printf("📂 Found existing Dockerfile and Makefile siblings for %s — will diff in Discover\n", specImageName)
 		}
 		
 		if onboard.Tag == nil {
@@ -97,7 +120,14 @@ func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, inputPath str
 		// Filter out resolved tags whose spec files already exist in the remote repo
 		filteredTags := getFilteredTags(resolvedTags, onboard.SpecRepository, onboard.SpecImageName, treePaths)
 
-		if len(filteredTags) > 0 {
+		if hasDockerfile && hasMakefile {
+			// For re-onboard (revision bump), we want tags that ALREADY have specs.
+			existingTags := getExistingTags(resolvedTags, onboard.SpecRepository, onboard.SpecImageName, treePaths)
+			if len(existingTags) > 0 {
+				onboard.Tag = existingTags
+				*onboardImages = append(*onboardImages, onboard)
+			}
+		} else if len(filteredTags) > 0 {
 			onboard.Tag = filteredTags
 			*onboardImages = append(*onboardImages, onboard)
 		}
@@ -138,38 +168,11 @@ func getExistingFilePaths(items []interface{}) map[string]bool {
 	return treePaths
 }
 
-func getOnboardFileContent(path string) ([]byte, error) {
-	contentsURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s?ref=%s",utils.OnboardOwner, utils.OnboardRepo, path, utils.OnboardBranch)
-
-	fileData, err := github.MakeGitHubRequest[map[string]interface{}](repository.GithubRequest{URL: contentsURL})
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch onboard file %s: %w", path, err)
-	}
-
-	contentStr, ok := fileData["content"].(string)
-	if !ok {
-		return nil, fmt.Errorf("unexpected response: missing or invalid content field")
-	}
-
-	content, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(contentStr, "\n", ""))
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode base64 content: %w", err)
-	}
-	return content, nil
-}
-
 func getFilteredTags(resolvedTags []string, specRepo, specImage string, existingPaths map[string]bool) []string {
 	var filteredTags []string
 	for _, tag := range resolvedTags {
-		// Strip to plain semver for the spec file path check (e.g. "azure-ipam/v0.4.0" → "v0.4.0").
-		// The full tag is preserved in filteredTags for downstream git operations.
 		shortTag := semver.StripToSemver(tag)
-		var specPath string
-		if specRepo != "" {
-			specPath = fmt.Sprintf("specs/%s/%s/%s-%s-specfile.yml", specRepo, specImage, specImage, shortTag)
-		} else {
-			specPath = fmt.Sprintf("specs/%s/%s-%s-specfile.yml", specImage, specImage, shortTag)
-		}
+		specPath := specFilePath(specRepo, specImage, shortTag)
 		if existingPaths[specPath] {
 			log.Printf("⏭  Skipping %s @ %s: spec file already exists at %s\n", specImage, tag, specPath)
 			continue
@@ -177,6 +180,27 @@ func getFilteredTags(resolvedTags []string, specRepo, specImage string, existing
 		filteredTags = append(filteredTags, tag)
 	}
 	return filteredTags
+}
+
+// getExistingTags is the inverse of getFilteredTags — returns tags that already have specs.
+func getExistingTags(resolvedTags []string, specRepo, specImage string, existingPaths map[string]bool) []string {
+	var existing []string
+	for _, tag := range resolvedTags {
+		shortTag := semver.StripToSemver(tag)
+		specPath := specFilePath(specRepo, specImage, shortTag)
+		if existingPaths[specPath] {
+			existing = append(existing, tag)
+		}
+	}
+	return existing
+}
+
+// specFilePath returns the remote path for a spec file.
+func specFilePath(specRepo, specImage, shortTag string) string {
+	if specRepo != "" {
+		return fmt.Sprintf("specs/%s/%s/%s-%s-specfile.yml", specRepo, specImage, specImage, shortTag)
+	}
+	return fmt.Sprintf("specs/%s/%s-%s-specfile.yml", specImage, specImage, shortTag)
 }
 
 // isADORepo returns true when the repository URL points to an Azure DevOps repo
@@ -204,7 +228,7 @@ func resolveTagsForRepo(repoURL string, patterns []string) ([]string, error) {
 		return semver.ResolveOnboardTags(allTags, allTags, repoURL, patterns)
 	}
 
-	owner, repoName, _ := github.ExtractRepositorySegments(repoURL)
+	owner, repoName, _ := github.FetchRepositorySegments(repoURL)
 	releaseTags, allTags, err := github.FetchAllTags(owner, repoName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch tags for %s: %w", repoURL, err)

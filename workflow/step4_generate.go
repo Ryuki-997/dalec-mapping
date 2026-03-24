@@ -5,7 +5,6 @@ import (
 	"os"
 	"path"
 
-	"dalec-mapping/domain/llm"
 	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/infrastructure/github"
 	"dalec-mapping/infrastructure/parser"
@@ -15,9 +14,9 @@ import (
 
 // Generate runs the generation step to create dalec specs.
 // Returns the resolved build target strings for downstream use (e.g. image test).
-func Generate(onboard *onboarding.OnboardingInfo, fileContents *llm.InstructionContents, agentResponse []byte, tag string) ([]string, error) {
+func Generate(onboard *onboarding.OnboardingInfo, agentResponse []byte, tag string) ([]string, error) {
 	fmt.Println("=== GENERATE MODE ===")
-	subdir := path.Dir(onboard.Dockerfile)
+	subdir := path.Dir(onboard.DockerfileDir)
 
 	// Fetch GitHub repository info
 	repoInfo, err := github.FetchRepoInfo(onboard.Repository, subdir, tag)
@@ -30,7 +29,7 @@ func Generate(onboard *onboarding.OnboardingInfo, fileContents *llm.InstructionC
 	specFilePath := ""
 
 	// Parse Dockerfile if path provided
-	dockerfileInfo, makefileInfo, nonDeterministicInfo, previousDalecSpecInfo, err := parser.ParseOptionalFileInfo(fileContents.Dockerfile, fileContents.Makefile, specFilePath, agentResponse)
+	dockerfileInfo, makefileInfo, nonDeterministicInfo, previousDalecSpecInfo, err := parser.ParseOptionalFileInfo(onboard.DockerfileContent, onboard.MakefileContent, specFilePath, agentResponse)
 	if err != nil {
 		fmt.Printf("❌ Error parsing optional files: %v\n", err)
 		os.Exit(1)

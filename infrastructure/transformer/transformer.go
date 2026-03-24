@@ -14,6 +14,7 @@ import (
 type DalecSpec map[string]interface{}
 
 func InitDefaultSpec(onboardInfo *onboarding.OnboardingInfo, repoInfo *repository.RepoInfo, dockerfileInfo *contents.DockerfileInfo, previousDalecSpecInfo PreviousDalecSpec) *contents.DefaultSpec {
+	// Initialize & Populate Source of Truth Attributes from onboarding and repository info
 	defaultSpec := &contents.DefaultSpec{}
 	defaultSpec.RepoInfo = *repoInfo
 
@@ -23,6 +24,7 @@ func InitDefaultSpec(onboardInfo *onboarding.OnboardingInfo, repoInfo *repositor
 		defaultSpec.DockerfileInfo = *dockerfileInfo
 	}
 
+	// Versioning logic: if repo version has changed since last spec, reset revision to 1, else increment
 	if repoInfo.Version != previousDalecSpecInfo.Args.Version {
 		defaultSpec.Revision = 1
 	} else {
@@ -45,22 +47,26 @@ func TransformToDalec(defaultSpec *contents.DefaultSpec, makefileInfo *contents.
 	// Add syntax header (special comment format)
 	spec["# syntax"] = "ghcr.io/azure/dalec/frontend:latest"
 
+	// Detect go mod download patterns once — shared across build, sources, and args.
+	goModDownloads := DetectGoModDownloads(defaultSpec, nonDeterministicValues)
+
 	// Compute build section first to discover which variables are referenced
-	buildSection, referencedVars := extractBuildSection(defaultSpec, makefileInfo, nonDeterministicValues)
+	buildSection, referencedVars := extractBuildSection(defaultSpec, makefileInfo, nonDeterministicValues, goModDownloads)
 	spec["build"] = buildSection
 
-	// Initialize args section — only include Makefile vars that are actually used
-	spec["args"] = populateArgs(defaultSpec, makefileInfo, referencedVars)
-	populateMetadata(defaultSpec, spec)
+	// Initialize args + metadata — only include Makefile vars that are actually used
+	args := extractDefaultsSection(defaultSpec, makefileInfo, referencedVars, goModDownloads, spec)
+	spec["args"] = args
 
 	// Build extensions section
 	spec["x-build-extensions"] = extractBuildExtensions(defaultSpec)
 
 	// Transform Dockerfile content to Dalec sections
-	spec["sources"] = extractSources(defaultSpec, nonDeterministicValues)
+	spec["sources"] = extractSourcesSection(defaultSpec, nonDeterministicValues, goModDownloads)
+
 	spec["dependencies"] = extractDependencies()
-	spec["artifacts"] = extractArtifacts(defaultSpec, nonDeterministicValues)
-	spec["targets"] = extractTargets(defaultSpec, makefileInfo, nonDeterministicValues)
+	spec["artifacts"] = extractArtifactsSection(defaultSpec, nonDeterministicValues)
+	spec["targets"] = extractTargetsSection(defaultSpec, nonDeterministicValues)
 	spec["tests"] = extractTests()
 
 	return spec
