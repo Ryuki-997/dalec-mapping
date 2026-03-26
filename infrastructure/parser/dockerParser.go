@@ -108,7 +108,11 @@ func ParseDockerfile(dockerfile []byte, info *contents.DockerfileInfo) (*content
 
 		case "ARG":
 			key, value := parseKeyValue(node.Next)
-			info.Args[key] = value
+			// Preserve a valued global ARG when a stage re-declares without a default.
+			// Docker inherits the global default in this case (ARG FOO inside a stage).
+			if value != "" || info.Args[key] == "" {
+				info.Args[key] = value
+			}
 			if currentStage != nil {
 				currentStage.Args[key] = value
 			}

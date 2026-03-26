@@ -1,4 +1,4 @@
-package github
+package repository
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // repository.go — GitHub API client and repository metadata fetching.
@@ -389,13 +389,13 @@ func fetchTagInfo(info *repository.RepoInfo, tag string) error {
 	fullTag := tag
 	data, err := FetchJSON(fmt.Sprintf("repos/%s/%s/git/ref/tags/%s", info.Owner, info.Repo, fullTag))
 	if err != nil {
-		_, allGitTags, fetchErr := FetchAllTags(info.Owner, info.Repo)
+		_, allGitTags, fetchErr := FetchAllGithubTags(info.Owner, info.Repo)
 		if fetchErr != nil {
 			return fmt.Errorf("tag %q not found and could not fetch tag list: %w", tag, fetchErr)
 		}
 		for _, t := range allGitTags {
-			if semverInTag.FindString(t) == tag {
-				fullTag = t
+			if semverInTag.FindString(t.Name) == tag {
+				fullTag = t.Name
 				break
 			}
 		}
@@ -437,9 +437,10 @@ func FetchTagCommit(owner, repo, tagRef string) (string, error) {
 	return "", fmt.Errorf("failed to extract commit SHA from tag %q", tagRef)
 }
 
-// FetchAllTags fetches all tags for a repository, returning both
+// FetchAllGithubTags fetches all tags for a repository, returning both
 // release-filtered tags and the full set of git tags.
-func FetchAllTags(owner, repo string) (releaseTags []string, allGitTags []string, err error) {
+// Each TagInfo carries the tag name and its commit SHA.
+func FetchAllGithubTags(owner, repo string) (releaseTags []TagInfo, allGitTags []TagInfo, err error) {
 	releaseSet := make(map[string]bool)
 	page := 1
 	for {
@@ -467,13 +468,20 @@ func FetchAllTags(owner, repo string) (releaseTags []string, allGitTags []string
 		if !ok {
 			continue
 		}
-		ref = strings.TrimPrefix(ref, "refs/tags/")
-		allGitTags = append(allGitTags, ref)
+		name := strings.TrimPrefix(ref, "refs/tags/")
 
-		if len(releaseSet) > 0 && !releaseSet[ref] {
+		var sha string
+		if obj, ok := item["object"].(map[string]interface{}); ok {
+			sha, _ = obj["sha"].(string)
+		}
+
+		ti := TagInfo{Name: name, Commit: sha}
+		allGitTags = append(allGitTags, ti)
+
+		if len(releaseSet) > 0 && !releaseSet[name] {
 			continue
 		}
-		releaseTags = append(releaseTags, ref)
+		releaseTags = append(releaseTags, ti)
 	}
 	return releaseTags, allGitTags, nil
 }

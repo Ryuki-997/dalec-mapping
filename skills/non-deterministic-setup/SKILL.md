@@ -60,13 +60,11 @@ type Binary struct {
 
 ### Output Location
 
-The LLM must generate and return the extracted values as YAML in the following format:
-
 ```bash
 result/{repo-name}/NonDeterministicValues.yml
 ```
 
-Where `{repo-name}` is the repository name (e.g., `kubelogin`, `blob-csi-driver`). The YAML output is then persisted to this location in the result directory.
+Where `{repo-name}` is the repository name (e.g., `kubelogin`, `blob-csi-driver`).
 
 ---
 
@@ -76,201 +74,77 @@ Where `{repo-name}` is the repository name (e.g., `kubelogin`, `blob-csi-driver`
 
 Before extracting individual fields, walk through the entire Dockerfile top-to-bottom to understand its architecture. Every binary name, output path, and dependency is **explicitly written** in the Dockerfile and Makefile — do not guess or infer them from the image name alone.
 
+**ABSOLUTE RULE — Zero Inference on Build Commands:** Every `buildCommand`, `ldFlags`, and `pipelineSteps` entry must be a **literal 1:1 copy** of what appears in the Dockerfile. Do NOT add, remove, reorder, or infer any flags. Do NOT pull flags from the Makefile that are not already present in the Dockerfile's `RUN` line. The Makefile is used ONLY to resolve `$VAR` / `$(VAR)` references that the Dockerfile explicitly uses — it is NEVER a source of additional flags. If the Dockerfile says `-ldflags "-X main.version=${VERSION}"`, the output must say exactly that — not `-ldflags "-s -w -X main.version=${VERSION}"`.
+
 #### Core Concept: Component-Based Extraction
 
-Each Dockerfile may build multiple components (binaries), but **one spec is generated per component**. The prompt identifies which component to extract. Each component is treated independently — even if multiple components share the same Dockerfile and Makefile, they are separate specs with separate binaries, entrypoints, and dependencies.
+Each Dockerfile may build multiple components (binaries), but **one spec is generated per component**. The prompt identifies which component to extract. Each component is treated independently.
 
 #### Source Roles
 
 | Source | Role | Use for |
 | ------ | ---- | ------- |
-| **Dockerfile** | Defines the actual build steps executed in CI. Contains the canonical `go build` commands, package paths, `COPY` instructions, and `ENTRYPOINT` declarations. | Binary names, output paths, build commands, package paths, entrypoints, runtime deps |
-| **Makefile** | Defines variable values (`VERSION`, directory paths, ldflags formulas). Its build targets are for **local development** and may differ from the Dockerfile's CI build. | Resolving `$VAR` / `$(VAR)` references found in Dockerfile commands; directory variable definitions |
-| **Target component** (from prompt) | Identifies which component this spec is for. The prompt provides this as the image/component name. | Selecting which binary to extract when the Dockerfile builds multiple components. **Not** the source of binary names or paths — those come from the Dockerfile and Makefile. |
+| **Dockerfile** | Canonical build steps as executed in CI — the ONLY source of build commands and flags | Binary names, output paths, build commands, flags, ldflags, package paths, entrypoints, runtime deps |
+| **Makefile** | Variable definitions ONLY (`VERSION`, directory paths) — NEVER a source of build flags or ldflags | Resolving `$VAR` / `$(VAR)` references that the Dockerfile explicitly uses. Do NOT pull flags from Makefile into build commands |
+| **Target component** (from prompt) | Identifies which component this spec is for | Selecting which binary to extract. **Not** the source of binary names or paths |
 
 #### Step-by-Step Stage Analysis
 
 1. **Enumerate all stages.** Parse every `FROM ... AS <name>` to build a complete stage map.
 
-2. **Classify each stage and document its role.** Every stage must be accounted for — do not skip any. Build a pipeline description that shows how artifacts flow from stage to stage:
+2. **Classify each stage and document its role:**
 
    | Stage type | Recognition signal | Record |
    | ---------- | ------------------ | ------ |
-   | **Base image** | `FROM <image> AS <name>` with no `RUN` build commands; provides toolchain or OS | Role: "provides Go compiler" / "provides OS tools" |
-   | **Build stage** | Contains `RUN go build -o <path>` producing binaries from the repo's source code | Binary name, output path, package path, ldflags; list ALL `RUN go build` commands |
-   | **Intermediate stage** | Copies from build stage; runs gathering, checksumming, or compression (`COPY`, `sha256sum`, `gzip`) | What it copies, what it produces (e.g. "gathers 5 binaries + config files into /payload, compresses them") |
-   | **Wrapper stage** | Contains `go build` for a *different* Go module (separate `go.mod`, different ldflags module path); often downloads the module via `go mod download` | Binary name, module path, what it embeds (e.g. "embeds compressed payload from compressor stage into self-extracting binary") |
-   | **Final stage** | `FROM scratch`, `FROM <base> AS linux`, `FROM <base> AS windows`; contains `ENTRYPOINT`/`CMD` | What binary it copies, from which stage, and its ENTRYPOINT |
+   | **Base image** | `FROM <image> AS <name>` with no `RUN` build commands | Role: "provides Go compiler" / "provides OS tools" |
+   | **Build stage** | Contains `RUN go build -o <path>` | Binary name, output path, package path, ldflags |
+   | **Intermediate stage** | Copies from build stage; runs gathering/compression | What it copies, what it produces |
+   | **Wrapper stage** | `go build` for a *different* Go module (separate `go.mod`) | Binary name, module path, what it embeds |
+   | **Final stage** | `FROM scratch` / `FROM <base> AS linux/windows`; has `ENTRYPOINT`/`CMD` | Binary copied, source stage, ENTRYPOINT |
 
-   **You must produce a stage-by-stage pipeline summary** like:
-   ```
-   go          → base image providing Go 1.24 compiler
-   mariner-core → base image providing gzip/sha256sum tools
-   azure-vnet  → BUILD: compiles 5 CNI binaries (azure-vnet, azure-vnet-telemetry, azure-vnet-ipam, azure-vnet-stateless, azure-cni-telemetry-sidecar) from WORKDIR /azure-container-networking
-   compressor  → INTERMEDIATE: gathers binaries + 6 config .conflist files + telemetry config into /payload, checksums, gzips
-   dropgz      → WRAPPER: downloads dropgz module, embeds compressed /payload, builds self-extracting /go/bin/dropgz
-   linux       → FINAL: COPY dropgz from wrapper → ENTRYPOINT ["/dropgz"]
-   windows     → FINAL: COPY dropgz.exe from wrapper → ENTRYPOINT ["/dropgz.exe"]
-   ```
-   This pipeline summary ensures you understand how the Dockerfile works end-to-end before extracting any values.
+   **You must produce a stage-by-stage pipeline summary** before extracting any values.
 
-3. **Identify the target binary** — work through these sub-steps in order:
+3. **Identify the target binary:**
 
-   **3a. Inventory all binaries.** Walk through every build stage and every wrapper stage. For each `RUN go build -o <path>` command, record:
-   - The binary name (from the `-o` flag's last path segment)
-   - Which stage produced it
-   - The full build command, ldflags, and package path
+   **3a.** Inventory all binaries — for each `RUN go build -o <path>`, record name, stage, command, ldflags, package path.
 
-   **3b. Trace from the final stage backwards.** Read `ENTRYPOINT` and `COPY --from=<stage>` in the final stage(s) to see what binary ends up in the container.
+   **3b.** Trace from the final stage backwards via `ENTRYPOINT` and `COPY --from=<stage>`.
 
-   **3c. Determine if the final stage's binary comes from a build stage or a wrapper.**
-   - If `COPY --from=<build-stage>` → the binary comes directly from a build stage. Emit its `go build` commands as `binaries[]`. No `pipelineSteps` needed.
-   - If `COPY --from=<wrapper-stage>` → the final binary is a wrapper. **Proceed to 3d.**
+   **3c.** If `COPY --from=<build-stage>` → direct build. Emit `binaries[]`, no `pipelineSteps`.
+   If `COPY --from=<wrapper-stage>` → wrapper pipeline. Proceed to 3d.
 
-   **3d. When the final stage uses a wrapper (compress→wrap pipeline):**
-   The Dockerfile pipeline is: build-stage binaries → intermediate (gather + compress) → wrapper (embed + go build). The Dalec build steps must reproduce this **entire pipeline** 1:1.
+   **3d. Wrapper pipeline (build→compress→wrap):** Emit the **entire pipeline** 1:1. See **Rule 10** in Task 1.1 for full details. In summary:
+   - `binaries[]` — one entry per `go build` in the build stage
+   - `pipelineSteps[]` — ordered shell commands from intermediate + wrapper stages
+   - Entrypoint — the **wrapper binary's name**
 
-   **What to emit:**
-   1. **`binaries[]`** — one entry per `go build` in the build stage (these are the intermediate binaries fed into the compressor).
-   2. **`pipelineSteps[]`** — ordered shell commands from the intermediate and wrapper stages:
-      - File gathering (`mkdir -p`, `cp` commands from the compressor `COPY` instructions)
-      - Checksumming and compression (`sha256sum`, `gzip`)
-      - Module download for the wrapper (`go mod download ...@${VERSION}`)
-      - Payload embedding (`cp /payload/* pkg/embed/fs/`)
-      - Wrapper go build (`go build -o /go/bin/<wrapper> ...`)
-   3. **Targets entrypoint** — use the **wrapper binary's name** (from the final stage's ENTRYPOINT), since that is what the container actually runs.
+   **COPY → cp translation (checksum-critical):**
+   The goal is to match the Dockerfile 1:1. **Copy the Dockerfile's intent exactly — do not expand, split, or restructure.**
+   - **Wildcard copy** (`COPY --from=<stage> /go/bin/* /payload/`): Emit `cp /go/bin/* /payload/` — **preserve the wildcard**. Do NOT expand into individual binary names.
+   - **Individual copy** (separate `COPY` lines per file): Emit separate `cp` commands per file.
+   - **Config files** (`COPY --from=<stage> /repo/path/file.conf /payload/name.conf`): `cp path/file.conf /payload/name.conf` (repo-relative path)
 
-   **Why:** The wrapper IS the final artifact. The 5 build-stage binaries are intermediate inputs that get gathered, compressed, and embedded into the wrapper. Dalec must reproduce the entire pipeline to produce the correct final binary.
-
-   **How to translate Docker `COPY` instructions to shell `cp` commands:**
-   - `COPY --from=<stage> /go/bin/* /payload/` → `cp /go/bin/azure-vnet /go/bin/azure-vnet-telemetry ... /payload/` (list all binaries explicitly)
-   - `COPY --from=<stage> /repo/path/file.conf /payload/name.conf` → `cp path/file.conf /payload/name.conf` (use repo-relative path)
-   - Resolve `$OS` to `linux` (or `${TARGETOS}` if the pipeline should be cross-platform)
-
-   **Example pipeline steps for a compress→wrap Dockerfile:**
    ```yaml
-   pipelineSteps:
-     - "mkdir -p /payload"
-     - "cp /go/bin/binary-A /go/bin/binary-B /go/bin/binary-C /payload/"
-     - "cp cni/azure-linux.conflist /payload/azure.conflist"
-     - "cp cni/azure-linux-swift.conflist /payload/azure-swift.conflist"
-     - "cp telemetry/azure-vnet-telemetry.config /payload/azure-vnet-telemetry.config"
-     - "cd /payload && sha256sum * > sum.txt"
-     - "gzip --verbose --best --recursive /payload && for f in /payload/*.gz; do mv -- \"$f\" \"${f%%.gz}\"; done"
-     - "go mod download github.com/azure/azure-container-networking/dropgz@${DROPGZ_VERSION}"
-     - "cd /go/pkg/mod/github.com/azure/azure-container-networking/dropgz@${DROPGZ_VERSION} && cp /payload/* pkg/embed/fs/ && go build -a -o /go/bin/dropgz -trimpath -ldflags \"-s -w -X github.com/Azure/azure-container-networking/dropgz/internal/buildinfo.Version=${VERSION}\" -gcflags=\"-dwarflocationlists=true\" main.go"
+   # ❌ WRONG: expanding wildcard into explicit binary list
+   - "cp /go/bin/binary-A /go/bin/binary-B /go/bin/binary-C /payload/"
+   # ✅ CORRECT: preserving the Dockerfile's wildcard
+   - "cp /go/bin/* /payload/"
    ```
 
-4. **Extract the build command.** From the identified stage's `RUN go build ...` line, extract:
-   - `-o <outputPath>` → binary output path (rewrite to `/go/bin/<name>`)
+4. **Extract the build command** from the `RUN go build ...` line:
+   - `-o <outputPath>` → rewrite to `/go/bin/<name>`
    - `-ldflags "..."` → linker flags
-   - Package path (e.g. `./cmd/main`, `.`, `cmd/service/*.go` → `.`)
+   - Package path (e.g. `./cmd/main`, `.`)
    - Build flags (`-a`, `-trimpath`, `-gcflags`, etc.)
 
-5. **Resolve variables.** For any `$VAR` or `$(VAR)` in the build command:
-   - Look in the Makefile for the variable definition and substitute it.
+5. **Resolve variables.** For any `$VAR` or `$(VAR)`:
+   - Look in the Makefile for the definition and substitute.
    - Preserve `${VERSION}`, `${COMMIT}`, `${REVISION}` as Dalec spec args.
    - Convert `$(VAR)` Makefile syntax to `${VAR}` Dalec syntax.
 
-6. **Determine targets.** Based on the final stage(s):
-   - Linux final stage present → include `azlinux3/container`
-   - Windows final stage present → include `windowscross/container`
-   - Entrypoint per target: use the **final container binary's name**. For direct builds, this is the built binary. For wrapper pipelines, this is the **wrapper binary** (e.g. `dropgz`) since that is what the container ENTRYPOINT runs. Linux → full absolute path; Windows → bare binary name, no path prefix, no `.exe`.
+6. **Determine targets.** Linux final stage → `azlinux3/container`. Windows final stage → `windowscross/container`. Entrypoint per target: Linux → full absolute path; Windows → bare binary name, no path prefix, no `.exe`.
 
-7. **Target component usage summary.** The target component (provided in the prompt) identifies which Dockerfile pipeline to extract. For wrapper-pipeline Dockerfiles, ALL stages are relevant — emit all build-stage binaries in `binaries[]` and all intermediate/wrapper commands in `pipelineSteps[]`. The component name is never the source of binary names or paths — those always come from the Dockerfile.
-
-#### Concrete Walkthrough
-
-Consider a Dockerfile with these stages:
-
-```
-Stage 1 (build): FROM go AS my-app
-  RUN go build -o /go/bin/my-service ... service/main.go
-  RUN go build -o /go/bin/my-telemetry ... telemetry/main.go
-  RUN go build -o /go/bin/my-ipam ... ipam/plugin/main.go
-
-Stage 2 (intermediate): FROM base AS compressor
-  COPY --from=my-app /go/bin/* /payload/
-  COPY config files into /payload/
-  RUN sha256sum, gzip everything
-
-Stage 3 (wrapper): FROM go AS dropgz
-  RUN go mod download ... dropgz module (separate go.mod)
-  COPY --from=compressor /payload/* pkg/embed/fs/
-  RUN go build -o /go/bin/dropgz ... main.go
-
-Stage 4 (final linux): FROM scratch AS linux
-  COPY --from=dropgz /go/bin/dropgz dropgz
-  ENTRYPOINT ["/dropgz"]
-
-Stage 5 (final windows): FROM hpc AS windows
-  COPY --from=dropgz /go/bin/dropgz dropgz.exe
-  ENTRYPOINT ["/dropgz.exe"]
-```
-
-**Step 1 – Enumerate:** 5 stages: `my-app`, `compressor`, `dropgz`, `linux`, `windows`.
-
-**Step 2 – Classify and build pipeline summary:**
-```
-my-app     → BUILD: compiles 3 binaries (my-service, my-telemetry, my-ipam) from WORKDIR /repo, source code via COPY . .
-compressor → INTERMEDIATE: copies all 3 binaries + config files into /payload, runs sha256sum, gzips everything
-dropgz     → WRAPPER: downloads dropgz Go module (separate go.mod), embeds compressed /payload from compressor, builds self-extracting /go/bin/dropgz
-linux      → FINAL: COPY dropgz from wrapper → ENTRYPOINT ["/dropgz"]
-windows    → FINAL: COPY dropgz.exe from wrapper → ENTRYPOINT ["/dropgz.exe"]
-```
-Pipeline flow: source → my-app (compile) → compressor (gather + gzip) → dropgz (embed into self-extracting binary) → linux/windows (container with dropgz)
-
-**Step 3 – Identify target binary:**
-- 3b: Final stages both `COPY --from=dropgz` → binary comes from wrapper stage.
-- 3c: Wrapper stage → proceed to 3d.
-- 3d: Wrapper pipeline detected. Emit the FULL pipeline:
-  - `binaries[]` = all 3 build-stage binaries (my-service, my-telemetry, my-ipam)
-  - `pipelineSteps[]` = compressor + wrapper commands (gather, sha256sum, gzip, go mod download, embed, go build dropgz)
-  - Final artifact = `/go/bin/dropgz` (the wrapper binary)
-
-**Step 4 – Extract build commands:**
-- `binaries[]`: 3 entries from the build stage's `RUN go build` lines
-- `pipelineSteps[]`: translate compressor's `COPY` → `cp`, `RUN` → shell commands, wrapper's `RUN go mod download` + `RUN go build`
-
-**Step 6 – Entrypoint:** Uses `dropgz` (the wrapper): Linux → `/dropgz`, Windows → `dropgz`.
-
-**Example NonDeterministicValues output:**
-```yaml
-binaries:
-  - name: "my-service"
-    outputPath: "/go/bin/my-service"
-    buildCommand: "go build -o /go/bin/my-service ... service/main.go"
-    ldFlags: "..."
-  - name: "my-telemetry"
-    outputPath: "/go/bin/my-telemetry"
-    buildCommand: "go build -o /go/bin/my-telemetry ... telemetry/main.go"
-    ldFlags: "..."
-  - name: "my-ipam"
-    outputPath: "/go/bin/my-ipam"
-    buildCommand: "go build -o /go/bin/my-ipam ... ipam/plugin/main.go"
-    ldFlags: "..."
-
-pipelineSteps:
-  - "mkdir -p /payload"
-  - "cp /go/bin/my-service /go/bin/my-telemetry /go/bin/my-ipam /payload/"
-  - "cp path/to/config.conflist /payload/config.conflist"
-  - "cd /payload && sha256sum * > sum.txt"
-  - "gzip --verbose --best --recursive /payload && for f in /payload/*.gz; do mv -- \"$f\" \"${f%%.gz}\"; done"
-  - "go mod download github.com/example/repo/dropgz@${DROPGZ_VERSION}"
-  - "cd /go/pkg/mod/github.com/example/repo/dropgz@${DROPGZ_VERSION} && cp /payload/* pkg/embed/fs/ && go build -a -o /go/bin/dropgz ... main.go"
-
-targets:
-  - targetOS: "azlinux3/container"
-    entrypoint: "/dropgz"
-    symlink: "/usr/bin/dropgz"
-    build: []
-    runtime: []
-  - targetOS: "windowscross/container"
-    entrypoint: "dropgz"
-    symlink: ""
-    build: []
-    runtime: []
-```
+7. **Target component usage.** The component name from the prompt identifies which pipeline to extract. It is never the source of binary names or paths.
 
 ---
 
@@ -278,16 +152,11 @@ targets:
 
 **Input:** Dockerfile and Makefile content provided in prompt
 
-**Output:** `Targets` — a list of `TargetSpec` objects (YAML field in output)
+**Output:** `Targets` — a list of `TargetSpec` objects
 
-Each build target is represented as a self-contained `TargetSpec` that groups together:
-- `targetOS` — the Dalec target string
-- `entrypoint` — the binary path inside the container image (target-specific)
-- `symlink` — a secondary path pointing to the entrypoint (Linux only)
-- `build` — application-specific compile-time packages
-- `runtime` — application-specific runtime packages (always empty for `windowscross`)
+Each `TargetSpec` groups: `targetOS`, `entrypoint`, `symlink`, `build`, `runtime`.
 
-The transformer automatically adds toolchain and crypto packages on top of what the LLM emits — do NOT include them:
+The transformer automatically adds these — do NOT emit them:
 
 | Auto-added package | Target | Reason |
 | ------------------ | ------ | ------ |
@@ -297,8 +166,6 @@ The transformer automatically adds toolchain and crypto packages on top of what 
 | `openssl-libs` | azlinux3 (build + runtime) | CGO link |
 
 #### 0.1 Allowed Targets
-
-All of the following build targets are supported. Select the ones that apply based on the project's build files:
 
 | Target | Description |
 | ------ | ----------- |
@@ -313,73 +180,49 @@ All of the following build targets are supported. Select the ones that apply bas
 
 #### 0.2 Selection Rules
 
-1. **Default (cross-platform):** If the Dockerfile/Makefile builds for both Linux and Windows (or does not indicate a specific target platform), emit both `azlinux3/container` and `windowscross/container`.
-2. **Windows-only:** If the project only builds for Windows (e.g., `GOOS=windows` exclusively, Dockerfile final stage is Windows-based, no Linux binary produced), emit **only** `windowscross/container`. Do NOT add `azlinux3/container`.
-3. **Linux-only:** If the project only builds for Linux (no `GOOS=windows`, no Windows Dockerfile stage, no windows cross-compile target in Makefile), emit **only** `azlinux3/container`. Do NOT add `windowscross/container`.
-4. **Additional targets:** If the project explicitly needs RPM or deb packaging, include the relevant targets (e.g., `azlinux3/rpm`, `bookworm/deb`, etc.) in addition to the container targets.
-5. **When in doubt**, default to `azlinux3/container` and `windowscross/container` only.
+1. **Default (cross-platform):** Both Linux and Windows (or unspecified) → emit `azlinux3/container` + `windowscross/container`.
+2. **Windows-only:** Only Windows targets → emit **only** `windowscross/container`.
+3. **Linux-only:** Only Linux targets → emit **only** `azlinux3/container`.
+4. **Additional targets:** Add rpm/deb only if explicitly indicated in build files.
+5. **When in doubt**, default to `azlinux3/container` + `windowscross/container`.
 
 #### 0.3 Multi-Image Dockerfiles
 
-Some Dockerfiles produce **multiple images** from a single file. The Dockerfile defines several named build stages, each building a different component, plus shared stages (compressor, wrapper) that combine them.
-
-**Recognition signals:**
-- Multiple named build stages (e.g. `FROM ... AS build-foo`, `FROM ... AS build-bar`)
-- Each stage has its own `go build` producing a distinctly-named binary
-- Shared intermediate stages (compressor, packager) that copy outputs from build stages
-- A wrapper stage that builds a packaging binary from a separate Go module
-- Multiple final stages (`FROM scratch AS linux`, `FROM ... AS windows`)
+Some Dockerfiles produce multiple images from a single file.
 
 **Rules:**
-1. **One spec per component.** The pipeline generates one NonDeterministicValues per component. Extract ALL binaries from the build stage relevant to the target component — if the stage has multiple `RUN go build` commands, emit one Binary entry per command. The transformer merges them into a single command block.
-2. **Trace from the final stage backwards.** Use `COPY --from=<stage>` and `ENTRYPOINT` in the final stage to identify which build stage produced the target binary. The build stage's `go build -o <path>` command provides the authoritative binary name and path. The component name from the prompt helps disambiguate but is not the source of truth for binary names.
-3. **Document ALL stages in the pipeline** (see Step 2 in the methodology). Even though Dalec replaces intermediate and wrapper stages, you must understand what each stage does so you extract the correct binaries and config file dependencies. The intermediate and wrapper stages tell you what files the final image actually needs.
-4. **See Rule 9 in Task 1** for how to emit the full pipeline when the Dockerfile uses a wrapper.
+1. **One spec per component.** Extract ALL binaries from the relevant build stage — one Binary entry per `go build` command.
+2. **Trace from the final stage backwards.** `COPY --from=<stage>` and `ENTRYPOINT` identify the authoritative binary name and path.
+3. **Document ALL stages in the pipeline** — intermediate and wrapper stages tell you what files the final image needs.
+4. **See Rule 10 in Task 1** for wrapper pipeline handling.
 
 #### 0.4 Extraction Checklist
 
-- [ ] **Pipeline summary written** — every `FROM ... AS <name>` stage classified and its role documented (Step 2)
+- [ ] **Pipeline summary written** — every `FROM ... AS <name>` classified and documented
 - [ ] Check Makefile for `GOOS` references — does it build for both `linux` and `windows`?
 - [ ] Check Dockerfile for platform-specific instructions and ENTRYPOINT/CMD per stage
-- [ ] If this is a multi-component Dockerfile, trace from the final stage's `COPY --from`/`ENTRYPOINT` backwards to identify the correct build stage (use the target component name to disambiguate when all finals share a wrapper)
+- [ ] If multi-component: trace from final stage backwards to identify correct build stage
 - [ ] For each target: determine entrypoint path, symlink, and any extra deps
-- [ ] Only add rpm/deb targets if explicitly indicated in the build files
 - [ ] `windowscross.runtime` must always be empty
 - [ ] Do NOT emit: `msft-golang`, `SymCrypt`, `SymCrypt-OpenSSL`, `openssl-libs`
+- [ ] **Flags verbatim check:** entrypoint path matches Dockerfile ENTRYPOINT exactly (no additions); every build flag is a 1:1 copy of the Dockerfile's `RUN` line (no flags inferred from Makefile)
 
 #### 0.5 Patterns
 
 ```yaml
-# Cross-platform (default — most Go projects that run on both Linux and Windows):
+# Cross-platform (default):
 targets:
   - targetOS: "azlinux3/container"
-    entrypoint: "/usr/local/bin/myapp"   # from Dockerfile ENTRYPOINT of Linux final stage
-    symlink: "/usr/bin/myapp"            # typically /usr/bin/<binary-name>
-    build: []                            # app-specific build packages only
-    runtime:                             # app-specific runtime packages only
+    entrypoint: "/usr/local/bin/myapp"   # from Dockerfile ENTRYPOINT
+    symlink: "/usr/bin/myapp"
+    build: []                            # app-specific only
+    runtime:
       - "ca-certificates"
   - targetOS: "windowscross/container"
-    entrypoint: "myapp"                  # just the binary name, no path prefix, NO .exe suffix — transformer adds it
-    symlink: ""                          # no symlinks on Windows
-    build: []
-    runtime: []                          # always empty — Dalec rejects runtime deps on Windows
-
-# Windows-only (e.g. kubectl credential plugin):
-targets:
-  - targetOS: "windowscross/container"
-    entrypoint: "myapp"
+    entrypoint: "myapp"                  # bare name, NO .exe — transformer adds it
     symlink: ""
     build: []
-    runtime: []
-
-# Linux-only (e.g. Linux daemon/agent with no Windows target):
-targets:
-  - targetOS: "azlinux3/container"
-    entrypoint: "/usr/local/bin/myapp"
-    symlink: "/usr/bin/myapp"
-    build: []
-    runtime:
-      - "iptables"
+    runtime: []                          # always empty
 ```
 
 ---
@@ -388,155 +231,122 @@ targets:
 
 **Input:** Dockerfile and Makefile content provided in prompt
 
-> **CRITICAL — Dockerfile-first rule:** Always check the Dockerfile **before** the Makefile for the actual `go build` command. The Dockerfile contains the canonical build command exactly as executed in CI. The Makefile is used for **variable definitions only** (e.g. `VERSION`, `LDFLAGS`, directory variables) — its build targets are for local development and may use patterns that differ from the CI build. If a `RUN go build` or `RUN GOOS=... go build` statement appears in the Dockerfile, that command is authoritative. Use the Makefile only to resolve variable values referenced in that command.
->
-> **Source roles summarized:**
-> - **Dockerfile** → build commands, binary names, output paths, package paths, entrypoints, dependencies
-> - **Makefile** → variable values (`VERSION`, `*_DIR`, `*_PATH`, ldflags components). Its build steps are for local dev and less relevant.
-> - **Target component** (from prompt) → identifies which component this spec is for. Not the source of binary names or paths.
->
-> **Example:** The Dockerfile contains:
-> ```dockerfile
-> RUN GOOS=$OS CGO_ENABLED=0 go build -a -o /go/bin/myapp -ldflags "-s -w -X main.version=\"$VERSION\" -X \"$AI_PATH\"=\"$AI_ID\"" -gcflags="-dwarflocationlists=true" cmd/service/*.go
-> ```
-> The package path is `cmd/service/*.go`. This must be taken verbatim from the Dockerfile. The Makefile may reference `$(SERVICE_DIR)` or use a different invocation that omits this path — do not use the Makefile's version.
-
-- Makefile content - Used to resolve variable values (e.g. `AI_PATH`, `AI_ID`, version vars, directory vars)
-- Dockerfile content - **Primary source for the actual `go build` command, package path, and binary output**
+> **CRITICAL — Dockerfile-first rule:** The Dockerfile contains the canonical build command as executed in CI. The Makefile is used for **variable definitions only** — its build targets are for local development and may differ. If `RUN go build` appears in the Dockerfile, that command is authoritative.
 
 **Output:** `Binaries` (YAML fields in output)
 
 #### 1.1 Core Principle: Deterministic Build Steps
 
-**CRITICAL:** Each binary extraction MUST produce a single, deterministic build step. The Dockerfile and Makefile contain all the information needed — there is no ambiguity. When a build stage has multiple `RUN go build` commands, emit one Binary entry per command — the transformer merges them all into a single `command:` block with one `BIN_SUFFIX` preamble and one `cd` at the top.
+**CRITICAL:** Each binary extraction MUST produce a single, deterministic build step. When a build stage has multiple `RUN go build` commands, emit one Binary entry per command — the transformer merges them.
 
 **Rules:**
-1. **Collapse all conditionals into one path.** If the Makefile/Dockerfile has `if/else` branches for different architectures, OS, or configurations, pick the **primary production path** (the one matching the Dockerfile's final COPY/ENTRYPOINT). Do NOT preserve conditionals or emit multiple alternatives.
-2. **Resolve platform-specific output paths.** If the output path contains `${OS}`, `${ARCH}`, `${GOOS}`, `${GOARCH}`, `${TARGETARCH}`, `$(GOOS)`, `$(GOARCH)`, `$(ARCH)`, `$(OS)`, or any variable that expands to a platform string (e.g. `linux`, `windows`, `amd64`, `arm64`), **strip the entire platform segment from the path** and collapse the result. Dalec handles platform targeting via its target system — the `outputPath` must be a single platform-neutral path.
-   **CRITICAL — Platform variables MUST NOT appear in `outputPath` or `buildCommand -o <path>` in any form:**
-   - `bin/${GOOS}_${GOARCH}/kubelogin` → `bin/kubelogin`
-   - `_output/${ARCH}/blobplugin` → `_output/blobplugin`
-   - `bin/${OS}_${ARCH}${GOARM:+v${GOARM}}/binary` → `bin/binary`
-   - `out/$(GOOS)/$(GOARCH)/myapp` → `out/myapp`
-   - After removal, collapse any `//` or trailing `/` that results.
-   **CRITICAL — No `.exe` in `outputPath` or `name`:** Never add `.exe` to a binary's `outputPath` or `name` field, even when the Makefile uses `$(EXE_EXT)` or `${EXE_EXT}`. The transformer deterministically appends `.exe` to every `windowscross/container` artifact path and entrypoint — the LLM-emitted values must always use the bare binary name.
-3. **Preserve `${VERSION}`, `${COMMIT}`, `${REVISION}` variables.** These are Dalec spec args and must remain as `${VAR}` references.
-4. **No double slashes.** After removing platform variables from paths, ensure no `//` remains. `bin//kubelogin` is invalid — it must be `bin/kubelogin`.
-5. **`outputPath` is always `/go/bin/<binary-name>` and the `-o` flag in `buildCommand` must match it exactly.** The `buildCommand` writes to `/go/bin/<binary-name>` and `outputPath` records the same. See Rule 7.
-6. **Resolve Makefile directory variables to their actual defined value.** When the `-o` flag uses a Makefile variable for the output directory (e.g. `$(SERVICE_BUILD_DIR)`, `$(PLUGIN_BUILD_DIR)`), you MUST look up that variable's definition in the Makefile and substitute the literal string. Do NOT invent a path by using the binary name as the directory name — that is always wrong.
-   - `SERVICE_BUILD_DIR := output/service` → `-o output/service/my-service` ✅
-   - Guessing `output/my-service/my-service` because the binary is named `my-service` ❌
-7. **Always set `outputPath` to `/go/bin/<binary-name>` and use the same path in `buildCommand -o`.** This path always exists in every Go builder image (it is `$GOPATH/bin`), requires no `mkdir`, and works correctly regardless of which subdir the build `cd`s into. Never use a relative path like `output/service/my-service` — the parent directory may not exist in the build sandbox.
-8. **Single `command:` block — full pipeline merges.** Each binary's `buildCommand` is a single `go build` invocation (possibly prefixed with `cd <subdir> &&`). The transformer merges ALL binaries plus any `pipelineSteps` into **one** `command:` step with a single `BIN_SUFFIX` preamble, then the binary builds, then the pipeline steps. Emit each binary as a separate entry in the `binaries[]` array and each intermediate/wrapper command as a separate entry in `pipelineSteps[]`.
+1. **Collapse all conditionals into one path.** Pick the **primary production path** matching the Dockerfile's final COPY/ENTRYPOINT. Do NOT preserve conditionals.
 
-   **Filesystem alignment:** The Dalec build sandbox clones the repo into a directory named after the repo (e.g. `azure-container-networking/`). The `cd <repo-name>` at the top of the merged command places all builds at the repo root — exactly matching the Dockerfile's `WORKDIR`/`COPY . .` context. All `go build` package paths (e.g. `cni/network/plugin/main.go`) are relative to this root, just as they are in the Dockerfile. Pipeline steps that use absolute paths (e.g. `/payload`, `/go/pkg/mod/...`) work as-is.
+2. **Resolve platform-specific output paths.** Strip `${OS}`, `${ARCH}`, `${GOOS}`, `${GOARCH}`, `${TARGETARCH}`, `$(GOOS)`, `$(GOARCH)`, `$(ARCH)`, `$(OS)` from paths. Collapse any `//` or trailing `/`.
+   - `bin/${GOOS}_${GOARCH}/kubelogin` → `/go/bin/kubelogin`
+   - `_output/${ARCH}/blobplugin` → `/go/bin/blobplugin`
+   - **No `.exe` in `outputPath` or `name`** — transformer appends `.exe` for `windowscross/container` automatically.
 
-   **WORKDIR → `cd` translation (CRITICAL):** When a Dockerfile build stage uses `WORKDIR <path>` to change directory before `RUN go build`, the `buildCommand` **MUST** include `cd <subdir> &&` as a prefix. The Dalec sandbox does NOT honour Dockerfile `WORKDIR` — the build script starts at the repo root, so missing the `cd` causes `go build` to run in the wrong directory (typically producing "no Go files" errors).
-   - Strip the repo-name prefix from the WORKDIR path to get a repo-relative subdir. E.g. `WORKDIR /azure-container-networking/cns/service` → `cd cns/service &&`.
-   - If the WORKDIR uses a variable (e.g. `WORKDIR /azure-container-networking/${CNS_DIR}`), **preserve the variable reference**: `cd ${CNS_DIR} &&`. The transformer promotes it to a Dalec arg.
-   - If the WORKDIR is just the repo root (e.g. `WORKDIR /azure-container-networking`), no extra `cd` is needed — the transformer already `cd`s into the repo root.
-   - When both a Makefile target `cd $(X_DIR)` and a Dockerfile `WORKDIR` exist, the Makefile `cd` takes precedence (it is more specific).
+3. **Preserve `${VERSION}`, `${COMMIT}`, `${REVISION}` variables.** These are Dalec spec args.
 
-   **Example — WORKDIR before go build:**
-   ```dockerfile
-   # Dockerfile
-   ARG CNS_DIR=cns/service
-   WORKDIR /azure-container-networking/${CNS_DIR}
-   RUN go build -v -o /go/bin/azure-cns -ldflags "-X main.version=${VERSION}" .
-   ```
+4. **STRICT 1:1 COPY — zero inference on build commands and flags.** The `buildCommand`, `ldFlags`, and every `pipelineSteps` entry must be a **character-for-character copy** of the Dockerfile's `RUN` lines. Do NOT add, remove, reorder, or infer ANY flag — not from the Makefile, not from convention, not from "best practice". The Makefile is used ONLY to resolve `$VAR` references that the Dockerfile explicitly contains. If a flag does not appear in the Dockerfile's `RUN go build` line, it MUST NOT appear in the output.
+
+   Common hallucinations to avoid:
+   - Adding `-s -w` to `-ldflags` (strips symbols/DWARF — changes the binary)
+   - Adding `-a` or `-trimpath` when the Dockerfile doesn't have them
+   - Merging Makefile LDFLAGS into the Dockerfile command when the Dockerfile never references `${LDFLAGS}`
+
    ```yaml
-   # ✅ CORRECT: cd prefix from WORKDIR
-   buildCommand: "cd ${CNS_DIR} && go build -v -o /go/bin/azure-cns -ldflags \"-X main.version=${VERSION}\" ."
+   # Dockerfile has: RUN go build -o /go/bin/azure-cns -ldflags "-X main.version=${VERSION}" .
+   # ❌ WRONG: -s -w added by LLM (not in Dockerfile, not even in Makefile)
+   buildCommand: "go build -o /go/bin/azure-cns -ldflags \"-s -w -X main.version=${VERSION}\" ."
+   ldFlags: "-s -w -X main.version=${VERSION}"
+   # ✅ CORRECT: exact copy of Dockerfile's RUN line
+   buildCommand: "go build -o /go/bin/azure-cns -ldflags \"-X main.version=${VERSION}\" ."
+   ldFlags: "-X main.version=${VERSION}"
    ```
+
+5. **No double slashes.** After removing platform variables, ensure no `//` remains.
+
+6. **`outputPath` is always `/go/bin/<binary-name>`.** The `buildCommand -o` flag must match exactly.
+
+7. **Resolve Makefile directory variables** to their defined values. Do NOT invent paths from the binary name.
+
+8. **Always set `outputPath` to `/go/bin/<binary-name>`.** This path always exists in the Go builder image, requires no `mkdir`, works from any `cd` subdir. Never use relative paths.
+
+9. **Single `command:` block — full pipeline merges.** The transformer merges ALL binaries + `pipelineSteps` into one `command:` step. The merged command `cd`s into the repo root first, then runs each binary's `buildCommand` in sequence.
+
+   **WORKDIR / `cd` translation (CRITICAL):** The Dalec sandbox does NOT honour Dockerfile `WORKDIR`. How to handle it depends on whether the build stage produces **one** or **multiple** binaries:
+
+   **Single-binary stage** (one `RUN go build` with a WORKDIR pointing to a subdirectory):
+   - Use `cd <subdir> && go build ... .` — the `cd` navigates to the source directory, and `.` is the package.
+   - Strip the repo-name prefix. E.g. `WORKDIR /azure-container-networking/cns/service` → `cd cns/service &&`.
+   - Preserve variable references: `WORKDIR /repo/${CNS_DIR}` → `cd ${CNS_DIR} &&`.
+   - Makefile `cd $(X_DIR)` takes precedence over Dockerfile `WORKDIR`.
+
+   **Multi-binary stage** (multiple `RUN go build` in the same stage, each building from a different subdirectory):
+   - Do **NOT** put `cd <subdir>` in each binary's `buildCommand`. The transformer already `cd`s into the repo root.
+   - Instead, use the **repo-relative package path** as the Go build target: `go build ... cni/network/plugin/main.go`.
+   - Each binary's `buildCommand` runs from the repo root — the package path tells `go build` where to find the source.
+
    ```yaml
+   # Single-binary stage with WORKDIR:
    # ❌ WRONG: missing cd — go build runs at repo root, finds no Go files
    buildCommand: "go build -v -o /go/bin/azure-cns -ldflags \"-X main.version=${VERSION}\" ."
+   # ✅ CORRECT: cd prefix from WORKDIR
+   buildCommand: "cd ${CNS_DIR} && go build -v -o /go/bin/azure-cns -ldflags \"-X main.version=${VERSION}\" ."
+
+   # Multi-binary stage (all from repo root WORKDIR):
+   # ❌ WRONG: per-binary cd — each cd is relative to $BUILD_ROOT, breaks merged script
+   buildCommand: "cd cni/network/plugin && go build -a -o /go/bin/azure-vnet ... main.go"
+   buildCommand: "cd cni/telemetry/service && go build -a -o /go/bin/azure-vnet-telemetry ... telemetrymain.go"
+   # ✅ CORRECT: no cd, use repo-relative package path from repo root
+   buildCommand: "go build -a -o /go/bin/azure-vnet ... cni/network/plugin/main.go"
+   buildCommand: "go build -a -o /go/bin/azure-vnet-telemetry ... cni/telemetry/service/telemetrymain.go"
    ```
 
-9. **Wrapper pipelines: emit ALL stages, not just the final binary.** When the Dockerfile has a build→compress→wrap pipeline, the build steps must reproduce the entire pipeline 1:1. Emit:
-   - `binaries[]` — all `go build` commands from the primary build stage
-   - `pipelineSteps[]` — intermediate (file gathering, compression) + wrapper (module download, embedding, go build) commands in order
+10. **Wrapper pipelines: emit the FULL build→compress→wrap pipeline.** When the Dockerfile has a build→compress→wrap pipeline (build-stage binaries → intermediate gather/compress → wrapper embed/build), reproduce the **entire pipeline** 1:1.
 
-   **How to identify this pattern:**
-   - The Dockerfile has a distinct stage that runs `go mod download <module>@<version>` or sets `WORKDIR` to a different module path before building the final binary.
-   - An intermediate stage copies build outputs, compresses them, and feeds them to the wrapper.
-   - The final image `ENTRYPOINT` is the wrapper binary (e.g. `dropgz`), not a build-stage binary.
+   **How to identify:** The Dockerfile has a stage that runs `go mod download <module>@<version>` or sets `WORKDIR` to a different module path. An intermediate stage copies build outputs, compresses them. The final `ENTRYPOINT` is the wrapper binary, not a build-stage binary.
 
-   **How to translate Dockerfile stages to `pipelineSteps`:**
-   - `COPY --from=<stage> /go/bin/* /payload/` → `cp /go/bin/binary-A /go/bin/binary-B ... /payload/` (list binaries explicitly)
-   - `COPY --from=<stage> /repo/path/file /payload/name` → `cp path/file /payload/name` (repo-relative path)
-   - `RUN <command>` → the command verbatim (e.g. `sha256sum`, `gzip`)
-   - `RUN go mod download <module>@<version>` → `go mod download <module>@${VERSION_VAR}`
-   - `RUN GOOS=$OS go build -o /go/bin/<wrapper> ...` → `go build -o /go/bin/<wrapper> ...` (strip GOOS/CGO_ENABLED, the env section handles those)
-   - Resolve `$OS` to `linux` for config file paths (e.g. `azure-$OS.conflist` → `azure-linux.conflist`)
+   **What to emit:**
+   - `binaries[]` — ONLY `go build` commands from the **primary build stage** (the stage that compiles the repo's own source code). The wrapper `go build` is **NEVER** in `binaries[]`.
+   - `pipelineSteps[]` — intermediate + wrapper commands in order:
+     1. File gathering (`mkdir -p`, `cp` from COPY instructions)
+     2. Checksumming + compression (`sha256sum`, `gzip`)
+     3. Wrapper module download (`go mod download`)
+     4. Payload embedding (`cp /payload/* pkg/embed/fs/`)
+     5. Wrapper go build (`go build -o /go/bin/<wrapper>`) — this is a pipeline step, NOT a binary
+   - Entrypoint = the wrapper binary name
 
-10. **Multi-stage build→compress→wrap Dockerfiles: selecting direct binary vs. wrapper binary.** Many Dockerfiles use a shared pipeline where one stage builds several binaries, an intermediate stage compresses them, and a wrapper stage produces a single self-extracting binary. **All final stages route through the wrapper** — so tracing backwards from ENTRYPOINT always yields the wrapper. But Dalec replaces the entire compressor→wrapper pipeline, so the correct binary depends on which image is being built.
+   **CRITICAL — wrapper binary placement:** The wrapper `go build` (e.g. `go build -o /go/bin/dropgz ...`) belongs **exclusively in `pipelineSteps[]`** as the final step. Do NOT also add it to `binaries[]`. The transformer constructs the build script by first emitting all `binaries[]` commands (prefixed with `cd <repo-root>`), then appending `pipelineSteps[]` in order. If the wrapper build appears in `binaries[]`, the transformer will `cd` into the wrong path, producing a "no such file or directory" error.
 
-   **How to identify this pattern:**
-   - A build stage produces one or more binaries via `RUN go build`.
-   - A subsequent `compressor`/`packager` stage copies those binaries, checksums them, and gzips them.
-   - A `wrapper` stage downloads a separate Go module, embeds the compressed payload, and builds a self-extracting binary.
-   - **All** final image stages (`linux`, `windows`) copy from the wrapper stage only. There is no per-image final stage.
-
-   **Decision tree (follows Step 3d in the Methodology):**
-
-   ```
-   All final stages route through a wrapper (build → compress → wrap pipeline).
-
-   Emit the FULL pipeline:
-     │
-     ├─ binaries[] = ALL go build commands from the primary build stage
-     │
-     ├─ pipelineSteps[] = intermediate + wrapper commands in order:
-     │   1. File gathering (mkdir, cp binaries + configs to /payload)
-     │   2. Checksumming + compression (sha256sum, gzip)
-     │   3. Wrapper module download (go mod download)
-     │   4. Payload embedding (cp /payload/* into wrapper module)
-     │   5. Wrapper go build (go build -o /go/bin/<wrapper>)
-     │
-     └─ Entrypoint = wrapper binary name (what the container actually runs)
-   ```
-
-   **Key rules:**
-   - **Reproduce the entire pipeline 1:1.** Every stage in the Dockerfile that contributes to the final binary must be represented in the output.
-   - **`binaries[]` = build-stage go builds.** All `go build` commands from the primary build stage go here.
-   - **`pipelineSteps[]` = intermediate + wrapper commands.** File gathering, compression, module download, embedding, and wrapper build go here.
-   - **Entrypoint = the wrapper.** Since the wrapper is the final binary, the entrypoint uses the wrapper's name.
-   - **Artifact = the wrapper.** When `pipelineSteps` contains a `go build -o /go/bin/<wrapper>`, the transformer automatically uses that as the final artifact.
-
-   **Example: build→compress→wrap pipeline (emit full pipeline)**
-
-   Dockerfile stages:
-   ```
-   build:      go build -o /go/bin/my-plugin ...     ← builds my-plugin
-               go build -o /go/bin/my-telemetry ...  ← builds telemetry sidecar
-   compressor: copies my-plugin + telemetry + configs, gzips them
-   wrapper:    go build -o /go/bin/wrapper ...        ← self-extracting wrapper
-   linux:      COPY --from=wrapper → ENTRYPOINT ["/wrapper"]
-   windows:    COPY --from=wrapper → ENTRYPOINT ["/wrapper.exe"]
-   ```
+   **COPY → cp rules (same as Step 3d):**
+   - **Wildcard**: `COPY --from=<stage> /go/bin/* /payload/` → `cp /go/bin/* /payload/` — **preserve the wildcard**
+   - **Individual**: separate `COPY` lines → separate `cp` commands
+   - **Config files**: `COPY --from=<stage> /repo/path/file /payload/name` → `cp path/file /payload/name`
+   - `RUN <cmd>` → verbatim. Strip `GOOS`/`CGO_ENABLED` env prefixes (Dalec manages those).
+   - Resolve `$OS` to `linux` for config file paths.
 
    ```yaml
-   # ✅ CORRECT: full pipeline — all stages represented
+   # ✅ CORRECT: full pipeline — all stages represented, repo-relative package paths (no per-binary cd)
    binaries:
      - name: "my-plugin"
        outputPath: "/go/bin/my-plugin"
-       buildCommand: "go build -v -o /go/bin/my-plugin -ldflags \"...\" -gcflags=\"...\""
+       buildCommand: "go build -v -o /go/bin/my-plugin -ldflags \"...\" -gcflags=\"...\" cni/network/plugin/main.go"
        ldFlags: "..."
      - name: "my-telemetry"
        outputPath: "/go/bin/my-telemetry"
-       buildCommand: "go build -v -o /go/bin/my-telemetry -ldflags \"...\" -gcflags=\"...\""
+       buildCommand: "go build -v -o /go/bin/my-telemetry -ldflags \"...\" -gcflags=\"...\" cni/telemetry/service/telemetrymain.go"
        ldFlags: "..."
-
    pipelineSteps:
      - "mkdir -p /payload"
-     - "cp /go/bin/my-plugin /go/bin/my-telemetry /payload/"
+     - "cp /go/bin/* /payload/"
      - "cp path/to/config.conflist /payload/config.conflist"
      - "cd /payload && sha256sum * > sum.txt"
      - "gzip --verbose --best --recursive /payload && for f in /payload/*.gz; do mv -- \"$f\" \"${f%%.gz}\"; done"
      - "go mod download example.com/repo/wrapper@${WRAPPER_VERSION}"
      - "cd /go/pkg/mod/example.com/repo/wrapper@${WRAPPER_VERSION} && cp /payload/* pkg/embed/fs/ && go build -a -o /go/bin/wrapper -trimpath -ldflags \"...\" -gcflags=\"...\" main.go"
-
    targets:
      - targetOS: "azlinux3/container"
        entrypoint: "/wrapper"
@@ -551,276 +361,140 @@ targets:
    ```
 
    ```yaml
-   # ❌ WRONG: only emitting build-stage binaries, ignoring compressor/wrapper
+   # ❌ WRONG: only build-stage binaries, missing compressor/wrapper stages
    binaries:
      - name: "my-plugin"
-       outputPath: "/go/bin/my-plugin"
        buildCommand: "go build ..."
-   # Missing the compressor and wrapper stages — output won't match Dockerfile pipeline
+   # Output won't match Dockerfile pipeline
+   ```
+
+   ```yaml
+   # ❌ WRONG: wrapper binary in binaries[] — causes "no such file or directory" at build time
+   binaries:
+     - name: "my-plugin"
+       buildCommand: "go build -o /go/bin/my-plugin ... cni/network/plugin/main.go"
+     - name: "dropgz"                      # ← wrapper does NOT belong here
+       buildCommand: "cd dropgz && go build -o /go/bin/dropgz ... ."
+   pipelineSteps:
+     - "cd dropgz && ... && go build -o /go/bin/dropgz ..."   # ← also here = duplicated
+   # The transformer cd's into the repo root for binaries[], then emits "cd dropgz"
+   # which becomes an invalid path. Wrapper builds go in pipelineSteps[] ONLY.
    ```
 
 #### 1.2 Multi-Binary Makefile: Selecting the Correct Target
 
-**Scenario:** A single Makefile defines many build targets, each producing a different binary (e.g. `my-service`, `my-plugin`, `my-agent`, `my-cli`). The pipeline generates **one spec per component**, so only the target matching the requested component is relevant.
+When a Makefile defines many build targets, select the one matching the requested component.
 
-**How to identify the correct target:**
-
-1. **Match on Dockerfile ENTRYPOINT/COPY (strongest signal).** If the Dockerfile copies a specific binary into the final stage or sets it as the entrypoint, that is the target binary. The Makefile target producing that binary is the correct one.
-2. **Match on `-o` output path.** The Makefile target whose `-o` flag produces a filename matching the Dockerfile's COPY destination or ENTRYPOINT binary is the right one.
-3. **Match on target component name.** When the Dockerfile produces multiple components and the above signals are ambiguous, the target component name from the prompt helps narrow down. Find the Makefile target whose output binary name relates to that component. But the Dockerfile is always the authoritative source.
-4. **Ignore all other targets.** Do NOT extract build commands for unrelated binaries. Only extract the one that produces the target component's binary.
+**Signal strength (strongest first):**
+1. **Dockerfile ENTRYPOINT/COPY** — the binary in the final stage is the target.
+2. **`-o` output path** — match filename to Dockerfile's COPY destination.
+3. **Target component name** — disambiguate among similar Makefile targets.
+4. **Ignore all other targets.** Extract only the matching binary.
 
 **Rules:**
 - Extract **only** the binary whose name matches the component being built.
-- If the matching target has prerequisites (e.g. `bpf-lib`), note them but do not extract their build commands as separate binaries.
-- The `ldflags`, `outputPath`, and `buildCommand` must come from the matched target only — not from a different target in the same Makefile.
+- The `ldflags`, `outputPath`, and `buildCommand` must come from the matched target only.
 
 #### 1.2.1 Multi-Subdir Repos: Finding the Most Specific Target
 
-Many repos use a root Makefile that defines many `*-binary` targets and many `*_DIR` variables, each pointing to a different source subdirectory. Every image has exactly **one** most-relevant target, and therefore exactly **one** `cd <dir>` in its build command.
-
-**How to identify the most specific target — ranked by signal strength:**
-
-1. **Dockerfile ENTRYPOINT/COPY** *(strongest).* The binary name in the final stage `COPY` or `ENTRYPOINT` directly identifies the correct target. Find the `*-binary` Makefile target whose `-o` output matches that name.
-
-2. **`-o` output path.** The target whose `-o` flag produces a filename matching the Dockerfile COPY destination is the right one.
-
-3. **Target component name similarity.** Find the `*-binary` target whose name most closely matches the target component (from the prompt). Prefer exact matches over partial ones. This is a useful disambiguation signal when multiple targets have similar names.
-
-4. **Comments above the target.** When multiple targets share similar names, read the comment on the line immediately above each target. Pick the one described as the "primary" or "main" binary for the image.
+Many repos use a root Makefile with many `*-binary` targets and `*_DIR` variables. Each image has exactly **one** most-relevant target and one `cd <dir>`.
 
 **Resolution steps:**
-
-1. Read the Dockerfile's final stage `ENTRYPOINT`/`COPY` to identify the binary name (also note the target component name for disambiguation).
+1. Read the Dockerfile's final stage `ENTRYPOINT`/`COPY` to identify the binary name.
 2. List all `*-binary` targets in the Makefile.
-3. Apply the signals above (ENTRYPOINT match → `-o` path → name match → comment) to identify the single best target.
-4. That target contains exactly one `cd $(X_DIR)` — identify which `*_DIR` variable it uses.
-5. Keep the **variable name** (not the resolved path) in the buildCommand: `cd ${X_DIR}`.
-   The transformer promotes it to a Dalec top-level arg automatically.
-6. **Never use more than one `cd` per buildCommand.** One `cd` before `go build` is the entire subdir navigation.
-
-**Example A: wrapper binary — Dockerfile `ENTRYPOINT` is the wrapper, not the primary binary**
-
-The Makefile defines a `my-component-binary` target, but the Dockerfile's final image uses a wrapper (e.g. a self-extracting Go binary from a separate module) as the entrypoint. Per Rule 9, the full build→compress→wrap pipeline must be reproduced.
-
-The Dockerfile pipeline:
-- Build stage: builds `my-component` from the `my-component-binary` Makefile target
-- Compressor stage: gathers binary + configs, checksums, gzips
-- Wrapper stage: embeds compressed payload, builds `wrapper`
-
-```yaml
-# ✅ CORRECT: full pipeline with all stages
-binaries:
-  - name: "my-component"
-    outputPath: "/go/bin/my-component"
-    buildCommand: "cd ${MY_COMPONENT_DIR} && go build -a -o /go/bin/my-component ..."
-    ldFlags: "..."
-
-pipelineSteps:
-  - "mkdir -p /payload"
-  - "cp /go/bin/my-component /payload/"
-  - "cp path/to/config /payload/config"
-  - "cd /payload && sha256sum * > sum.txt"
-  - "gzip --verbose --best --recursive /payload && for f in /payload/*.gz; do mv -- \"$f\" \"${f%%.gz}\"; done"
-  - "go mod download example.com/repo/wrapper@${WRAPPER_VERSION}"
-  - "cd /go/pkg/mod/example.com/repo/wrapper@${WRAPPER_VERSION} && cp /payload/* pkg/embed/fs/ && go build -a -o /go/bin/wrapper ... main.go"
-
-targets:
-  - targetOS: "azlinux3/container"
-    entrypoint: "/wrapper"
-    symlink: "/usr/bin/wrapper"
-```
-
-**Example B: comment-guided selection among similar targets**
-
-```makefile
-# Multiple targets share a common prefix:
-my-plugin-binary:           # ← "# Build the main network plugin binary." comment above this
-    cd $(PLUGIN_NET_DIR) && go build -a -o $(PLUGIN_BUILD_DIR)/my-plugin$(EXE_EXT) ...
-
-my-plugin-ipam-binary:      # IPAM plugin only
-    cd $(PLUGIN_IPAM_DIR) && go build ...
-
-my-plugin-telemetry-binary: # Telemetry sidecar only
-    cd $(PLUGIN_TELEMETRY_DIR) && go build ...
-```
-
-For an image whose Dockerfile ENTRYPOINT is `/my-plugin`, `my-plugin-binary` is the most specific match — its comment says it IS the main plugin binary. The others are support binaries.
-
-```yaml
-# ✅ CORRECT: primary plugin binary selected by Dockerfile ENTRYPOINT + comment signal
-binaries:
-  - name: "my-plugin"
-    outputPath: "/go/bin/my-plugin"
-    buildCommand: "cd ${PLUGIN_NET_DIR} && go build -a -o /go/bin/my-plugin -ldflags \"...\" ..."
-```
-
-```yaml
-# ❌ WRONG: picking a support binary (telemetry, ipam plugin) instead of the primary one
-binaries:
-  - name: "my-plugin-telemetry"
-    buildCommand: "cd ${PLUGIN_TELEMETRY_DIR} && go build ..."
-```
+3. Apply signals: ENTRYPOINT match → `-o` path → name match → comment above target.
+4. Keep the **variable name** in buildCommand: `cd ${X_DIR}`.
+5. **Never use more than one `cd` per buildCommand.**
 
 **Rules:**
-- **Always one `cd <dir>` per buildCommand.** Never chain two `cd` calls.
-- Keep the `*_DIR` variable name in the command — do not resolve it to a literal path.
+- Keep the `*_DIR` variable name — do not resolve it to a literal path.
 - If target names are ambiguous, comments and Dockerfile ENTRYPOINT are the deciding signals.
-- Extract the single most specific/relatable target — do not extract prerequisites or sibling targets.
 
 #### 1.3 Extraction Checklist
 
-- [ ] **Check Dockerfile first** for a `RUN go build` command — this is the canonical build command
-- [ ] **Check for `WORKDIR` before `RUN go build`** — if the build stage sets `WORKDIR <path>` before the build command, the `buildCommand` MUST include `cd <subdir> &&` as a prefix (see Rule 8 WORKDIR → cd translation). Strip the repo-name prefix; preserve any `${VAR}` references.
-- [ ] Extract the package path (e.g. `cns/service/*.go`, `./cmd/main`, `.`) directly from the Dockerfile `RUN` instruction — do NOT infer it from the Makefile
-- [ ] Use the Makefile only to resolve variable values referenced in the Dockerfile command (e.g. `$CNS_AI_PATH`, `$(VERSION)`)
-- [ ] Identify which image/binary is being built (from image name or Dockerfile ENTRYPOINT)
-- [ ] **Multi-stage check:** If the Dockerfile has build→compress→wrap stages, emit full pipeline: `binaries[]` for build-stage go builds + `pipelineSteps[]` for intermediate + wrapper commands
-- [ ] **Multi-binary stage check:** If a single Dockerfile stage runs multiple `RUN go build` commands, extract ONLY the one whose output matches the final stage's `COPY --from`/`ENTRYPOINT`
-- [ ] If the Makefile has multiple binary targets, select **only** the one matching the image name
-- [ ] Find the `go build -o <path>` command in the matched Dockerfile `RUN` or Makefile target
-- [ ] Extract binary name from `-o` flag path (last path segment)
-- [ ] If no `-o` flag, infer from `./cmd/<name>` package path
-- [ ] **Collapse conditional branches** — pick the single production build path
-- [ ] **Resolve all Makefile directory variables** used in the `-o` flag — look up each variable's definition (e.g. `SERVICE_BUILD_DIR := output/service`) and substitute the literal value; never guess a directory name from the binary name
+- [ ] **Check Dockerfile first** for `RUN go build` — this is the canonical build command
+- [ ] **Check for `WORKDIR` before `RUN go build`** — single-binary stage: include `cd <subdir> &&` prefix. Multi-binary stage: use repo-relative package path instead (Rule 9)
+- [ ] Extract package path directly from Dockerfile `RUN` instruction — NOT from Makefile
+- [ ] Use Makefile only to resolve variable values referenced in the Dockerfile command
+- [ ] Identify which binary is being built (from Dockerfile ENTRYPOINT)
+- [ ] **Multi-stage check:** build→compress→wrap → emit full pipeline (Rule 10)
+- [ ] **Multi-binary check:** multiple `RUN go build` → extract only the one matching final stage
+- [ ] If Makefile has multiple targets, select **only** the one matching the image name
+- [ ] Extract binary name from `-o` flag path (last segment)
+- [ ] **Collapse conditional branches** — single production path only
+- [ ] **Resolve Makefile directory variables** — look up definitions, never guess from binary name
 - [ ] **Remove platform variables** from output paths (`${OS}`, `${ARCH}`, etc.)
-- [ ] **Verify no double slashes** in the resulting path
-- [ ] Add matched binaries to binaries list:
-  - [ ] Primary = matches Dockerfile ENTRYPOINT or image name
-- [ ] **Do NOT add `.exe`** to `name` or `outputPath` — the transformer appends `.exe` to all `windowscross/container` artifacts automatically
-- [ ] **Set `outputPath` to `/go/bin/<binary-name>`** — always use this absolute path
-- [ ] `buildCommand -o` path matches `outputPath` exactly: `/go/bin/<binary-name>`
-- [ ] Store the cleaned, deterministic path for artifact mapping
+- [ ] **No double slashes** in resulting path
+- [ ] **No `.exe`** in `name` or `outputPath`
+- [ ] **`outputPath` = `/go/bin/<binary-name>`** — always this absolute path
+- [ ] **`buildCommand -o` matches `outputPath`** exactly
+- [ ] **Flags 1:1 copy:** every flag in `buildCommand` and `ldFlags` is a character-for-character copy of the Dockerfile's `RUN go build` line — nothing added (especially not `-s -w`), nothing removed, nothing reordered, nothing inferred from the Makefile
+- [ ] **Wildcards preserved:** if Dockerfile uses `COPY ... /go/bin/* ...`, pipelineSteps uses `cp /go/bin/* ...` — not an expanded binary list
+- [ ] **No per-binary `cd`:** if the build stage produces multiple binaries, each `buildCommand` uses a repo-relative package path — NOT `cd <subdir> && go build ... .`
+- [ ] **Wrapper NOT in `binaries[]`:** if there is a wrapper pipeline, the wrapper `go build` appears ONLY in `pipelineSteps[]` — never as a Binary entry
 
-#### 1.4 Patterns
-
-```makefile
-# Pattern A: Direct -o flag with platform vars (COLLAPSE → /go/bin/)
-go build -o _output/${ARCH}/blobplugin ./pkg/blobplugin
-# → binaries[0].name: "blobplugin"
-# → binaries[0].outputPath: "/go/bin/blobplugin"
-# → binaries[0].buildCommand: "go build -o /go/bin/blobplugin ./pkg/blobplugin"
-
-# Pattern B: Nested conditional output path (COLLAPSE → /go/bin/)
-go build -o bin/${OS}_${ARCH}${GOARM:+v${GOARM}}/kubelogin -ldflags "-X main.gitTag=${VERSION}"
-# → binaries[0].name: "kubelogin"
-# → binaries[0].outputPath: "/go/bin/kubelogin"
-# → binaries[0].buildCommand: "go build -o /go/bin/kubelogin -ldflags \"-X main.gitTag=${VERSION}\""
-# → binaries[0].ldFlags: "-X main.gitTag=${VERSION}"
-
-# Pattern C: Conditional build (COLLAPSE to primary path)
-# if [ "$(ARCH)" = "amd64" ]; then
-#   go build -o _output/amd64/binary ./cmd/main
-# else
-#   go build -o _output/arm64/binary ./cmd/main
-# fi
-# → binaries[0].outputPath: "/go/bin/binary"
-# → binaries[0].buildCommand: "go build -o /go/bin/binary ./cmd/main"
-
-# Pattern D: Makefile directory variable — resolve, then rewrite to /go/bin/
-# SERVICE_BUILD_DIR := output/service
-# my-service-binary:
-#   cd $(SERVICE_DIR) && go build -o $(SERVICE_BUILD_DIR)/my-service$(EXE_EXT) ...
-#
-# Always rewrite outputPath to /go/bin/<binaryname> regardless of Makefile paths:
-# → binaries[0].name: "my-service"
-# → binaries[0].outputPath: "/go/bin/my-service"
-# → binaries[0].buildCommand: "cd ${SERVICE_DIR} && go build -a -o /go/bin/my-service -ldflags \"...\" ..."
-#
-# /go/bin/ always exists, absolute, works from any cd subdir.
-# Artifact keys: /go/bin/my-service (global/Linux), /go/bin/my-service.exe (windowscross)
-#
-# ❌ WRONG: keeping the original relative path — output/service/ may not exist in build sandbox
-# → binaries[0].outputPath: "output/service/my-service"
-# → binaries[0].buildCommand: "cd ${SERVICE_DIR} && go build -o output/service/my-service ..."
-
-# Pattern E: Dockerfile WORKDIR sets build directory (no Makefile cd)
-# Dockerfile:
-#   ARG CNS_DIR=cns/service
-#   WORKDIR /azure-container-networking/${CNS_DIR}
-#   RUN go build -v -o /go/bin/azure-cns -ldflags "-X main.version=${VERSION}" .
-#
-# WORKDIR → cd prefix; preserve the variable reference:
-# → binaries[0].name: "azure-cns"
-# → binaries[0].outputPath: "/go/bin/azure-cns"
-# → binaries[0].buildCommand: "cd ${CNS_DIR} && go build -v -o /go/bin/azure-cns -ldflags \"-X main.version=${VERSION}\" ."
-#
-# ❌ WRONG: omitting cd — go build runs at repo root and finds no Go files
-# → binaries[0].buildCommand: "go build -v -o /go/bin/azure-cns -ldflags \"-X main.version=${VERSION}\" ."
-```
-
-#### 1.5 Anti-Patterns (DO NOT produce these)
+#### 1.4 Patterns & Anti-Patterns
 
 ```yaml
-# ❌ WRONG: Any platform variable remaining in outputPath or buildCommand -o path
-outputPath: "_output/${ARCH}/blobplugin"
-buildCommand: "go build -o bin/${GOOS}_${GOARCH}/kubelogin ..."
+# Platform vars → /go/bin/
+# ❌ outputPath: "_output/${ARCH}/blobplugin"
+# ✅ outputPath: "/go/bin/blobplugin"
 
-# ✅ CORRECT: Always /go/bin/<binary-name>
-outputPath: "/go/bin/blobplugin"
-outputPath: "/go/bin/kubelogin"
-buildCommand: "go build -o /go/bin/kubelogin ..."
+# .exe — transformer adds it
+# ❌ name: "kubelogin.exe"
+# ✅ name: "kubelogin"
 
-# ❌ WRONG: Directory variable guessed from binary name instead of resolved from Makefile definition
-# Makefile has: SERVICE_BUILD_DIR := output/service
-outputPath: "output/my-service/my-service"   # invented — my-service is the binary name, NOT the dir
-buildCommand: "cd ${SERVICE_DIR} && go build -o output/my-service/my-service ..."
+# Relative path — may not exist in sandbox
+# ❌ outputPath: "output/service/my-service"
+# ✅ outputPath: "/go/bin/my-service"
 
-# ✅ CORRECT: Always rewrite to /go/bin/<binary-name>
-outputPath: "/go/bin/my-service"
-buildCommand: "cd ${SERVICE_DIR} && go build -o /go/bin/my-service ..."
+# outputPath must match buildCommand -o
+# ❌ outputPath: "bin/kubelogin" / buildCommand: "go build -o bin/${OS}_${ARCH}/kubelogin ..."
+# ✅ outputPath: "/go/bin/kubelogin" / buildCommand: "go build -o /go/bin/kubelogin ..."
 
-# ❌ WRONG: .exe in outputPath or name — transformer adds it for windowscross automatically
-outputPath: "bin/kubelogin.exe"
-name: "kubelogin.exe"
-buildCommand: "go build -o bin/kubelogin.exe ..."
+# Double slashes after collapsing platform vars
+# ❌ outputPath: "bin//kubelogin"
+# ✅ outputPath: "/go/bin/kubelogin"
 
-# ❌ WRONG: Double slashes from collapsed variables
-outputPath: "bin//kubelogin"
-buildCommand: "go build -o bin//kubelogin ./cmd/main"
+# Conditional preserved in build command
+# ❌ buildCommand: "if [ \"$ARCH\" = \"amd64\" ]; then go build ... fi"
+# ✅ buildCommand: "go build -o /go/bin/binary ./cmd/main"
 
-# ❌ WRONG: Split build command (BIN_SUFFIX in separate step — each command: runs its own shell)
-# buildCommand emitting multiple lines that would become separate command: entries
-buildCommand: |-
-  BIN_SUFFIX=""
-  if [ "${GOOS}" = "windows" ]; then BIN_SUFFIX=".exe"; fi
-  cd ${SERVICE_DIR} && go build -o output/service/my-service${BIN_SUFFIX} ...
+# Flags added by LLM (not in Dockerfile — even if Makefile has them, do NOT add)
+# ❌ buildCommand: "go build -o /go/bin/app -ldflags \"-s -w -X main.version=${VERSION}\" ."  (Dockerfile has no -s -w)
+# ✅ buildCommand: "go build -o /go/bin/app -ldflags \"-X main.version=${VERSION}\" ."
 
-# ❌ WRONG: Relative path — output/service/ may not exist in the build sandbox
-outputPath: "output/service/my-service"
-buildCommand: "cd ${SERVICE_DIR} && go build -a -o output/service/my-service -ldflags \"...\" ..."
+# Wildcard expanded into binary list
+# ❌ pipelineSteps: ["cp /go/bin/svc-A /go/bin/svc-B /go/bin/svc-C /payload/"]  (Dockerfile uses /go/bin/*)
+# ✅ pipelineSteps: ["cp /go/bin/* /payload/"]
 
-# ✅ CORRECT: /go/bin/ path — always exists, no mkdir needed, works from any cd subdir
-outputPath: "/go/bin/my-service"
-buildCommand: "cd ${SERVICE_DIR} && go build -a -o /go/bin/my-service -ldflags \"...\" ..."
+# Single-binary stage: missing cd from WORKDIR
+# ❌ buildCommand: "go build -o /go/bin/azure-cns ."  (WORKDIR set subdir before RUN)
+# ✅ buildCommand: "cd ${CNS_DIR} && go build -o /go/bin/azure-cns ."
 
-# ❌ WRONG: Conditional preserved in build command  
-buildCommand: "if [ \"$ARCH\" = \"amd64\" ]; then go build -o bin/amd64/app; else go build -o bin/arm64/app; fi"
+# Multi-binary stage: per-binary cd instead of package path
+# ❌ buildCommand: "cd cni/network/plugin && go build -o /go/bin/azure-vnet ... main.go"  (per-binary cd breaks merged script)
+# ✅ buildCommand: "go build -o /go/bin/azure-vnet ... cni/network/plugin/main.go"
 
-# ❌ WRONG: outputPath doesn't match buildCommand -o path
-outputPath: "bin/kubelogin"
-buildCommand: "go build -o bin/${OS}_${ARCH}/kubelogin ..."
-
-# ✅ CORRECT: Single deterministic step using /go/bin/ as canonical output
-outputPath: "/go/bin/kubelogin"
-buildCommand: "go build -o /go/bin/kubelogin -ldflags \"-X main.gitTag=${VERSION}\""
-ldFlags: "-X main.gitTag=${VERSION}"
+# Makefile dir variable — resolve from definition, not from binary name
+# Makefile: SERVICE_BUILD_DIR := output/service
+# ❌ buildCommand: "cd ${SERVICE_DIR} && go build -o output/my-service/my-service ..."  (invented path)
+# ✅ buildCommand: "cd ${SERVICE_DIR} && go build -a -o /go/bin/my-service ..."
 ```
 
 ---
 
 ### Task 2: Entrypoint & Symlink
 
-**Input:** Dockerfile content provided in prompt  
+**Input:** Dockerfile content provided in prompt
 **Output:** `entrypoint` and `symlink` fields **inside each TargetSpec** (not as top-level fields)
 
-For each build target, determine the correct entrypoint and symlink:
-- **Linux targets** (`azlinux3/container`, etc.): entrypoint is the full absolute path (e.g. `/usr/local/bin/myapp`); symlink is typically `/usr/bin/<binary-name>`.
-- **Windows targets** (`windowscross/container`): entrypoint is just the binary name with no path prefix (e.g. `myapp`); symlink should be empty string.
+- **Linux targets**: entrypoint = full absolute path (e.g. `/usr/local/bin/myapp`); symlink = `/usr/bin/<binary-name>`.
+- **Windows targets**: entrypoint = bare binary name (e.g. `myapp`); symlink = `""`.
 
 #### 2.1 Extraction Checklist
 
-- [ ] Find last `ENTRYPOINT` or `CMD` instruction in final Dockerfile stage
+- [ ] Find last `ENTRYPOINT` or `CMD` in final Dockerfile stage
 - [ ] Parse command: array form `["/bin"]` or shell form `/bin`
 - [ ] Extract executable path (first element if array)
 - [ ] Derive symlink: `/usr/bin/<binary-name>` → `<entrypoint>`
@@ -829,20 +503,9 @@ For each build target, determine the correct entrypoint and symlink:
 #### 2.2 Patterns
 
 ```dockerfile
-# Pattern A: ENTRYPOINT array form
-ENTRYPOINT ["/blobplugin"]
-# → Entrypoint: "/blobplugin"
-# → Symlink: "/usr/bin/blobplugin"
-
-# Pattern B: CMD shell form
-CMD /pod_nanny
-# → Entrypoint: "/pod_nanny"
-# → Symlink: "/usr/bin/pod_nanny"
-
-# Pattern C: ENTRYPOINT with arguments
-ENTRYPOINT ["/app", "--config", "/etc/app.conf"]
-# → Entrypoint: "/app"
-# → Symlink: "/usr/bin/app"
+ENTRYPOINT ["/blobplugin"]        # → Entrypoint: "/blobplugin", Symlink: "/usr/bin/blobplugin"
+CMD /pod_nanny                    # → Entrypoint: "/pod_nanny", Symlink: "/usr/bin/pod_nanny"
+ENTRYPOINT ["/app", "--config"]   # → Entrypoint: "/app", Symlink: "/usr/bin/app"
 ```
 
 ---
@@ -850,71 +513,45 @@ ENTRYPOINT ["/app", "--config", "/etc/app.conf"]
 ### Task 3: Dependencies Extraction
 
 **Input:** Dockerfile and Makefile content provided in prompt
+**Output:** `build` and `runtime` fields **inside each TargetSpec**
 
-**Output:** `build` and `runtime` fields **inside each TargetSpec** (not as a separate `perTargetDeps` map)
-
-For each build target, identify the app-specific packages and place them directly in the target's `build`/`runtime` arrays.
-
-#### 3.0 What the Transformer Already Provides (Do NOT emit these)
-
-The transformer **automatically** adds these to every target — you must NOT include them in `perTargetDeps`:
+#### 3.0 What the Transformer Already Provides (Do NOT emit)
 
 | Package | Target | Why auto-added |
 | ------- | ------ | -------------- |
-| `msft-golang` | all targets (build) | Go toolchain, always needed |
-| `SymCrypt` | azlinux3 (build + runtime) | FIPS crypto lib, CGO_ENABLED=1 |
-| `SymCrypt-OpenSSL` | azlinux3 (build + runtime) | GOEXPERIMENT=systemcrypto provider |
-| `openssl-libs` | azlinux3 (build + runtime) | OpenSSL shared libs for CGO link |
+| `msft-golang` | all targets (build) | Go toolchain |
+| `SymCrypt` | azlinux3 (build + runtime) | FIPS crypto lib |
+| `SymCrypt-OpenSSL` | azlinux3 (build + runtime) | systemcrypto provider |
+| `openssl-libs` | azlinux3 (build + runtime) | OpenSSL shared libs |
 
-Only emit **application-specific** packages that the Dockerfile installs on top of these.
+Only emit **application-specific** packages.
 
 #### 3.1 Structure
-
-`build` and `runtime` are arrays inside each `TargetSpec` in the `targets` list:
 
 ```yaml
 targets:
   - targetOS: "azlinux3/container"
-    entrypoint: "/usr/local/bin/myapp"
-    symlink: "/usr/bin/myapp"
-    build:           # app-specific compile-time packages
-      - "curl"
-    runtime:         # app-specific runtime packages
-      - "ca-certificates"
-      - "iptables"
+    build:
+      - "curl"              # app-specific compile-time
+    runtime:
+      - "ca-certificates"   # app-specific runtime
   - targetOS: "windowscross/container"
-    entrypoint: "myapp"
-    symlink: ""
     build: []
-    runtime: []      # always empty — Dalec rejects runtime deps on Windows
+    runtime: []              # ALWAYS empty — Dalec rejects runtime deps on Windows
 ```
 
-**CRITICAL:** `windowscross.runtime` must **always be empty or `[]`**. Dalec rejects runtime deps on Windows output images.
-
-#### 3.2 Per-Target Build Dependencies Checklist
+#### 3.2 Build Dependencies Checklist
 
 - [ ] Check Dockerfile builder stage for `apt install` / `RUN` install commands
-- [ ] Check Makefile for extra build tools (e.g. `curl` in builder, `pkg-config`)
-- [ ] Do NOT emit: `msft-golang`, `gcc`, `SymCrypt`, `SymCrypt-OpenSSL`, `openssl-libs` (auto-added)
-- [ ] Only emit packages specific to the application's build process
+- [ ] Check Makefile for extra build tools
+- [ ] Do NOT emit: `msft-golang`, `gcc`, `SymCrypt`, `SymCrypt-OpenSSL`, `openssl-libs`
 
-#### 3.3 Per-Target Runtime Dependencies Checklist
+#### 3.3 Runtime Dependencies Checklist
 
-- [ ] Analyze **final Dockerfile stage only** (not builder stages)
+- [ ] Analyze **final Dockerfile stage only**
 - [ ] Find `apt install`, `yum install`, `apk add`, `tdnf install` commands
-- [ ] Apply exclusion filter:
-
-| Exclude | Reason |
-| ------- | ------ |
-| `fi`, `then`, `else`, `do`, `done`, `;;` | Shell syntax |
-| `&&`, `\|\|`, `;` | Operators |
-| `install`, `dpkg`, `apt`, `apt-get`, `tdnf` | Commands |
-| `/path/to/file` | File paths |
-| `$VAR`, `${VAR}` | Variables |
-| `SymCrypt`, `SymCrypt-OpenSSL`, `openssl-libs` | Auto-added by transformer |
-
-- [ ] **Never populate `windowscross.runtime`** — Dalec rejects it
-- [ ] Linux-only packages (e.g. `iptables`) go to `azlinux3.runtime` only
+- [ ] Exclude: shell syntax (`fi`, `then`), operators (`&&`), commands (`install`, `apt`), paths, variables, auto-added packages
+- [ ] **Never populate `windowscross.runtime`**
 
 #### 3.4 Patterns
 
@@ -927,145 +564,87 @@ RUN apt install -y curl
 RUN apt install -y ca-certificates iptables
 ENTRYPOINT ["/usr/local/bin/myapp"]
 
-# Final Windows stage
-COPY myapp.exe /myapp.exe
-
 # → targets:
 #   - targetOS: "azlinux3/container"
-#     entrypoint: "/usr/local/bin/myapp"
-#     symlink: "/usr/bin/myapp"
-#     build: ["curl"]           # extra build tool
+#     build: ["curl"]
 #     runtime: ["ca-certificates", "iptables"]
 #   - targetOS: "windowscross/container"
-#     entrypoint: "myapp"   # bare binary name — NO .exe, transformer adds it
-#     symlink: ""
-#     build: []                 # nothing extra beyond auto-added msft-golang
-#     runtime: []               # always empty
-```
-
-```dockerfile
-# Final stage — no extra build tools, just runtime
-RUN apt install -y ca-certificates fuse
-ENTRYPOINT ["/usr/local/bin/myapp"]
-
-# → targets:
-#   - targetOS: "azlinux3/container"
-#     entrypoint: "/usr/local/bin/myapp"
-#     symlink: "/usr/bin/myapp"
 #     build: []
-#     runtime: ["ca-certificates", "fuse"]
-#   - targetOS: "windowscross/container"
-#     entrypoint: "myapp"
-#     symlink: ""
-#     build: []
-#     runtime: []
+#     runtime: []    # always empty
 ```
 
 ```yaml
-# ❌ WRONG: old perTargetDeps map format (no longer used)
+# ❌ WRONG: old perTargetDeps map format
 perTargetDeps:
   azlinux3:
-    build: []
-    runtime:
-      - "iptables"
-  windowscross:
-    build: []
+    runtime: ["iptables"]
 
 # ✅ CORRECT: per-target fields inside each TargetSpec
 targets:
   - targetOS: "azlinux3/container"
-    entrypoint: "/usr/local/bin/myapp"
-    symlink: "/usr/bin/myapp"
-    build: []
-    runtime:
-      - "iptables"
-  - targetOS: "windowscross/container"
-    entrypoint: "myapp"
-    symlink: ""
-    build: []
-    runtime: []
+    runtime: ["iptables"]
 ```
 
 ---
 
 ### Task 4: Build Command Translation
 
-**Input:** Dockerfile and Makefile content provided in prompt  
+**Input:** Dockerfile and Makefile content provided in prompt
 **Output:** `BuildCommand`, `LdFlags` fields inside each `Binary` entry
-
-These rules supplement Task 1's extraction process with additional translation details.
 
 #### 4.1 Translation Rules
 
-1. **Remove environment variable assignments** that Dalec manages: `CGO_ENABLED=`, `GOOS=`, `GOARCH=`, `GOARM=`, `OS=`, `ARCH=`. These are set in the Dalec spec's `build.env` section.
-2. **Convert `$(VAR)` Makefile syntax to `${VAR}` Dalec syntax.** Version variables (`$(CNS_VERSION)`, `$(TAG)`, `$(IMAGE_VERSION)`, any `*_VERSION`/`*_TAG`) **must be replaced with `${VERSION}`**. Keep all other variable names as-is.
-3. **Replace shell glob patterns (`*.go`) with Go package path `.`**. Dalec has no shell glob expansion. If the Dockerfile uses `go build ... path/to/*.go`, replace the glob:
-   - After `cd <subdir>`: use `.` (current directory)
-   - From repo root: use `./path/to/` (package directory, no glob)
-   - **Never emit `*.go` in a `buildCommand`** — causes `malformed import path: invalid char '*'`
-4. **Remove `docker run` wrappers.** Strip `docker run golang:... /bin/bash -c "..."` — extract only the inner `go build` command.
-
-#### 4.2 Patterns
-
-```makefile
-# Input (with env vars, conditionals, platform paths):
-CGO_ENABLED=${CGO_ENABLED} GOOS=linux GOARCH=$(ARCH) go build -a \
-    -ldflags "-X ${PKG}/pkg/version.Ver=$(TAG) -s -w" \
-    -o _output/${ARCH}/binary ./cmd/main
-
-# Output (env stripped, $(TAG)→${VERSION}, path→/go/bin/):
-# BuildCommand: "go build -a -ldflags \"-X ${PKG}/pkg/version.Ver=${VERSION} -s -w\" -o /go/bin/binary ./cmd/main"
-# LdFlags: "-X ${PKG}/pkg/version.Ver=${VERSION} -s -w"
-```
-
-```dockerfile
-# Input (Dockerfile with glob):
-RUN cd cmd/service && go build -o /go/bin/my-service ... cmd/service/*.go
-
-# Output (glob replaced with .):
-# BuildCommand: "cd ${SERVICE_DIR} && go build -a -o /go/bin/my-service ... ."
-```
+1. **Remove environment variable assignments** that Dalec manages: `CGO_ENABLED=`, `GOOS=`, `GOARCH=`, `GOARM=`, `OS=`, `ARCH=`.
+2. **Convert `$(VAR)` to `${VAR}`.** Version variables (`$(CNS_VERSION)`, `$(TAG)`, `$(IMAGE_VERSION)`, any `*_VERSION`/`*_TAG`) → **`${VERSION}`**. Keep all other variable names as-is.
+3. **Replace shell glob `*.go` with Go package path `.`**. After `cd <subdir>`: use `.`. From repo root: use `./path/to/`. **Never emit `*.go`.**
+4. **Remove `docker run` wrappers.** Extract only the inner `go build` command.
 
 ---
 
-## Workflow Integration
+## Self-Check Before Output
 
-```bash
-┌─────────────────────────────────────────────────────────────────┐
-│                   LLM Processing Pipeline                       │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Step 1: LLM-based Non-Deterministic Setup                      │
-│  ─────────────────────────────────────────────────────────────  │
-│  Input: Dockerfile and Makefile content via prompt              │
-│  Process: Parse Dockerfile stages into build steps              │
-│  Output: NonDeterministicValues YAML structure                  │
-│  Location: result/{repo-name}/NonDeterministicValues.yml        │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Step 2: Deterministic Workflow (dalec-spec-generator)          │
-│  ─────────────────────────────────────────────────────────────  │
-│  Input: NonDeterministicValues.yml from result/                 │
-│  Uses values to populate:                                       │
-│  - artifacts.binaries (from Binaries list)                       │
-│  - image.entrypoint (from Entrypoint)                           │
-│  - image.post.symlinks (from Symlink)                           │
-│  - targets.<os>.dependencies (from TargetSpec.Build/Runtime)    │
-│  - build.steps (from Binary.BuildCommand + BIN_SUFFIX injection)│
-│  CLI fills remaining deterministic fields (license, version)    │
-│  Output: Final Dalec YAML spec (result/output.yml)              │
-└─────────────────────────────────────────────────────────────────┘
-```
+Before returning the NonDeterministicValues YAML, verify each item:
+
+**Flags & Fidelity (1:1 copy — zero inference):**
+- [ ] Compare every flag in each `buildCommand` against the Dockerfile's `RUN go build` line CHARACTER BY CHARACTER — are they identical?
+- [ ] If the Dockerfile's `-ldflags` does NOT contain `-s -w`, confirm your output does NOT contain `-s -w` (even if the Makefile has them — the Makefile is NOT a source of flags)
+- [ ] If the Dockerfile's `-ldflags` DOES contain `-s -w`, confirm your output DOES contain `-s -w`
+- [ ] Are `-a`, `-trimpath`, `-v`, `-gcflags`, `-tags` present/absent exactly as in the Dockerfile? (NOT inferred from Makefile or convention)
+- [ ] Did you add ANY flag that is not literally written in the Dockerfile's `RUN` line? If yes, REMOVE IT
+
+**Paths:**
+- [ ] Every `outputPath` is `/go/bin/<binary-name>` — no relative paths, no platform variables
+- [ ] Every `buildCommand -o` path matches its `outputPath` exactly
+- [ ] No `.exe` in any `name` or `outputPath`
+- [ ] No `//` anywhere in paths
+
+**Wildcards & COPY:**
+- [ ] If the Dockerfile uses `COPY --from=... /go/bin/* ...`, the corresponding `pipelineSteps` entry uses `cp /go/bin/* ...` — NOT an expanded binary list
+- [ ] Each Docker `COPY` → `cp` translation matches the Dockerfile's intent 1:1
+
+**WORKDIR / cd:**
+- [ ] Single-binary stage with `WORKDIR <subdir>`: `buildCommand` includes `cd <subdir> &&`
+- [ ] Multi-binary stage: NO per-binary `cd` — each `buildCommand` uses repo-relative package path (e.g. `cni/network/plugin/main.go`)
+
+**Pipeline Completeness:**
+- [ ] If final stage copies from a wrapper → `binaries[]` has ALL build-stage go builds AND `pipelineSteps[]` has ALL intermediate + wrapper commands
+- [ ] If final stage copies directly from build stage → no `pipelineSteps` needed
+- [ ] Wrapper `go build` appears ONLY in `pipelineSteps[]` — never duplicated into `binaries[]`
+
+**Variables:**
+- [ ] `${VERSION}`, `${COMMIT}`, `${REVISION}` preserved as-is (not resolved)
+- [ ] `$(VAR)` Makefile syntax converted to `${VAR}`
+- [ ] `CGO_ENABLED`, `GOOS`, `GOARCH` env prefixes stripped from build commands
+
+**Targets:**
+- [ ] `windowscross.runtime` is empty
+- [ ] Auto-added packages (`msft-golang`, `SymCrypt`, `SymCrypt-OpenSSL`, `openssl-libs`) are NOT in any target's deps
 
 ---
 
 ## Example Extraction
 
-### Input Files (Provided via LLM Prompt)
+### Input Files
 
 **Makefile content:**
 
@@ -1095,14 +674,9 @@ COPY _output/${ARCH}/blobplugin /blobplugin
 ENTRYPOINT ["/blobplugin"]
 ```
 
-### Extracted Values (YAML Output)
-
-**IMPORTANT:** YAML keys must be **camelCase** to match Go struct tags.
+### Extracted Values
 
 ```yaml
-# Output: result/{repo-name}/NonDeterministicValues.yml
-# YAML keys are camelCase (not PascalCase)
-
 binaries:
   - name: "blobplugin"
     outputPath: "/go/bin/blobplugin"
@@ -1118,40 +692,13 @@ targets:
     entrypoint: "/blobplugin"
     symlink: "/usr/bin/blobplugin"
     build:
-      - "curl"              # used in builder stage
+      - "curl"
     runtime:
       - "ca-certificates"
       - "fuse"
   - targetOS: "windowscross/container"
-    entrypoint: "blobplugin"  # bare binary name only — NO .exe, NO path prefix; transformer adds .exe
-    symlink: ""               # no symlinks on Windows
-    build: []                 # nothing extra beyond auto-added msft-golang
-    runtime: []               # always empty — Dalec rejects runtime deps on Windows
-```
-
-Equivalent Go struct (for reference):
-
-```go
-NonDeterministicValues{
-    Binaries: []Binary{
-        {Name: "blobplugin", OutputPath: "/go/bin/blobplugin", BuildCommand: "go build -a ...", LdFlags: "..."},
-        {Name: "blobfuse-proxy", OutputPath: "/go/bin/blobfuse-proxy", BuildCommand: "go build ..."},
-    },
-    Targets: []TargetSpec{
-        {
-            TargetOS:   "azlinux3/container",
-            Entrypoint: "/blobplugin",
-            Symlink:    "/usr/bin/blobplugin",
-            Build:      []string{"curl"},
-            Runtime:    []string{"ca-certificates", "fuse"},
-        },
-        {
-            TargetOS:   "windowscross/container",
-            Entrypoint: "blobplugin",
-            Symlink:    "",
-            Build:      []string{},
-            Runtime:    []string{},   // intentionally empty
-        },
-    },
-}
+    entrypoint: "blobplugin"
+    symlink: ""
+    build: []
+    runtime: []
 ```

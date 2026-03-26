@@ -39,6 +39,7 @@ package transformer
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"dalec-mapping/domain/contents"
@@ -65,11 +66,16 @@ func extractBuildSection(defaultSpec *contents.DefaultSpec, makefileInfo *conten
 	steps, scanText := buildSteps(defaultSpec, nonDeterministicValues, goModDownloads)
 	build["steps"] = steps
 
-	referencedVars := scanVarReferences(scanText, env)
+	referencedVars := scanVarReferences(scanText)
 
 	// Promote any referenced Makefile variable into env so the spec arg is wired through.
+	// Skip variables that are set dynamically in the build preamble (e.g. OS, ARCH)
+	// or already present in env.
 	for varName := range referencedVars {
 		if _, alreadySet := env[varName]; alreadySet {
+			continue
+		}
+		if dalecHandledEnvs[varName] {
 			continue
 		}
 		if makefileInfo != nil {
@@ -147,9 +153,9 @@ func buildSteps(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.N
 
 		cdPath := baseDir
 		if subdir != "" && subdir != baseDir {
-			// Only append subdir when it differs from the repo root to avoid
-			// doubling (e.g. "azure-container-networking/azure-container-networking").
-			cdPath = baseDir + "/" + subdir
+			// Keep the subdirectory cd as part of the command itself so the
+			// working directory stays at baseDir for subsequent pipeline steps.
+			rest = fmt.Sprintf("cd %s && %s && cd ..", subdir, rest)
 		}
 		buildLines = append(buildLines, buildLine{cdPath: cdPath, cmd: rest})
 	}
@@ -186,12 +192,14 @@ func buildSteps(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.N
 	}
 
 	// Append pipeline steps (intermediate + wrapper stages) after the primary builds.
-	// Pipeline steps assume the working directory is the repo root, so cd back if
-	// the last binary build cd'd into a subdirectory.
+	// Pipeline steps handle their own directory navigation, so no automatic cd-back
+	// is inserted here.
 	if nonDeterministicValues != nil && len(nonDeterministicValues.PipelineSteps) > 0 {
-		if lastCd != baseDir {
-			parts = append(parts, "cd \"$BUILD_ROOT\"/"+baseDir)
-			lastCd = baseDir
+		// Ensure directories from intermediate-stage WORKDIRs exist. The Dockerfile
+		// creates these implicitly via WORKDIR, but Dalec's single-command sandbox
+		// does not. Only emit mkdir for dirs the LLM hasn't already handled.
+		if mkdirs := stageWorkdirs(defaultSpec.Stages, nonDeterministicValues.PipelineSteps, baseDir); len(mkdirs) > 0 {
+			parts = append(parts, "mkdir -p "+strings.Join(mkdirs, " "))
 		}
 		for _, step := range nonDeterministicValues.PipelineSteps {
 			step = strings.TrimSpace(step)
@@ -204,6 +212,9 @@ func buildSteps(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.N
 			}
 			// Rewrite `cd /go/pkg/mod/<module>@<version>` to `cd "$BUILD_ROOT"/<sourceKey>`.
 			step = rewriteGoModCdPaths(step, goModDownloads)
+			// Rewrite bare `cd <sourceKey>` to `cd "$BUILD_ROOT"/<sourceKey>` so
+			// the path resolves correctly after an absolute cd (e.g. cd /payload).
+			step = rewriteRelativeSourceCd(step, goModDownloads)
 			// Inject ${BIN_SUFFIX} into any go build -o /go/bin/<name> within pipeline steps.
 			step = injectAllBinSuffixVars(step)
 			parts = append(parts, step)
@@ -287,8 +298,10 @@ func rawBuildCommands(nonDeterministicValues *llm.NonDeterministicValues, goModD
 func binSuffixPreamble() string {
 	return `BUILD_ROOT="$PWD"
 BIN_SUFFIX=""
+OS="linux"
 if [ "${GOOS}" = "windows" ]; then
   BIN_SUFFIX=".exe"
+  OS="windows"
   export CC=` + MingwBinDir + `/x86_64-w64-mingw32-clang
 fi`
 }
@@ -315,7 +328,7 @@ func injectAllBinSuffixVars(text string) string {
 }
 
 // scanVarReferences finds all ${VAR}/$(VAR) references in the merged command text.
-func scanVarReferences(cmdText string, env map[string]interface{}) map[string]bool {
+func scanVarReferences(cmdText string) map[string]bool {
 	varRefRe := regexp.MustCompile(`\$[{(]([A-Za-z_][A-Za-z0-9_]*)[})]`)
 	refs := make(map[string]bool)
 
@@ -372,6 +385,23 @@ func rewriteGoModCdPaths(step string, downloads []GoModDownloadInfo) string {
 	return step
 }
 
+// rewriteRelativeSourceCd rewrites a leading `cd <sourceKey>` to
+// `cd "$BUILD_ROOT"/<sourceKey>` when <sourceKey> matches a known
+// go-mod-download source. This ensures the path resolves correctly
+// even after an earlier absolute cd has changed the working directory.
+func rewriteRelativeSourceCd(step string, downloads []GoModDownloadInfo) string {
+	for _, dl := range downloads {
+		prefix := "cd " + dl.SourceKey
+		if step == prefix ||
+			strings.HasPrefix(step, prefix+" ") ||
+			strings.HasPrefix(step, prefix+"\t") ||
+			strings.HasPrefix(step, prefix+"&&") {
+			step = `cd "$BUILD_ROOT"/` + dl.SourceKey + step[len(prefix):]
+		}
+	}
+	return step
+}
+
 // isSubmoduleName returns true if name matches a detected go-mod-download sub-module
 // source key. Used to avoid renaming the primary binary when the entrypoint comes
 // from a sub-module that is built separately.
@@ -390,6 +420,94 @@ var dalecHandledEnvs = map[string]bool{
 	"CGO_ENABLED": true, "GOOS": true, "GOARCH": true,
 	"GOARM": true, "GOARM64": true, "OS": true, "ARCH": true,
 	"CC": true, // set globally via MinGW toolchain source
+}
+
+// standardWorkdirs lists working directories that are always available in the
+// build sandbox and never need an explicit mkdir.
+var standardWorkdirs = map[string]bool{
+	"/":       true,
+	"/go":     true,
+	"/go/src": true,
+	"/go/bin": true,
+}
+
+// stageWorkdirs collects non-standard WORKDIR paths from Dockerfile stages that
+// need to be created before pipeline steps run. It deduplicates against dirs the
+// LLM already `mkdir -p`'d in pipelineSteps and excludes standard build paths.
+func stageWorkdirs(stages []contents.Stage, pipelineSteps []string, baseDir string) []string {
+	// Collect all WORKDIRs from stages.
+	candidates := map[string]bool{}
+	for _, stage := range stages {
+		wd := strings.TrimSpace(stage.Workdir)
+		if wd == "" || !strings.HasPrefix(wd, "/") {
+			continue
+		}
+		if standardWorkdirs[wd] {
+			continue
+		}
+		// Go module cache paths are dependency dirs populated by sources, not build dirs.
+		if strings.HasPrefix(wd, "/go/pkg/mod/") {
+			continue
+		}
+		// The repo source dir (and any subdirectory within it) is already
+		// present in the mounted source — no mkdir needed.
+		if wd == "/"+baseDir || strings.HasPrefix(wd, "/"+baseDir+"/") {
+			continue
+		}
+		candidates[wd] = true
+	}
+
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	// Exclude dirs the LLM already handles via mkdir -p in pipeline steps.
+	for _, step := range pipelineSteps {
+		step = strings.TrimSpace(step)
+		if strings.HasPrefix(step, "mkdir") {
+			// Extract paths from "mkdir -p /path1 /path2 ..." or "mkdir -p rel ..."
+			fields := strings.Fields(step)
+			for _, f := range fields {
+				if f == "mkdir" || f == "-p" || f == "-m" {
+					continue
+				}
+				if strings.HasPrefix(f, "/") {
+					delete(candidates, f)
+				} else {
+					// LLM may use relative paths; match against absolute candidates.
+					delete(candidates, "/"+f)
+				}
+			}
+		}
+	}
+
+	// Drop any remaining WORKDIR that no pipeline step actually references.
+	// Dockerfile WORKDIRs like /azure-ipam may correspond to repo subdirectories
+	// that exist in the source tree — pipeline steps use them via relative paths
+	// (e.g. azure-ipam/*.conflist) and never need the absolute directory.
+	for wd := range candidates {
+		referenced := false
+		for _, step := range pipelineSteps {
+			step = strings.TrimSpace(step)
+			if strings.HasPrefix(step, "mkdir") {
+				continue
+			}
+			if strings.Contains(step, wd) {
+				referenced = true
+				break
+			}
+		}
+		if !referenced {
+			delete(candidates, wd)
+		}
+	}
+
+	dirs := make([]string, 0, len(candidates))
+	for d := range candidates {
+		dirs = append(dirs, d)
+	}
+	sort.Strings(dirs)
+	return dirs
 }
 
 // envAssignRe matches KEY=value, KEY=${VAR}, KEY=${VAR:-default}, KEY=$(VAR).

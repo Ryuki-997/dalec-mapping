@@ -1,18 +1,19 @@
 package onboarding
 
 // OnboardMode indicates whether this is a first-time onboard, a revision bump,
-// or a mismatch that should halt processing.
+// or a content change that requires owner notification.
 type OnboardMode int
 
 const (
-	ManualReview OnboardMode = iota // First time or Siblings exist but content differs — requires manual review
-	CommitBump                      // Alias: both files match, commit-level bump
+	FirstOnboard   OnboardMode = iota // No cached siblings — first-time onboard, requires review
+	ContentChanged                    // Siblings exist but Dockerfile/Makefile content differs
+	CommitBump                        // Both files match — commit-level bump only
 )
 
 type OnboardingInfo struct {
 	Repository     string      `yaml:"repository"`
 	Tag            []string    `yaml:"tags"`
-	Reviewers 		[]string    `yaml:"reviewers,omitempty"`
+	Reviewers      []string    `yaml:"reviewers,omitempty"`
 	Mode           OnboardMode `yaml:"-"` // set during onboard file discovery
 	DockerfileDir     string      `yaml:"dockerfile"`
 	MakefileDir       string      `yaml:"makefile"`

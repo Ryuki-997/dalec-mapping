@@ -1,4 +1,4 @@
-package ado
+package repository
 
 import (
 	"context"
@@ -43,11 +43,11 @@ func fetchUAMIToken(clientID string) (string, error) {
 	return token.Token, nil
 }
 
-// FetchAllTags queries a remote ADO repository for all tags using git ls-remote.
+// FetchAllADOTags queries a remote ADO repository for all tags using git ls-remote.
 // If UAMI_CLIENT_ID is set in the environment, it acquires an OAuth token via
 // Azure IMDS and passes it to git. Otherwise it falls back to ambient credentials.
 // For annotated tags the dereferenced commit (^{}) is used as the commit SHA.
-func FetchAllTags(repoURL string) ([]TagInfo, error) {
+func FetchAllADOTags(repoURL string) ([]TagInfo, error) {
 	clientID := os.Getenv("UAMI_CLIENT_ID")
 	if clientID == "" {
 		return nil, fmt.Errorf("UAMI_CLIENT_ID is not set")

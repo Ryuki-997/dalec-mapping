@@ -33,6 +33,7 @@ import (
 // selfHandledArgs lists variables that are emitted with fixed logic and must not
 // be overridden by Dockerfile ARG values or Makefile variable promotion.
 var selfHandledArgs = map[string]bool{
+	"OS":         true,
 	"OS_VERSION": true,
 	"VERSION":    true,
 	"TARGETARCH": true,
@@ -94,13 +95,7 @@ func extractArgs(defaultSpec *contents.DefaultSpec, makefileInfo *contents.Makef
 	makefileInfo = initializeMakefileInfo(makefileInfo)
 	args = mergeDockerfileArgs(args, defaultSpec, makefileInfo)
 	args = mergeMakefileVars(args, makefileInfo, referencedVars, defaultSpec)
-
-	// Add resolved commit SHAs for sub-module sources (e.g. DROPGZ_COMMIT).
-	for _, dl := range goModDownloads {
-		if dl.CommitSHA != "" {
-			args[dl.CommitArgName] = dl.CommitSHA
-		}
-	}
+	args = mergeSubmoduleVars(args, defaultSpec, makefileInfo, goModDownloads)
 
 	return args
 }
@@ -154,6 +149,34 @@ func mergeMakefileVars(args map[string]interface{}, makefileInfo *contents.Makef
 			args[varName] = resolved
 			fmt.Printf("key (from Makefile): %s, value: %v\n", varName, resolved)
 		}
+	}
+	return args
+}
+
+// mergeSubmoduleVars promotes version variables referenced by detected
+// go mod download submodules. These are "used" variables — their presence
+// in a source commit field means they must appear in args.
+// Resolves from Dockerfile ARGs first, then Makefile variables.
+func mergeSubmoduleVars(args map[string]interface{}, defaultSpec *contents.DefaultSpec, makefileInfo *contents.MakefileInfo, goModDownloads []GoModDownloadInfo) map[string]interface{} {
+	for _, dl := range goModDownloads {
+		varName := strings.Trim(dl.VersionVar, "${}()")
+		if varName == "" {
+			continue
+		}
+		if _, exists := args[varName]; exists {
+			continue
+		}
+		// Resolve from Dockerfile ARGs first, then Makefile variables.
+		value, found := defaultSpec.Args[varName]
+		if !found {
+			value, found = makefileInfo.Variables[varName]
+		}
+		if !found {
+			continue
+		}
+		value = expandVarRefs(defaultSpec, makefileInfo, value)
+		args[varName] = value
+		fmt.Printf("key (from submodule): %s, value: %v\n", varName, value)
 	}
 	return args
 }

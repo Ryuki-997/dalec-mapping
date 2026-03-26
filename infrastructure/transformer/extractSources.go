@@ -20,15 +20,11 @@ package transformer
 //   Chunk 5 · DISCOVERY                DetectGoModDownloads(), collectGoModSubpaths()
 //     Scans pipeline steps + binary commands to detect go mod download patterns
 //     and literal cd subdirectories that need gomod generate entries.
-//
-//   Chunk 6 · RESOLUTION               resolveVersionVar(), resolveSubmoduleCommit()
-//     Resolves version variables and sub-module tags to git commit SHAs.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import (
 	"dalec-mapping/domain/contents"
 	"dalec-mapping/domain/llm"
-	"dalec-mapping/infrastructure/github"
 	"fmt"
 	"regexp"
 	"strings"
@@ -65,12 +61,8 @@ type GoModDownloadInfo struct {
 	ModulePath string
 	// SubPath is the subdirectory within the git repo (e.g. "dropgz").
 	SubPath string
-	// VersionVar is the version reference (e.g. "${DROPGZ_VERSION}" or "v0.0.12").
+	// VersionVar is the version reference as it appears in the Dockerfile (e.g. "${DROPGZ_VERSION}").
 	VersionVar string
-	// CommitArgName is the arg name for the resolved commit SHA (e.g. "DROPGZ_COMMIT").
-	CommitArgName string
-	// CommitSHA is the resolved commit SHA (empty if resolution failed).
-	CommitSHA string
 	// GitURL is the repository URL (e.g. "https://github.com/azure/azure-container-networking").
 	GitURL string
 }
@@ -121,10 +113,16 @@ func buildPrimarySource(sources map[string]interface{}, defaultSpec *contents.De
 // go mod download dependency (e.g. dropgz).
 func buildSubmoduleSources(sources map[string]interface{}, defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloadInfo) {
 	for _, info := range goModDownloads {
+		// Format commit as <subPath>/<versionVar> to match Go module tag convention
+		// e.g. "dropgz/${DROPGZ_VERSION}" resolves to git tag "dropgz/v0.0.12"
+		commitRef := info.VersionVar
+		if info.SubPath != "" {
+			commitRef = info.SubPath + "/" + info.VersionVar
+		}
 		entry := map[string]interface{}{
 			"git": map[string]interface{}{
 				"url":    info.GitURL,
-				"commit": fmt.Sprintf("${%s}", info.CommitArgName),
+				"commit": commitRef,
 			},
 			"generate": []map[string]interface{}{
 				{string(defaultSpec.Generator): map[string]interface{}{}},
@@ -216,6 +214,12 @@ func DetectGoModDownloads(defaultSpec *contents.DefaultSpec, nonDeterministicVal
 		modulePath := m[1]
 		versionVar := m[2]
 
+		// Normalize to ${VAR} delimiter — DALEC uses this syntax to verify and
+		// resolve variable references in commit fields.
+		bare := strings.TrimLeft(versionVar, "$")
+		bare = strings.Trim(bare, "{}()")
+		versionVar = "${" + bare + "}"
+
 		parts := strings.Split(modulePath, "/")
 		sourceKey := parts[len(parts)-1]
 
@@ -233,55 +237,14 @@ func DetectGoModDownloads(defaultSpec *contents.DefaultSpec, nonDeterministicVal
 			}
 		}
 
-		resolvedVersion := resolveVersionVar(versionVar, defaultSpec, modulePath)
-		commitSHA := resolveSubmoduleCommit(resolvedVersion, parts, sourceKey, defaultSpec)
-
 		results = append(results, GoModDownloadInfo{
-			SourceKey:     sourceKey,
-			ModulePath:    modulePath,
-			SubPath:       subPath,
-			VersionVar:    versionVar,
-			CommitArgName: strings.ToUpper(sourceKey) + "_COMMIT",
-			CommitSHA:     commitSHA,
-			GitURL:        gitURL,
+			SourceKey:  sourceKey,
+			ModulePath: modulePath,
+			SubPath:    subPath,
+			VersionVar: versionVar,
+			GitURL:     gitURL,
 		})
-		fmt.Printf("📦 Detected sub-module source: %s (commit: %s)\n", sourceKey, commitSHA)
+		fmt.Printf("📦 Detected sub-module source: %s (version: %s)\n", sourceKey, versionVar)
 	}
 	return results
-}
-
-// ─── Chunk 6 · RESOLUTION ────────────────────────────────────────────────────
-
-// resolveVersionVar resolves a version variable reference to a literal string.
-func resolveVersionVar(versionVar string, defaultSpec *contents.DefaultSpec, modulePath string) string {
-	if strings.HasPrefix(versionVar, "${") || strings.HasPrefix(versionVar, "$(") {
-		varName := strings.Trim(versionVar, "${()}")
-		if v, ok := defaultSpec.Args[varName]; ok && v != "" {
-			return v
-		}
-		fmt.Printf("⚠️  Cannot resolve %s from Dockerfile args for go mod download %s\n", versionVar, modulePath)
-		return ""
-	}
-	return versionVar
-}
-
-// resolveSubmoduleCommit resolves a sub-module version to a git commit SHA.
-// Falls back to the main repo's commit if tag resolution fails.
-func resolveSubmoduleCommit(resolvedVersion string, moduleParts []string, sourceKey string, defaultSpec *contents.DefaultSpec) string {
-	if resolvedVersion != "" && len(moduleParts) >= 3 {
-		owner := moduleParts[1]
-		repo := moduleParts[2]
-		tagRef := sourceKey + "/" + resolvedVersion
-		sha, err := github.FetchTagCommit(owner, repo, tagRef)
-		if err != nil {
-			sha, err = github.FetchTagCommit(owner, repo, resolvedVersion)
-		}
-		if err == nil {
-			return sha
-		}
-		fmt.Printf("⚠️  Cannot resolve commit for tag %s: %v\n", tagRef, err)
-	}
-
-	fmt.Printf("ℹ️  Using main repo commit %s for sub-module %s\n", defaultSpec.LatestCommit, sourceKey)
-	return defaultSpec.LatestCommit
 }
