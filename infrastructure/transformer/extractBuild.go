@@ -46,8 +46,8 @@ import (
 	"dalec-mapping/domain/llm"
 )
 
-// cdDirRe matches `cd <dir> && <rest>` patterns.
-var cdDirRe = regexp.MustCompile(`^cd\s+(\S+)\s*&&\s*(.+)$`)
+// cdDirRe matches `cd <dir> && <rest>` or `cd <dir>\n<rest>` patterns.
+var cdDirRe = regexp.MustCompile(`(?s)^cd\s+(\S+)\s*(?:&&|\n)\s*(.+)$`)
 
 // binOutRe matches -o /go/bin/<name> in build commands (no variable refs in the name portion).
 var binOutRe = regexp.MustCompile(`-o (/go/bin/[^${}\s]+)`)
@@ -182,6 +182,9 @@ func buildSteps(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.N
 	}
 
 	// Emit normal binary builds. Only emit cd when the path changes.
+	// ${BIN_SUFFIX} is NOT injected here — a single final-pass injection
+	// targets the very last `-o /go/bin/<name>` in the entire assembled
+	// command block (which may come from pipeline steps or deferred lines).
 	lastCd := ""
 	for _, bl := range normalLines {
 		if bl.cdPath != lastCd {
@@ -215,20 +218,21 @@ func buildSteps(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.N
 			// Rewrite bare `cd <sourceKey>` to `cd "$BUILD_ROOT"/<sourceKey>` so
 			// the path resolves correctly after an absolute cd (e.g. cd /payload).
 			step = rewriteRelativeSourceCd(step, goModDownloads)
-			// Inject ${BIN_SUFFIX} into any go build -o /go/bin/<name> within pipeline steps.
-			step = injectAllBinSuffixVars(step)
 			parts = append(parts, step)
 		}
 	}
 
 	// Emit deferred sub-module binary builds AFTER pipeline steps.
-	// These need embedded content (e.g. /payload) prepared by pipeline steps.
 	for _, bl := range deferredLines {
 		parts = append(parts, "cd "+bl.cdPath)
 		parts = append(parts, bl.cmd)
 	}
 
+	// Final pass: inject ${BIN_SUFFIX} on only the LAST `-o /go/bin/<name>`
+	// across the entire assembled command block — regardless of whether it
+	// came from a normal line, pipeline step, or deferred line.
 	stepCmd := strings.Join(parts, "\n")
+	stepCmd = injectLastBinSuffix(stepCmd)
 	return []map[string]interface{}{{"command": stepCmd}}, stepCmd
 }
 
@@ -260,13 +264,10 @@ func rawBuildCommands(nonDeterministicValues *llm.NonDeterministicValues, goModD
 		var cmd string
 		if aux.BuildCommand != "" {
 			cmd = stripGoModDownloadPrefix(aux.BuildCommand)
-			cmd = injectBinSuffixVar(cmd)
 		} else if aux.LdFlags != "" {
 			// No explicit build command — synthesise one from ldflags + output path.
 			out := "/go/bin/" + aux.Name
-			cmd = injectBinSuffixVar(
-				fmt.Sprintf("go build -ldflags \"%s\" -o %s", aux.LdFlags, out),
-			)
+			cmd = fmt.Sprintf("go build -ldflags \"%s\" -o %s", aux.LdFlags, out)
 		}
 
 		// When there is exactly ONE binary and the entrypoint reveals a different canonical
@@ -316,6 +317,19 @@ func injectBinSuffixVar(cmd string) string {
 	return cmd[:loc[3]] + "${BIN_SUFFIX}" + cmd[loc[3]:]
 }
 
+// injectLastBinSuffix rewrites only the LAST `-o /go/bin/<name>` occurrence
+// in a multi-line command block, appending `${BIN_SUFFIX}` to the output path.
+// This ensures the suffix targets the final deliverable binary regardless of
+// whether it comes from a normal build line, pipeline step, or deferred line.
+func injectLastBinSuffix(text string) string {
+	allLocs := binOutRe.FindAllStringSubmatchIndex(text, -1)
+	if len(allLocs) == 0 {
+		return text
+	}
+	last := allLocs[len(allLocs)-1]
+	return text[:last[3]] + "${BIN_SUFFIX}" + text[last[3]:]
+}
+
 // injectAllBinSuffixVars rewrites ALL `-o /go/bin/<name>` occurrences in a
 // (possibly multi-line) string. Used for pipeline steps that may contain
 // multiple go build commands.
@@ -347,7 +361,7 @@ func extractOutputFlag(cmd string) string {
 	return ""
 }
 
-// extractCdDir parses a single line of the form "cd X && <rest>".
+// extractCdDir parses a command of the form "cd X && <rest>" or "cd X\n<rest>".
 // Returns (X, rest) when matched, or ("", original line) otherwise.
 func extractCdDir(line string) (subdir, stripped string) {
 	line = strings.TrimSpace(line)

@@ -28,7 +28,7 @@ import (
 
 // FetchOnboardFiles reads onboard.yml files from the spec repo, resolves tags,
 // fetches cached siblings, and populates the onboardImages slice.
-func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, inputPath string) error {
+func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, isFirstOnboard *[]bool, templateTags *[]string, inputPath string) error {
 	// Normalise the search path
 	if inputPath == "" {
 		inputPath = "specs"
@@ -132,16 +132,21 @@ func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, inputPath str
 		filteredTags := semver.FilterNewTags(resolvedTags, onboard.SpecRepository, onboard.SpecImageName, treePaths)
 
 		if hasDockerfile && hasMakefile {
-			// Re-onboard: keep only tags that already have specs (commit-bump candidates)
+			// Re-onboard: process new tags using the latest existing spec as template
 			existingTags := semver.FilterExistingTags(resolvedTags, onboard.SpecRepository, onboard.SpecImageName, treePaths)
-			if len(existingTags) > 0 {
-				onboard.Tag = semver.TagNames(existingTags)
+			if len(filteredTags) > 0 && len(existingTags) > 0 {
+				template := existingTags[len(existingTags)-1].Name
+				onboard.Tag = semver.TagNames(filteredTags)
 				*onboardImages = append(*onboardImages, onboard)
+				*isFirstOnboard = append(*isFirstOnboard, false)
+				*templateTags = append(*templateTags, template)
 			}
 		} else if len(filteredTags) > 0 {
 			// First-time onboard: keep only tags without existing specs
 			onboard.Tag = semver.TagNames(filteredTags)
 			*onboardImages = append(*onboardImages, onboard)
+			*isFirstOnboard = append(*isFirstOnboard, true)
+			*templateTags = append(*templateTags, "")
 		}
 
 		log.Printf("Onboard Data: %v\n", onboard)

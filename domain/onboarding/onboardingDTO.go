@@ -1,20 +1,19 @@
 package onboarding
 
-// OnboardMode indicates whether this is a first-time onboard, a revision bump,
+// ReviewMode indicates whether this is a first-time onboard, a revision bump,
 // or a content change that requires owner notification.
-type OnboardMode int
+type ReviewMode string
 
 const (
-	FirstOnboard   OnboardMode = iota // No cached siblings — first-time onboard, requires review
-	ContentChanged                    // Siblings exist but Dockerfile/Makefile content differs
-	CommitBump                        // Both files match — commit-level bump only
+	ManualReview   ReviewMode = "ManualReview"  // Both Initial and Content changes require manual review (default) 
+	AutoReview     ReviewMode = "AutoReview"    // Auto generates
 )
 
 type OnboardingInfo struct {
 	Repository     string      `yaml:"repository"`
 	Tag            []string    `yaml:"tags"`
 	Reviewers      []string    `yaml:"reviewers,omitempty"`
-	Mode           OnboardMode `yaml:"-"` // set during onboard file discovery
+	ReviewMode     ReviewMode  `yaml:"reviewMode,omitempty"` 
 	DockerfileDir     string      `yaml:"dockerfile"`
 	MakefileDir       string      `yaml:"makefile"`
 	OnboardDir     string      `yaml:"-"` // folder path in onboard repo (e.g. "specs/containernetworking/azure-cns")

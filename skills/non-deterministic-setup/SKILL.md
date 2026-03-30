@@ -76,6 +76,10 @@ Before extracting individual fields, walk through the entire Dockerfile top-to-b
 
 **ABSOLUTE RULE — Zero Inference on Build Commands:** Every `buildCommand`, `ldFlags`, and `pipelineSteps` entry must be a **literal 1:1 copy** of what appears in the Dockerfile. Do NOT add, remove, reorder, or infer any flags. Do NOT pull flags from the Makefile that are not already present in the Dockerfile's `RUN` line. The Makefile is used ONLY to resolve `$VAR` / `$(VAR)` references that the Dockerfile explicitly uses — it is NEVER a source of additional flags. If the Dockerfile says `-ldflags "-X main.version=${VERSION}"`, the output must say exactly that — not `-ldflags "-s -w -X main.version=${VERSION}"`.
 
+**ABSOLUTE RULE — No Synthesized `&&` Chains:** Each `buildCommand` and each `pipelineSteps` entry must contain exactly **one** logical shell command. The LLM must NEVER chain separate commands with `&&`. If a `buildCommand` needs a `cd` prefix, use a newline (`\n`) to separate it from the build command — NOT `&&`. Each `pipelineSteps` entry = one command; split multi-command lines into separate array entries. The ONLY exception: if the Dockerfile's `RUN` line itself contains `&&` **verbatim** (e.g. `RUN gzip ... && for f in ...`), preserve that `&&` as-is — it is part of the original command, not an LLM-synthesized chain.
+
+**ABSOLUTE RULE — No `go mod download` in `pipelineSteps`:** Submodule dependencies fetched via `go mod download <module>@<version>` are handled automatically as DALEC sources by the transformer. Do NOT emit `go mod download` lines in `pipelineSteps[]`. The transformer adds them to the spec's `sources:` section and makes them available at `$BUILD_ROOT/<sourceKey>`. Only emit the build/copy commands that use the downloaded module — not the download itself.
+
 #### Core Concept: Component-Based Extraction
 
 Each Dockerfile may build multiple components (binaries), but **one spec is generated per component**. The prompt identifies which component to extract. Each component is treated independently.
@@ -279,9 +283,9 @@ targets:
    **WORKDIR / `cd` translation (CRITICAL):** The Dalec sandbox does NOT honour Dockerfile `WORKDIR`. How to handle it depends on whether the build stage produces **one** or **multiple** binaries:
 
    **Single-binary stage** (one `RUN go build` with a WORKDIR pointing to a subdirectory):
-   - Use `cd <subdir> && go build ... .` — the `cd` navigates to the source directory, and `.` is the package.
-   - Strip the repo-name prefix. E.g. `WORKDIR /azure-container-networking/cns/service` → `cd cns/service &&`.
-   - Preserve variable references: `WORKDIR /repo/${CNS_DIR}` → `cd ${CNS_DIR} &&`.
+   - Use a newline-separated `cd` + `go build`: `"cd <subdir>\ngo build ... ."` — NOT `&&`.
+   - Strip the repo-name prefix. E.g. `WORKDIR /azure-container-networking/cns/service` → `cd cns/service\n`.
+   - Preserve variable references: `WORKDIR /repo/${CNS_DIR}` → `cd ${CNS_DIR}\n`.
    - Makefile `cd $(X_DIR)` takes precedence over Dockerfile `WORKDIR`.
 
    **Multi-binary stage** (multiple `RUN go build` in the same stage, each building from a different subdirectory):
@@ -293,13 +297,15 @@ targets:
    # Single-binary stage with WORKDIR:
    # ❌ WRONG: missing cd — go build runs at repo root, finds no Go files
    buildCommand: "go build -v -o /go/bin/azure-cns -ldflags \"-X main.version=${VERSION}\" ."
-   # ✅ CORRECT: cd prefix from WORKDIR
+   # ❌ WRONG: synthesized && chain — LLM must not create && joins
    buildCommand: "cd ${CNS_DIR} && go build -v -o /go/bin/azure-cns -ldflags \"-X main.version=${VERSION}\" ."
+   # ✅ CORRECT: cd on separate line (newline-separated)
+   buildCommand: "cd ${CNS_DIR}\ngo build -v -o /go/bin/azure-cns -ldflags \"-X main.version=${VERSION}\" ."
 
    # Multi-binary stage (all from repo root WORKDIR):
    # ❌ WRONG: per-binary cd — each cd is relative to $BUILD_ROOT, breaks merged script
-   buildCommand: "cd cni/network/plugin && go build -a -o /go/bin/azure-vnet ... main.go"
-   buildCommand: "cd cni/telemetry/service && go build -a -o /go/bin/azure-vnet-telemetry ... telemetrymain.go"
+   buildCommand: "cd cni/network/plugin\ngo build -a -o /go/bin/azure-vnet ... main.go"
+   buildCommand: "cd cni/telemetry/service\ngo build -a -o /go/bin/azure-vnet-telemetry ... telemetrymain.go"
    # ✅ CORRECT: no cd, use repo-relative package path from repo root
    buildCommand: "go build -a -o /go/bin/azure-vnet ... cni/network/plugin/main.go"
    buildCommand: "go build -a -o /go/bin/azure-vnet-telemetry ... cni/telemetry/service/telemetrymain.go"
@@ -311,12 +317,13 @@ targets:
 
    **What to emit:**
    - `binaries[]` — ONLY `go build` commands from the **primary build stage** (the stage that compiles the repo's own source code). The wrapper `go build` is **NEVER** in `binaries[]`.
-   - `pipelineSteps[]` — intermediate + wrapper commands in order:
+   - `pipelineSteps[]` — intermediate + wrapper commands in order. **Each entry = one command (no `&&` chains).** `go mod download` is omitted (handled as a DALEC source):
      1. File gathering (`mkdir -p`, `cp` from COPY instructions)
-     2. Checksumming + compression (`sha256sum`, `gzip`)
-     3. Wrapper module download (`go mod download`)
-     4. Payload embedding (`cp /payload/* pkg/embed/fs/`)
-     5. Wrapper go build (`go build -o /go/bin/<wrapper>`) — this is a pipeline step, NOT a binary
+     2. `cd` to working directory (separate entry from the command that follows)
+     3. Checksumming (`sha256sum`), compression (`gzip`)
+     4. `cd` to wrapper module path
+     5. Payload embedding (`cp /payload/* pkg/embed/fs/`)
+     6. Wrapper go build (`go build -o /go/bin/<wrapper>`) — this is a pipeline step, NOT a binary
    - Entrypoint = the wrapper binary name
 
    **CRITICAL — wrapper binary placement:** The wrapper `go build` (e.g. `go build -o /go/bin/dropgz ...`) belongs **exclusively in `pipelineSteps[]`** as the final step. Do NOT also add it to `binaries[]`. The transformer constructs the build script by first emitting all `binaries[]` commands (prefixed with `cd <repo-root>`), then appending `pipelineSteps[]` in order. If the wrapper build appears in `binaries[]`, the transformer will `cd` into the wrong path, producing a "no such file or directory" error.
@@ -343,10 +350,12 @@ targets:
      - "mkdir -p /payload"
      - "cp /go/bin/* /payload/"
      - "cp path/to/config.conflist /payload/config.conflist"
-     - "cd /payload && sha256sum * > sum.txt"
+     - "cd /payload"
+     - "sha256sum * > sum.txt"
      - "gzip --verbose --best --recursive /payload && for f in /payload/*.gz; do mv -- \"$f\" \"${f%%.gz}\"; done"
-     - "go mod download example.com/repo/wrapper@${WRAPPER_VERSION}"
-     - "cd /go/pkg/mod/example.com/repo/wrapper@${WRAPPER_VERSION} && cp /payload/* pkg/embed/fs/ && go build -a -o /go/bin/wrapper -trimpath -ldflags \"...\" -gcflags=\"...\" main.go"
+     - "cd /go/pkg/mod/example.com/repo/wrapper@${WRAPPER_VERSION}"
+     - "cp /payload/* pkg/embed/fs/"
+     - "go build -a -o /go/bin/wrapper -trimpath -ldflags \"...\" -gcflags=\"...\" main.go"
    targets:
      - targetOS: "azlinux3/container"
        entrypoint: "/wrapper"
@@ -374,11 +383,38 @@ targets:
      - name: "my-plugin"
        buildCommand: "go build -o /go/bin/my-plugin ... cni/network/plugin/main.go"
      - name: "dropgz"                      # ← wrapper does NOT belong here
-       buildCommand: "cd dropgz && go build -o /go/bin/dropgz ... ."
+       buildCommand: "cd dropgz\ngo build -o /go/bin/dropgz ... ."
    pipelineSteps:
-     - "cd dropgz && ... && go build -o /go/bin/dropgz ..."   # ← also here = duplicated
+     - "cd dropgz"
+     - "go build -o /go/bin/dropgz ..."    # ← also here = duplicated
    # The transformer cd's into the repo root for binaries[], then emits "cd dropgz"
    # which becomes an invalid path. Wrapper builds go in pipelineSteps[] ONLY.
+   ```
+
+   ```yaml
+   # ❌ WRONG: go mod download in pipelineSteps — transformer handles this as a DALEC source
+   pipelineSteps:
+     - "go mod download example.com/repo/wrapper@${WRAPPER_VERSION}"
+     - "cd /go/pkg/mod/example.com/repo/wrapper@${WRAPPER_VERSION}"
+   # ✅ CORRECT: omit go mod download, only emit the cd + build commands
+   pipelineSteps:
+     - "cd /go/pkg/mod/example.com/repo/wrapper@${WRAPPER_VERSION}"
+     - "cp /payload/* pkg/embed/fs/"
+     - "go build -a -o /go/bin/wrapper ..."
+   ```
+
+   ```yaml
+   # ❌ WRONG: synthesized && chain in pipelineSteps
+   pipelineSteps:
+     - "cd /payload && sha256sum * > sum.txt"
+     - "cd /go/pkg/mod/wrapper@${VER} && cp /payload/* pkg/embed/fs/ && go build ..."
+   # ✅ CORRECT: each command is a separate entry
+   pipelineSteps:
+     - "cd /payload"
+     - "sha256sum * > sum.txt"
+     - "cd /go/pkg/mod/wrapper@${VER}"
+     - "cp /payload/* pkg/embed/fs/"
+     - "go build ..."
    ```
 
 #### 1.2 Multi-Binary Makefile: Selecting the Correct Target
@@ -413,7 +449,7 @@ Many repos use a root Makefile with many `*-binary` targets and `*_DIR` variable
 #### 1.3 Extraction Checklist
 
 - [ ] **Check Dockerfile first** for `RUN go build` — this is the canonical build command
-- [ ] **Check for `WORKDIR` before `RUN go build`** — single-binary stage: include `cd <subdir> &&` prefix. Multi-binary stage: use repo-relative package path instead (Rule 9)
+- [ ] **Check for `WORKDIR` before `RUN go build`** — single-binary stage: include `cd <subdir>` on a separate line (newline, NOT `&&`). Multi-binary stage: use repo-relative package path instead (Rule 9)
 - [ ] Extract package path directly from Dockerfile `RUN` instruction — NOT from Makefile
 - [ ] Use Makefile only to resolve variable values referenced in the Dockerfile command
 - [ ] Identify which binary is being built (from Dockerfile ENTRYPOINT)
@@ -430,7 +466,9 @@ Many repos use a root Makefile with many `*-binary` targets and `*_DIR` variable
 - [ ] **`buildCommand -o` matches `outputPath`** exactly
 - [ ] **Flags 1:1 copy:** every flag in `buildCommand` and `ldFlags` is a character-for-character copy of the Dockerfile's `RUN go build` line — nothing added (especially not `-s -w`), nothing removed, nothing reordered, nothing inferred from the Makefile
 - [ ] **Wildcards preserved:** if Dockerfile uses `COPY ... /go/bin/* ...`, pipelineSteps uses `cp /go/bin/* ...` — not an expanded binary list
-- [ ] **No per-binary `cd`:** if the build stage produces multiple binaries, each `buildCommand` uses a repo-relative package path — NOT `cd <subdir> && go build ... .`
+- [ ] **No per-binary `cd`:** if the build stage produces multiple binaries, each `buildCommand` uses a repo-relative package path — NOT `cd <subdir>\ngo build ... .`
+- [ ] **No synthesized `&&`:** every `buildCommand` and `pipelineSteps` entry contains ONE command. `cd` is newline-separated in `buildCommand`, or a separate array entry in `pipelineSteps`. Only preserve `&&` if it exists verbatim in the Dockerfile's `RUN` line
+- [ ] **No `go mod download` in `pipelineSteps`:** submodule downloads are handled as DALEC sources — omit them entirely
 - [ ] **Wrapper NOT in `binaries[]`:** if there is a wrapper pipeline, the wrapper `go build` appears ONLY in `pipelineSteps[]` — never as a Binary entry
 
 #### 1.4 Patterns & Anti-Patterns
@@ -470,16 +508,28 @@ Many repos use a root Makefile with many `*-binary` targets and `*_DIR` variable
 
 # Single-binary stage: missing cd from WORKDIR
 # ❌ buildCommand: "go build -o /go/bin/azure-cns ."  (WORKDIR set subdir before RUN)
-# ✅ buildCommand: "cd ${CNS_DIR} && go build -o /go/bin/azure-cns ."
+# ❌ buildCommand: "cd ${CNS_DIR} && go build -o /go/bin/azure-cns ."  (synthesized && — LLM must not create && joins)
+# ✅ buildCommand: "cd ${CNS_DIR}\ngo build -o /go/bin/azure-cns ."  (newline-separated)
 
 # Multi-binary stage: per-binary cd instead of package path
-# ❌ buildCommand: "cd cni/network/plugin && go build -o /go/bin/azure-vnet ... main.go"  (per-binary cd breaks merged script)
+# ❌ buildCommand: "cd cni/network/plugin\ngo build -o /go/bin/azure-vnet ... main.go"  (per-binary cd breaks merged script)
 # ✅ buildCommand: "go build -o /go/bin/azure-vnet ... cni/network/plugin/main.go"
 
 # Makefile dir variable — resolve from definition, not from binary name
 # Makefile: SERVICE_BUILD_DIR := output/service
-# ❌ buildCommand: "cd ${SERVICE_DIR} && go build -o output/my-service/my-service ..."  (invented path)
-# ✅ buildCommand: "cd ${SERVICE_DIR} && go build -a -o /go/bin/my-service ..."
+# ❌ buildCommand: "cd ${SERVICE_DIR}\ngo build -o output/my-service/my-service ..."  (invented path)
+# ✅ buildCommand: "cd ${SERVICE_DIR}\ngo build -a -o /go/bin/my-service ..."
+
+# Synthesized && in pipelineSteps
+# ❌ pipelineSteps: ["cd /payload && sha256sum * > sum.txt"]  (synthesized && chain)
+# ✅ pipelineSteps: ["cd /payload", "sha256sum * > sum.txt"]  (separate entries)
+
+# Verbatim && from Dockerfile RUN line — preserve as-is
+# ✅ pipelineSteps: ["gzip --best /payload && for f in /payload/*.gz; do mv \"$f\" \"${f%%.gz}\"; done"]  (verbatim from Dockerfile)
+
+# go mod download in pipelineSteps
+# ❌ pipelineSteps: ["go mod download example.com/wrapper@${VER}"]  (handled as DALEC source)
+# ✅ omit go mod download entirely — transformer adds it to sources
 ```
 
 ---
@@ -623,13 +673,16 @@ Before returning the NonDeterministicValues YAML, verify each item:
 - [ ] Each Docker `COPY` → `cp` translation matches the Dockerfile's intent 1:1
 
 **WORKDIR / cd:**
-- [ ] Single-binary stage with `WORKDIR <subdir>`: `buildCommand` includes `cd <subdir> &&`
+- [ ] Single-binary stage with `WORKDIR <subdir>`: `buildCommand` includes `cd <subdir>` on a separate line (newline, NOT `&&`)
 - [ ] Multi-binary stage: NO per-binary `cd` — each `buildCommand` uses repo-relative package path (e.g. `cni/network/plugin/main.go`)
+- [ ] No synthesized `&&` chains anywhere — each command is a separate line or array entry. Only preserve `&&` that exists verbatim in the Dockerfile's `RUN` line
 
 **Pipeline Completeness:**
 - [ ] If final stage copies from a wrapper → `binaries[]` has ALL build-stage go builds AND `pipelineSteps[]` has ALL intermediate + wrapper commands
 - [ ] If final stage copies directly from build stage → no `pipelineSteps` needed
 - [ ] Wrapper `go build` appears ONLY in `pipelineSteps[]` — never duplicated into `binaries[]`
+- [ ] No `go mod download` in `pipelineSteps[]` — these are handled as DALEC sources automatically
+- [ ] Each `pipelineSteps` entry is exactly ONE command — no `&&` chains (unless verbatim from Dockerfile)
 
 **Variables:**
 - [ ] `${VERSION}`, `${COMMIT}`, `${REVISION}` preserved as-is (not resolved)

@@ -7,7 +7,6 @@ import (
 	"dalec-mapping/infrastructure/semver"
 	"dalec-mapping/workflow"
 	"flag"
-	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -16,119 +15,177 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Main — Dalec Spec Pipeline
+//
+//   Chunk 1 · ENTRY       main(), loadEnv(), fetchOnboardFiles()
+//   Chunk 2 · PIPELINE    processTag(), decideAction()
+//   Chunk 3 · ACTIONS     bumpCommit(), generateSpec(), testAndPush(), notifyReviewers()
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── Chunk 1 · ENTRY ────────────────────────────────────────────────────────
+
 func main() {
-	// Parse command line flags
-	inputPath := flag.String("path", "", "Input path to search for onboarding files (e.g. specs/containernetworking and specs/containernetworking/azure-cns both work. It is the difference between building all components vs one). Omit to fetch all under specs/")
+	inputPath := flag.String("path", "", "Input path to search for onboarding files (e.g. specs/containernetworking and specs/containernetworking/azure-cns both work). Omit to fetch all under specs/")
 	flag.Parse()
 
-	// Step 0: Load environment variables
-	wd, _ := os.Getwd()
-	log.Printf("Working directory: %s", wd)
+	loadEnv()
 
-	err := godotenv.Load()
-	if err != nil {
-		log.Printf("⚠️  .env file not found at %s/.env: %v", wd, err)
-	}
-	
-	// Step 1: Fetch onboarding files from the onboard repo
-	onboardFiles := []onboarding.OnboardingInfo{}
-	err = workflow.FetchOnboardFiles(&onboardFiles, *inputPath)
-	if err != nil {
-		log.Fatalf("❌ Failed to fetch onboard data: %v", err)
-	}
+	onboardFiles, firstOnboardFlags, templateTags := fetchOnboardFiles(*inputPath)
 
-	if len(onboardFiles) == 0 {
-		log.Fatalf("No onboarding files found at path: %s", *inputPath)
-	}
-
-	shellVar := []string{}
-	for _, onboard := range onboardFiles {
+	var specPaths []string
+	for i, onboard := range onboardFiles {
 		log.Printf("Onboard Documents: %v\n", onboard)
 		for _, fullTag := range onboard.Tag {
-
-			tag := semver.ToTag(fullTag)
-			log.Printf("▶ Running pipeline for %s @ %s\n", onboard.Repository, fullTag)
-
-			// Step 2: DiscoverBuildFiles — also sets onboard.Mode based on sibling diff.
-			repoInfo := &repository.RepoInfo{}
-			if err := workflow.DiscoverBuildFiles(&onboard, repoInfo, fullTag); err != nil {
-				log.Fatalf("❌ DiscoverBuildFiles failed: %v", err)
-			}
-
-			// Step 3: Dockerfile/Makefile unchanged since last onboard? If yes, skip straight to BumpCommit with no LLM or generation.
-			if onboard.Mode == onboarding.CommitBump {
-				_, err := workflow.BumpCommit(&onboard, fullTag)
-				if err != nil {
-					log.Fatalf("❌ Revision bump failed: %v", err)
-				}
-				
-				if err := workflow.PushToRemote(&onboard, tag); err != nil {
-					log.Fatalf("❌ Push failed: %v", err)
-				}
-				log.Printf("✅ Revision bump pushed for %s @ %s\n", onboard.SpecImageName, tag)
-				continue
-			}
-
-			// Steps 4-5: Full pipeline: LLM populate → generate → test → push.
-			remotePath, resolvedTargets := generateSpec(&onboard, fullTag)
-			shellVar = append(shellVar, remotePath)
-
-			testAndPush(&onboard, remotePath, tag, fullTag, resolvedTargets)
-
-			// Step 8: Notify owners after push.
-			if err := workflow.NotifyOwners(&onboard, tag); err != nil {
-				log.Printf("⚠️  Owner notification failed: %v", err)
+			if remotePath := processTag(&onboard, fullTag, firstOnboardFlags[i], templateTags[i]); remotePath != "" {
+				specPaths = append(specPaths, remotePath)
 			}
 		}
 	}
 
-	log.Printf("specPaths=%s\n", strings.Join(shellVar, ","))
+	log.Printf("specPaths=%s\n", strings.Join(specPaths, ","))
+}
+
+func loadEnv() {
+	wd, _ := os.Getwd()
+	log.Printf("Working directory: %s", wd)
+	if err := godotenv.Load(); err != nil {
+		log.Printf("⚠️  .env file not found at %s/.env: %v", wd, err)
+	}
+}
+
+func fetchOnboardFiles(inputPath string) ([]onboarding.OnboardingInfo, []bool, []string) {
+	var onboardFiles []onboarding.OnboardingInfo
+	var firstOnboardFlags []bool
+	var templateTags []string
+
+	if err := workflow.FetchOnboardFiles(&onboardFiles, &firstOnboardFlags, &templateTags, inputPath); err != nil {
+		log.Fatalf("❌ Failed to fetch onboard data: %v", err)
+	}
+	if len(onboardFiles) == 0 {
+		log.Fatalf("No onboarding files found at path: %s", inputPath)
+	}
+
+	return onboardFiles, firstOnboardFlags, templateTags
+}
+
+// ─── Chunk 2 · PIPELINE ─────────────────────────────────────────────────────
+
+// processTag runs the full pipeline for a single tag and returns the remote
+// spec path if a new spec was generated, or empty string otherwise.
+func processTag(onboard *onboarding.OnboardingInfo, fullTag string, isFirstOnboard bool, templateTag string) string {
+	tag := semver.ToTag(fullTag)
+	log.Printf("▶ Running pipeline for %s @ %s\n", onboard.Repository, fullTag)
+
+	repoInfo := &repository.RepoInfo{}
+	contentChanged, err := workflow.DiscoverBuildFiles(onboard, repoInfo, fullTag)
+	if err != nil {
+		log.Fatalf("❌ DiscoverBuildFiles failed: %v", err)
+	}
+
+	action := decideAction(onboard.ReviewMode, isFirstOnboard, contentChanged)
+
+	switch action {
+	case actionNotify:
+		notifyReviewers(onboard, tag, isFirstOnboard)
+		return ""
+	case actionBumpCommit:
+		bumpCommit(onboard, fullTag, tag, templateTag)
+		return ""
+	case actionGenerate:
+		remotePath, resolvedTargets := generateSpec(onboard, fullTag)
+		testAndPush(onboard, remotePath, tag, resolvedTargets)
+		return remotePath
+	}
+
+	return ""
+}
+
+type pipelineAction int
+
+const (
+	actionNotify     pipelineAction = iota // Notify reviewers, skip generation
+	actionBumpCommit                       // Copy template spec with new commit hash
+	actionGenerate                         // Full LLM generate → test → push
+)
+
+// decideAction maps the decision matrix to a pipeline action.
+//
+//	First time  + ManualReview             → notify
+//	First time  + AutoReview               → generate
+//	Re-onboard  + content unchanged        → bump commit
+//	Re-onboard  + content changed + Manual → notify
+//	Re-onboard  + content changed + Auto   → generate
+func decideAction(mode onboarding.ReviewMode, isFirstOnboard, contentChanged bool) pipelineAction {
+	if isFirstOnboard {
+		if mode == onboarding.ManualReview {
+			return actionNotify
+		}
+		return actionGenerate
+	}
+
+	if !contentChanged {
+		return actionBumpCommit
+	}
+
+	if mode == onboarding.ManualReview {
+		return actionNotify
+	}
+	return actionGenerate
+}
+
+// ─── Chunk 3 · ACTIONS ──────────────────────────────────────────────────────
+
+func notifyReviewers(onboard *onboarding.OnboardingInfo, tag string, isFirstOnboard bool) {
+	if isFirstOnboard {
+		log.Printf("📋 First-time onboard (manual review) for %s @ %s — notifying reviewers\n", onboard.SpecImageName, tag)
+	} else {
+		log.Printf("📋 Content changed (manual review) for %s @ %s — notifying reviewers\n", onboard.SpecImageName, tag)
+	}
+	if err := workflow.NotifyOwners(onboard, tag, isFirstOnboard); err != nil {
+		log.Printf("⚠️  Owner notification failed: %v", err)
+	}
+}
+
+func bumpCommit(onboard *onboarding.OnboardingInfo, fullTag, tag, templateTag string) {
+	log.Printf("🔄 Content unchanged for %s @ %s — bumping commit hash\n", onboard.SpecImageName, tag)
+	if _, err := workflow.BumpCommit(onboard, fullTag, templateTag); err != nil {
+		log.Fatalf("❌ Revision bump failed: %v", err)
+	}
+	if err := workflow.PushToRemote(onboard, tag); err != nil {
+		log.Fatalf("❌ Push failed: %v", err)
+	}
+	log.Printf("✅ Revision bump pushed for %s @ %s\n", onboard.SpecImageName, tag)
 }
 
 func generateSpec(onboard *onboarding.OnboardingInfo, fullTag string) (string, []string) {
 	log.Println("Dalec Spec Generator - Scheduled Job")
 	log.Printf("Started at: %s", time.Now().Format(time.RFC3339))
-	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 	ctx := context.Background()
 
-	// Step 4: ExtractBuildValues — populate non-deterministic fields using LLM
 	agentResponse, err := workflow.ExtractBuildValues(ctx, onboard)
 	if err != nil {
-		log.Fatalf("❌ Step 4 failed: %v", err)
-		os.Exit(1)
-	} 
-
+		log.Fatalf("❌ ExtractBuildValues failed: %v", err)
+	}
 	log.Printf("✅ Non-deterministic values populated and saved to result directory")
 
-	// Step 5: GenerateSpec — create DALEC spec
 	resolvedTargets, err := workflow.GenerateSpec(onboard, agentResponse, fullTag)
 	if err != nil {
-		log.Fatalf("❌ Step 5 failed: %v", err)
+		log.Fatalf("❌ GenerateSpec failed: %v", err)
 	}
 
-	log.Println("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	log.Printf("✅ Generation Complete at %s", time.Now().Format(time.RFC3339))
-
-	log.Printf("✅ Spec created successfully for repository %s @ %s", onboard.Repository, onboard.Tag)
+	log.Printf("✅ Spec created for %s @ %s", onboard.SpecImageName, fullTag)
 
 	tag := semver.ToTag(fullTag)
-	var specPath string
-	if onboard.SpecRepository == "" {
-		specPath = fmt.Sprintf("specs/%s/%s-%s-specfile.yml", onboard.SpecImageName, onboard.SpecImageName, tag)
-	} else {
-		specPath = fmt.Sprintf("specs/%s/%s/%s-%s-specfile.yml", onboard.SpecRepository, onboard.SpecImageName, onboard.SpecImageName, tag)
-	}
-	return specPath, resolvedTargets
+	remotePath := semver.SpecFilePath(onboard.SpecRepository, onboard.SpecImageName, tag)
+	return remotePath, resolvedTargets
 }
 
-func testAndPush(onboard *onboarding.OnboardingInfo, remotePath, tag, fullTag string, resolvedTargets []string) {
-	// Step 7: TestImage — build, run, and test the image before pushing
+func testAndPush(onboard *onboarding.OnboardingInfo, remotePath, tag string, resolvedTargets []string) {
 	if err := workflow.TestImage(remotePath, onboard.SpecImageName, tag, resolvedTargets); err != nil {
 		log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
 	}
-
-	// Step 6: PushToRemote — push to remote repository (only after image test passes)
 	if err := workflow.PushToRemote(onboard, tag); err != nil {
 		log.Fatalf("❌ Push failed: %v", err)
 	}

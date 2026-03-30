@@ -2,8 +2,8 @@
 // Step 2 — Discover
 //
 //   Fetches the source Dockerfile and Makefile for the given tag, compares them
-//   against cached siblings from a previous onboard, and sets onboard.Mode to
-//   either CommitBump (unchanged), ContentChanged, or FirstOnboard.
+//   against cached siblings from a previous onboard, and sets
+//   onboard.ContentChanged accordingly.
 //
 //   Chunk 1 · MAIN    DiscoverBuildFiles()
 //   Chunk 2 · HELPERS diffSiblings(), clearResultDirectory()
@@ -27,8 +27,8 @@ import (
 // ─── Chunk 1 · MAIN ─────────────────────────────────────────────────────────
 
 // DiscoverBuildFiles fetches the Dockerfile and Makefile from the source repo at the
-// given tag, diffs them against cached siblings, and sets onboard.Mode.
-func DiscoverBuildFiles(onboard *onboarding.OnboardingInfo, repoInfo *repo.RepoInfo, tag string) error {
+// given tag, diffs them against cached siblings, and returns whether content changed.
+func DiscoverBuildFiles(onboard *onboarding.OnboardingInfo, repoInfo *repo.RepoInfo, tag string) (bool, error) {
 	// Clear the result directory for a fresh start
 	if err := clearResultDirectory(utils.ResultDir); err != nil {
 		fmt.Printf("⚠️  Warning: %v\n", err)
@@ -38,8 +38,7 @@ func DiscoverBuildFiles(onboard *onboarding.OnboardingInfo, repoInfo *repo.RepoI
 	subdir := path.Dir(onboard.DockerfileDir)
 	repoInfo, err := repository.FetchRepoInfo(onboard.Repository, subdir, tag)
 	if err != nil {
-		fmt.Printf("❌ Error fetching repository info: %v\n", err)
-		os.Exit(1)
+		return false, fmt.Errorf("failed to fetch repository info: %w", err)
 	}
 
 	// Build the raw content path: owner/repo/ref
@@ -70,33 +69,31 @@ func DiscoverBuildFiles(onboard *onboarding.OnboardingInfo, repoInfo *repo.RepoI
 	onboard.DockerfileContent = dockerfileContent
 	onboard.MakefileContent = makefileContent
 
-	// Compare fresh vs cached and set onboard.Mode
-	diffSiblings(onboard, cachedDF, cachedMF)
+	// Compare fresh vs cached
+	contentChanged := diffSiblings(onboard, cachedDF, cachedMF)
 
-	return nil
+	return contentChanged, nil
 }
 
 // ─── Chunk 2 · HELPERS ──────────────────────────────────────────────────────
 
 // diffSiblings compares fresh Dockerfile/Makefile against cached versions and
-// sets onboard.Mode to CommitBump (unchanged), ContentChanged, or FirstOnboard.
-func diffSiblings(onboard *onboarding.OnboardingInfo, cachedDF, cachedMF []byte) {
+// returns true if content has changed.
+func diffSiblings(onboard *onboarding.OnboardingInfo, cachedDF, cachedMF []byte) bool {
 	if cachedDF == nil || cachedMF == nil {
-		onboard.Mode = onboarding.FirstOnboard
-		return
+		return false
 	}
 
 	dfMatch := bytes.Equal(onboard.DockerfileContent, cachedDF)
 	mfMatch := bytes.Equal(onboard.MakefileContent, cachedMF)
 
-	switch {
-	case dfMatch && mfMatch:
-		onboard.Mode = onboarding.CommitBump
-	default:
-		onboard.Mode = onboarding.ContentChanged
+	if dfMatch && mfMatch {
+		log.Printf("✅ Dockerfile and Makefile unchanged for %s\n", onboard.SpecImageName)
+		return false
 	}
 
-	log.Printf("✅ Dockerfile and Makefile unchanged for %s — commit bump only\n", onboard.SpecImageName)
+	log.Printf("🔄 Dockerfile or Makefile changed for %s\n", onboard.SpecImageName)
+	return true
 }
 
 // clearResultDirectory removes all contents from the result directory.

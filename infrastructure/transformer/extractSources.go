@@ -43,15 +43,20 @@ const MingwSourceKey = "mingw-toolchain"
 // contents under /build/top/BUILD/<key>/ during RPM %prep.
 const MingwBinDir = "/build/top/BUILD/" + MingwSourceKey + "/bin"
 
-// cdLiteralRe matches the leading `cd <dir> &&` of a build command where <dir> is a
-// literal path (no shell variable references like ${X}).  Used to discover extra
-// Go-module subdirectories that need their own gomod generate entry.
-var cdLiteralRe = regexp.MustCompile(`^cd\s+([^\s${}]+)\s*&&`)
+// cdLiteralRe matches the leading `cd <dir> &&` or `cd <dir>\n` of a build command
+// where <dir> is a literal path (no shell variable references like ${X}).
+// Used to discover extra Go-module subdirectories that need their own gomod generate entry.
+var cdLiteralRe = regexp.MustCompile(`(?s)^cd\s+([^\s${}]+)\s*(?:&&|\n)`)
 
 // goModDownloadRe matches `go mod download <module>@<version>` in pipeline steps.
 // Captures: (1) full module path, (2) version.
 // Example: go mod download github.com/azure/azure-container-networking/dropgz@${DROPGZ_VERSION}
 var goModDownloadRe = regexp.MustCompile(`go\s+mod\s+download\s+(\S+)@(\S+)`)
+
+// goModCdRe matches `cd /go/pkg/mod/<module>@<version>` — used as a fallback
+// to detect submodules when the LLM omits `go mod download` (handled as a DALEC source).
+// Captures: (1) full module path, (2) version.
+var goModCdRe = regexp.MustCompile(`cd\s+/go/pkg/mod/(\S+)@(\S+)`)
 
 // GoModDownloadInfo holds the parsed info from a `go mod download` pipeline step.
 type GoModDownloadInfo struct {
@@ -189,8 +194,9 @@ func collectGoModSubpaths(defaultSpec *contents.DefaultSpec, ndv *llm.NonDetermi
 }
 
 // DetectGoModDownloads scans pipeline steps AND binary build commands for
-// `go mod download <module>@<version>` and returns parsed info for each,
-// including the resolved commit SHA.
+// submodule references. Detects both `go mod download <module>@<version>`
+// (legacy) and `cd /go/pkg/mod/<module>@<version>` patterns and returns
+// parsed info for each.
 func DetectGoModDownloads(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) []GoModDownloadInfo {
 	if nonDeterministicValues == nil {
 		return nil
@@ -207,7 +213,12 @@ func DetectGoModDownloads(defaultSpec *contents.DefaultSpec, nonDeterministicVal
 	seen := map[string]bool{}
 	var results []GoModDownloadInfo
 	for _, step := range stepsToScan {
+		// Try `go mod download <module>@<version>` first (legacy),
+		// then fall back to `cd /go/pkg/mod/<module>@<version>`.
 		m := goModDownloadRe.FindStringSubmatch(step)
+		if m == nil {
+			m = goModCdRe.FindStringSubmatch(step)
+		}
 		if m == nil {
 			continue
 		}

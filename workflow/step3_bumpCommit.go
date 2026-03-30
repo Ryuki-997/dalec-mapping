@@ -2,8 +2,8 @@
 // Step 3 — Bump Commit
 //
 //   Fast-path for re-onboards where the Dockerfile/Makefile haven't changed.
-//   Fetches the existing spec, updates only args.COMMIT to the new tag's SHA,
-//   and writes the result locally for push.
+//   Copies a previous tag's spec (templateTag), updates args.COMMIT and
+//   args.VERSION for the new tag, and writes a new spec file locally for push.
 //
 //   Chunk 1 · MAIN   BumpCommit()
 //   Chunk 2 · HELPER findMapValue()
@@ -28,22 +28,24 @@ import (
 
 // ─── Chunk 1 · MAIN ─────────────────────────────────────────────────────────
 
-// BumpCommit fetches the existing spec, updates args.COMMIT to the new tag's
-// commit SHA, and writes the result to utils.SpecPath.
-func BumpCommit(onboard *onboarding.OnboardingInfo, fullTag string) (string, error) {
+// BumpCommit copies a previous tag's spec (templateTag), updates args.COMMIT
+// and args.VERSION for the new tag, and writes the result to utils.SpecPath.
+func BumpCommit(onboard *onboarding.OnboardingInfo, fullTag string, templateTag string) (string, error) {
 	tag := semver.ToTag(fullTag)
 	remotePath := semver.SpecFilePath(onboard.SpecRepository, onboard.SpecImageName, tag)
-	log.Printf("🔄 Commit bump for %s @ %s (spec: %s)\n", onboard.SpecImageName, tag, remotePath)
 
-	// Fetch existing spec content from the onboard repo
+	templateRemotePath := semver.SpecFilePath(onboard.SpecRepository, onboard.SpecImageName, semver.ToTag(templateTag))
+	log.Printf("🔄 Commit bump for %s @ %s (template: %s → new: %s)\n", onboard.SpecImageName, tag, templateRemotePath, remotePath)
+
+	// Fetch the template spec from the onboard repo
 	fileData, err := repository.FetchJSON(fmt.Sprintf("repos/%s/%s/contents/%s?ref=%s",
-		utils.OnboardOwner, utils.OnboardRepo, remotePath, utils.OnboardBranch))
+		utils.OnboardOwner, utils.OnboardRepo, templateRemotePath, utils.OnboardBranch))
 	if err != nil {
-		return "", fmt.Errorf("failed to fetch existing spec %s: %w", remotePath, err)
+		return "", fmt.Errorf("failed to fetch template spec %s: %w", templateRemotePath, err)
 	}
 	contentStr, ok := fileData["content"].(string)
 	if !ok {
-		return "", fmt.Errorf("unexpected response: missing content field for %s", remotePath)
+		return "", fmt.Errorf("unexpected response: missing content field for %s", templateRemotePath)
 	}
 
 	// Decode base64 spec content
@@ -77,6 +79,14 @@ func BumpCommit(onboard *onboarding.OnboardingInfo, fullTag string) (string, err
 	}
 	log.Printf("   COMMIT: %s → %s\n", commitNode.Value, newCommit)
 	commitNode.Value = newCommit
+
+	// Update args.VERSION to the new tag's version
+	versionNode := findMapValue(argsNode, "VERSION")
+	if versionNode != nil {
+		newVersion := strings.TrimPrefix(tag, "v")
+		log.Printf("   VERSION: %s → %s\n", versionNode.Value, newVersion)
+		versionNode.Value = newVersion
+	}
 
 	// Marshal back and write to local spec path
 	out, err := yaml.Marshal(&specNode)
