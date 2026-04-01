@@ -1,21 +1,29 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// Step 9 — Create Pull Request
+// Step 8 — Create Pull Request & Notify Reviewers
 //
 //   Creates a PR on the onboard repo containing the specfile, Dockerfile,
 //   and Makefile in a single branch. Reviewers from the onboarding config
 //   are added to the PR. After 1 reviewer approval the PR can be merged.
+//   Sends an email notification to all reviewers with the PR link via
+//   Azure Communication Services.
 //
 //   Chunk 1 · MAIN      CreateSpecPR()
-//   Chunk 2 · HELPERS   createBranch(), commitFileToBranch(),
+//   Chunk 2 · GIT       createBranch(), commitFileToBranch(),
 //                        createPullRequest(), addReviewers()
+//   Chunk 3 · EMAIL     notifyReviewersEmail(), sendACSEmail()
 // ═══════════════════════════════════════════════════════════════════════════════
 
 package workflow
 
 import (
+	"bytes"
+	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"time"
 
@@ -23,6 +31,9 @@ import (
 	repo "dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/repository"
 	"dalec-mapping/utils"
+
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 )
 
 // ─── Chunk 1 · MAIN ─────────────────────────────────────────────────────────
@@ -110,10 +121,19 @@ func CreateSpecPR(onboard *onboarding.OnboardingInfo, tag string) (string, error
 		}
 	}
 
+	// 7. Send email notification to reviewers with the PR link
+	if len(onboard.Reviewers) > 0 {
+		if err := notifyReviewersEmail(onboard, tag, prURL); err != nil {
+			log.Printf("⚠️  Failed to send email notification: %v\n", err)
+		} else {
+			log.Printf("📧 Email notification sent to %d reviewer(s)\n", len(onboard.Reviewers))
+		}
+	}
+
 	return prURL, nil
 }
 
-// ─── Chunk 2 · HELPERS ──────────────────────────────────────────────────────
+// ─── Chunk 2 · GIT ───────────────────────────────────────────────────────────
 
 // createBranch creates a new branch from the HEAD of the base branch.
 func createBranch(branchName string) error {
@@ -208,4 +228,94 @@ func addReviewers(prNumber int, reviewers []string) error {
 		"reviewers": reviewers,
 	})
 	return err
+}
+
+// ─── Chunk 3 · EMAIL ────────────────────────────────────────────────────────
+
+// notifyReviewersEmail sends an email to all reviewers with the PR link
+// via Azure Communication Services.
+func notifyReviewersEmail(onboard *onboarding.OnboardingInfo, tag, prURL string) error {
+	subject := fmt.Sprintf("[Dalec] Review Requested: %s @ %s", onboard.SpecImageName, tag)
+
+	body := fmt.Sprintf(`<p>A new Dalec spec has been generated and a pull request is ready for review.</p>
+<table>
+<tr><td><b>Repository:</b></td><td>%s</td></tr>
+<tr><td><b>Image:</b></td><td>%s</td></tr>
+<tr><td><b>Tag:</b></td><td>%s</td></tr>
+</table>
+<p><a href="%s">Review the Pull Request</a></p>
+<p>The PR requires 1 reviewer approval before the spec, Dockerfile, and Makefile are merged.</p>`,
+		onboard.Repository, onboard.SpecImageName, tag, prURL)
+
+	return sendACSEmail(onboard.Reviewers, subject, body)
+}
+
+// sendACSEmail sends an email via the Azure Communication Services Email REST API.
+// Requires ACS_EMAIL_ENDPOINT and ACS_SENDER_ADDRESS environment variables.
+// Authenticates using DefaultAzureCredential (managed identity in CI, az login locally).
+func sendACSEmail(recipients []string, subject, htmlBody string) error {
+	endpoint := os.Getenv("ACS_EMAIL_ENDPOINT")
+	if endpoint == "" {
+		return fmt.Errorf("ACS_EMAIL_ENDPOINT not set")
+	}
+	senderAddress := os.Getenv("ACS_SENDER_ADDRESS")
+	if senderAddress == "" {
+		return fmt.Errorf("ACS_SENDER_ADDRESS not set")
+	}
+
+	// Build recipient list
+	toRecipients := make([]map[string]string, len(recipients))
+	for i, r := range recipients {
+		toRecipients[i] = map[string]string{"address": r}
+	}
+
+	payload := map[string]interface{}{
+		"senderAddress": senderAddress,
+		"content": map[string]string{
+			"subject": subject,
+			"html":    htmlBody,
+		},
+		"recipients": map[string]interface{}{
+			"to": toRecipients,
+		},
+	}
+
+	jsonBody, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal email payload: %w", err)
+	}
+
+	// Acquire token via DefaultAzureCredential
+	cred, err := azidentity.NewDefaultAzureCredential(nil)
+	if err != nil {
+		return fmt.Errorf("failed to create Azure credential: %w", err)
+	}
+
+	token, err := cred.GetToken(context.Background(), policy.TokenRequestOptions{
+		Scopes: []string{"https://communication.azure.com/.default"},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to acquire ACS token: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/emails:send?api-version=2023-03-31", endpoint)
+	req, err := http.NewRequest("POST", url, bytes.NewReader(jsonBody))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token.Token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("ACS email request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("ACS email API returned %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return nil
 }
