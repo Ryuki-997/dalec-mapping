@@ -34,6 +34,7 @@ run_and_stream() {
 # run_and_stream "Run 3: -path=prometheus-collector" -path=prometheus-collector
 # run_and_stream "Run 2: -path=containernetworkingauto/azure-cns" -path=containernetworkingauto/azure-cns
 # run_and_stream "Run 4: -path=containernetworkingauto/azure-cni" -path=containernetworkingauto/azure-cni
-run_and_stream "Run 5: -path=containernetworkingauto/azure-ipam" -path=containernetworkingauto/azure-ipam
+# run_and_stream "Run 5: -path=containernetworkingauto/azure-ipam" -path=containernetworkingauto/azure-ipam
 # run_and_stream "Run ADO: -path=containernetworkingauto/ado" -path=containernetworkingauto/ado
+run_and_stream "Run Test PR: -path=containernetworkingauto/test-pr" -path=containernetworkingauto/test-pr
 exit $overall_exit
