@@ -74,7 +74,7 @@ func buildTargetEntry(osName string, tp testPaths, defaultSpec *contents.Default
 	if osName == "windowscross" {
 		target["dependencies"] = windowsDeps(defaultSpec, nonDeterministicValues)
 		target["artifacts"] = windowsArtifacts(defaultSpec, nonDeterministicValues)
-		target["image"] = windowsImageConfig(tp.binaryName, nonDeterministicValues)
+		target["image"] = windowsImageConfig(tp.binaryName, defaultSpec, nonDeterministicValues)
 	} else {
 		target["dependencies"] = linuxDeps(osName, defaultSpec, nonDeterministicValues)
 		target["image"] = linuxImageConfig(osName, tp.binaryName, nonDeterministicValues)
@@ -254,8 +254,9 @@ func windowsArtifacts(defaultSpec *contents.DefaultSpec, nonDeterministicValues 
 	}
 }
 
-// windowsImageConfig builds the image map (entrypoint + symlink) for the windowscross target.
-func windowsImageConfig(binaryName string, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
+// windowsImageConfig builds the image map (entrypoint + symlink + optional bases) for the windowscross target.
+// Base images are extracted from the parsed Dockerfile stages (not from the LLM).
+func windowsImageConfig(binaryName string, defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
 	entrypoint := "/Windows/System32/" + binaryName + ".exe"
 	if nonDeterministicValues != nil {
 		if ts := findTargetSpecByOS(nonDeterministicValues.Targets, "windowscross"); ts != nil && ts.Entrypoint != "" {
@@ -266,12 +267,42 @@ func windowsImageConfig(binaryName string, nonDeterministicValues *llm.NonDeterm
 			}
 		}
 	}
-	return map[string]interface{}{
-		"entrypoint": entrypoint,
-		"post": map[string]interface{}{
-			"symlinks": extractWindowsSymlinks(entrypoint, binaryName),
-		},
+
+	image := map[string]interface{}{"entrypoint": entrypoint}
+
+	if baseImages := findWindowsBaseImages(defaultSpec); len(baseImages) > 0 {
+		var bases []map[string]interface{}
+		for _, ref := range baseImages {
+			bases = append(bases, map[string]interface{}{
+				"rootfs": map[string]interface{}{
+					"image": map[string]interface{}{
+						"ref": ref,
+					},
+				},
+			})
+		}
+		image["bases"] = bases
 	}
+
+	image["post"] = map[string]interface{}{
+		"symlinks": extractWindowsSymlinks(entrypoint, binaryName),
+	}
+	return image
+}
+
+// findWindowsBaseImages scans parsed Dockerfile stages for Windows base images
+// (nanoserver, servercore, etc.) and returns their full image refs.
+func findWindowsBaseImages(defaultSpec *contents.DefaultSpec) []string {
+	var refs []string
+	for _, stage := range defaultSpec.Stages {
+		from := strings.ToLower(stage.From)
+		if strings.Contains(from, "nanoserver") ||
+			strings.Contains(from, "servercore") ||
+			strings.Contains(from, "windows") {
+			refs = append(refs, stage.From)
+		}
+	}
+	return refs
 }
 
 // ─── Chunk 5 · EXTRA REPOS ─────────────────────────────────────────────────

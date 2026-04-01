@@ -88,6 +88,10 @@ func processTag(onboard *onboarding.OnboardingInfo, fullTag string, isFirstOnboa
 	switch action {
 	case actionNotify:
 		notifyReviewers(onboard, tag, isFirstOnboard)
+		if isFirstOnboard {
+			remotePath, resolvedTargets := generateSpec(onboard, fullTag)
+			testAndPush(onboard, remotePath, tag, resolvedTargets)
+		}
 		return ""
 	case actionBumpCommit:
 		bumpCommit(onboard, fullTag, tag, templateTag)
@@ -142,9 +146,9 @@ func notifyReviewers(onboard *onboarding.OnboardingInfo, tag string, isFirstOnbo
 	} else {
 		log.Printf("📋 Content changed (manual review) for %s @ %s — notifying reviewers\n", onboard.SpecImageName, tag)
 	}
-	if err := workflow.NotifyOwners(onboard, tag, isFirstOnboard); err != nil {
-		log.Printf("⚠️  Owner notification failed: %v", err)
-	}
+	// if err := workflow.NotifyOwners(onboard, tag, isFirstOnboard); err != nil {
+	// 	log.Printf("⚠️  Owner notification failed: %v", err)
+	// }
 }
 
 func bumpCommit(onboard *onboarding.OnboardingInfo, fullTag, tag, templateTag string) {

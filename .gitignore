@@ -10,6 +10,7 @@ onboard.yml
 
 TODO
 ISSUES.md
+SERVICES.md
 
 kubelogin-test.sh
 partnerTest.go

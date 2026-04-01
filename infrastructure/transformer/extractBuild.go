@@ -529,8 +529,11 @@ var envAssignRe = regexp.MustCompile(`(\w+)=(?:\$[\{\(][^\}\)]*[\}\)]|\S*)`)
 
 // cleanBuildCommand prepares a raw build command for the Dalec spec:
 //  1. Inlines ldflags — replaces ${LDFLAGS} with the cleaned ldflags string.
-//  2. Strips env assignments handled by Dalec (CGO_ENABLED, GOOS, etc.).
-//  3. Cleans stray braces and whitespace.
+//  2. Strips inner quotes around $VAR / ${VAR} references that break shell parsing
+//     when nested inside -ldflags "..." (e.g. -X main.ver="$V" → -X main.ver=${V}).
+//  3. Normalises bare $VAR to ${VAR} for consistency.
+//  4. Strips env assignments handled by Dalec (CGO_ENABLED, GOOS, etc.).
+//  5. Cleans stray braces and whitespace.
 func cleanBuildCommand(cmd, ldflags string) string {
 	if cmd == "" {
 		return ""
@@ -540,7 +543,16 @@ func cleanBuildCommand(cmd, ldflags string) string {
 	cleanedLd := strings.Trim(ldflags, `"'`)
 	cmd = strings.ReplaceAll(cmd, "${LDFLAGS}", cleanedLd)
 
-	// 2. Strip Dalec-handled env assignments.
+	// 2. Strip inner quotes wrapping $VAR / ${VAR} references.
+	//    e.g. "$VERSION" → ${VERSION}, "$CNS_AI_PATH"="$CNS_AI_ID" → ${CNS_AI_PATH}=${CNS_AI_ID}
+	innerQuotedVar := regexp.MustCompile(`"(\$\{?\w+\}?)"`)
+	cmd = innerQuotedVar.ReplaceAllString(cmd, "$1")
+
+	// 3. Normalise bare $VAR to ${VAR} (skip ${ which is already braced).
+	bareVar := regexp.MustCompile(`\$([A-Za-z_]\w*)`)
+	cmd = bareVar.ReplaceAllString(cmd, "${$1}")
+
+	// 4. Strip Dalec-handled env assignments.
 	cmd = envAssignRe.ReplaceAllStringFunc(cmd, func(match string) string {
 		if eqIdx := strings.Index(match, "="); eqIdx > 0 {
 			if dalecHandledEnvs[match[:eqIdx]] {
@@ -550,7 +562,7 @@ func cleanBuildCommand(cmd, ldflags string) string {
 		return match
 	})
 
-	// 3. Protect valid ${...} refs, remove stray braces, restore.
+	// 5. Protect valid ${...} refs, remove stray braces, restore.
 	validVarRefRe := regexp.MustCompile(`\$\{[^}]+\}`)
 	var placeholders []string
 	cmd = validVarRefRe.ReplaceAllStringFunc(cmd, func(m string) string {
@@ -563,7 +575,7 @@ func cleanBuildCommand(cmd, ldflags string) string {
 		cmd = strings.ReplaceAll(cmd, fmt.Sprintf("__VR%d__", i), val)
 	}
 
-	// 4. Collapse whitespace and double slashes.
+	// 6. Collapse whitespace and double slashes.
 	cmd = regexp.MustCompile(`\s{2,}`).ReplaceAllString(cmd, " ")
 	cmd = regexp.MustCompile(`/{2,}`).ReplaceAllString(cmd, "/")
 	return strings.TrimSpace(cmd)

@@ -87,6 +87,11 @@ func fetchNonDeterministicValue(agentResponse []byte) (*llm.NonDeterministicValu
 		return nil, nil
 	}
 
+	// Sanitize invalid YAML escape sequences produced by the LLM.
+	// YAML double-quoted strings only allow specific escapes (\n, \t, \\, \", etc.).
+	// The LLM may emit sequences like \@ or \$ which cause parse failures.
+	agentResponse = sanitizeYAMLEscapes(agentResponse)
+
 	var nonDeterministicValues llm.NonDeterministicValues
 	err := yaml.Unmarshal(agentResponse, &nonDeterministicValues)
 	if err != nil {
@@ -113,4 +118,15 @@ func fetchNonDeterministicValue(agentResponse []byte) (*llm.NonDeterministicValu
 
 	fmt.Println("✅ Successfully read NonDeterministicValues.yml file.")
 	return &nonDeterministicValues, nil
+}
+
+// sanitizeYAMLEscapes removes invalid backslash escape sequences from YAML
+// double-quoted strings. YAML only recognises a fixed set of escapes
+// (\0, \a, \b, \t, \n, \v, \f, \r, \e, \/, \\, \", \N, \_, \L, \P, \x, \u, \U, \  (space)).
+// LLM output may contain sequences like \@ or \$ which cause parse errors.
+// This replaces any \<invalid> with just <invalid>.
+var invalidYAMLEscape = regexp.MustCompile(`\\([^0abtnvfre/\\" NLP_xuU\n\r])`)
+
+func sanitizeYAMLEscapes(data []byte) []byte {
+	return invalidYAMLEscape.ReplaceAll(data, []byte("$1"))
 }

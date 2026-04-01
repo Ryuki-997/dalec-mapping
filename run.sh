@@ -32,8 +32,8 @@ run_and_stream() {
 # run_and_stream "Run All Container-Networking Specs" -path=containernetworkingauto
 # run_and_stream "Run 1: default (all onboard files)"
 # run_and_stream "Run 3: -path=prometheus-collector" -path=prometheus-collector
-run_and_stream "Run 2: -path=containernetworkingauto/azure-cns" -path=containernetworkingauto/azure-cns
+# run_and_stream "Run 2: -path=containernetworkingauto/azure-cns" -path=containernetworkingauto/azure-cns
 # run_and_stream "Run 4: -path=containernetworkingauto/azure-cni" -path=containernetworkingauto/azure-cni
-# run_and_stream "Run 5: -path=containernetworkingauto/azure-ipam" -path=containernetworkingauto/azure-ipam
+run_and_stream "Run 5: -path=containernetworkingauto/azure-ipam" -path=containernetworkingauto/azure-ipam
 # run_and_stream "Run ADO: -path=containernetworkingauto/ado" -path=containernetworkingauto/ado
 exit $overall_exit
