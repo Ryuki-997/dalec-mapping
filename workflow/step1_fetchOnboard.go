@@ -49,6 +49,17 @@ func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, isFirstOnboar
 	// Build a set of all existing file paths for duplicate/spec-existence checks
 	treePaths := getExistingFilePaths(onboardItems)
 
+	// Log all discovered onboard.yml paths before processing
+	for _, item := range onboardItems {
+		if itemMap, ok := item.(map[string]interface{}); ok {
+			if path, ok := itemMap["path"].(string); ok {
+				if strings.HasSuffix(path, "/onboard.yml") {
+					log.Printf("📋 Discovered onboard file: %s\n", path)
+				}
+			}
+		}
+	}
+
 	// Iterate each tree item and process matching onboard.yml files
 	for _, item := range onboardItems {
 		itemMap, ok := item.(map[string]interface{})
@@ -62,7 +73,6 @@ func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, isFirstOnboar
 		if !strings.HasPrefix(path, inputPath) {
 			continue
 		}
-		log.Printf("Found file in repo: %s\n", path)
 
 		// Extract specRepository / specImageName from the path
 		specRepository, specImageName, err := getOnboardFilepath(path)
@@ -149,7 +159,6 @@ func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, isFirstOnboar
 			*templateTags = append(*templateTags, "")
 		}
 
-		log.Printf("Onboard Data: %v\n", onboard)
 	}
 	return nil
 }
