@@ -178,6 +178,10 @@ func resolveAndAppend(
 		log.Printf("⚠️  Failed to resolve tags for %s: %v\n", onboard.Repository, err)
 		return
 	}
+	if len(resolvedTags) == 0 {
+		log.Printf("⏭  Skipping %s: no release tags matched patterns %v\n", onboard.SpecImageName, onboard.Tag)
+		return
+	}
 	log.Printf("✅ Resolved tags for %s: %v (from patterns: %v)\n",
 		onboard.Repository, semver.TagNames(resolvedTags), onboard.Tag)
 

@@ -280,21 +280,49 @@ targets:
 
 9. **Single `command:` block — full pipeline merges.** The transformer merges ALL binaries + `pipelineSteps` into one `command:` step. The merged command `cd`s into the repo root first, then runs each binary's `buildCommand` in sequence.
 
-   **WORKDIR / `cd` translation (CRITICAL):** The Dalec sandbox does NOT honour Dockerfile `WORKDIR`. How to handle it depends on whether the build stage produces **one** or **multiple** binaries:
+   **WORKDIR / `cd` translation (CRITICAL):** The Dalec sandbox does NOT honour Dockerfile `WORKDIR`. How to handle it depends on the build command structure. Check each case in order:
 
-   **Single-binary stage** (one `RUN go build` with a WORKDIR pointing to a subdirectory):
+   **Case A — WORKDIR at repo root + package path in `go build` argument** (most common):
+   If `WORKDIR` points to the repo root (e.g. `/azure-container-networking`) and the `go build` command already specifies a package path argument (e.g. `cns/service/*.go`), do NOT add any `cd` prefix. The package path tells `go build` where to find the source. Replace `subdir/*.go` with `./subdir/`.
+   ```yaml
+   # Dockerfile:
+   #   WORKDIR /azure-container-networking
+   #   RUN go build -a -o /go/bin/azure-cns ... cns/service/*.go
+   # ❌ WRONG: decomposed package path into cd + go build (breaks: "cd: too many arguments")
+   buildCommand: "cd cns/service\ngo build -a -o /go/bin/azure-cns ... ."
+   # ❌ WRONG: smashed cd and go build on same line (no separator at all)
+   buildCommand: "cd cns/service go build -a -o /go/bin/azure-cns ... ."
+   # ✅ CORRECT: no cd, keep package path as build target argument, *.go → ./subdir/
+   buildCommand: "go build -a -o /go/bin/azure-cns ... ./cns/service/"
+   ```
+
+   **Case B — Single-binary stage with WORKDIR at a subdirectory** (one `RUN go build` with a WORKDIR pointing to a subdirectory, and the build target is `.` or `*.go`):
    - Use a newline-separated `cd` + `go build`: `"cd <subdir>\ngo build ... ."` — NOT `&&`.
    - Strip the repo-name prefix. E.g. `WORKDIR /azure-container-networking/cns/service` → `cd cns/service\n`.
    - Preserve variable references: `WORKDIR /repo/${CNS_DIR}` → `cd ${CNS_DIR}\n`.
    - Makefile `cd $(X_DIR)` takes precedence over Dockerfile `WORKDIR`.
 
-   **Multi-binary stage** (multiple `RUN go build` in the same stage, each building from a different subdirectory):
+   **Case C — Multi-binary stage** (multiple `RUN go build` in the same stage, each building from a different subdirectory):
    - Do **NOT** put `cd <subdir>` in each binary's `buildCommand`. The transformer already `cd`s into the repo root.
    - Instead, use the **repo-relative package path** as the Go build target: `go build ... cni/network/plugin/main.go`.
    - Each binary's `buildCommand` runs from the repo root — the package path tells `go build` where to find the source.
 
    ```yaml
-   # Single-binary stage with WORKDIR:
+   # Case A — WORKDIR at repo root, package path in go build argument:
+   # Dockerfile:
+   #   WORKDIR /azure-container-networking
+   #   RUN go build -a -o /go/bin/azure-cns ... cns/service/*.go
+   # ❌ WRONG: decomposed package path into cd + go build
+   buildCommand: "cd cns/service\ngo build -a -o /go/bin/azure-cns ... ."
+   # ❌ WRONG: smashed cd and go build on same line
+   buildCommand: "cd cns/service go build -a -o /go/bin/azure-cns ... ."
+   # ✅ CORRECT: no cd, keep package path, *.go → ./subdir/
+   buildCommand: "go build -a -o /go/bin/azure-cns ... ./cns/service/"
+
+   # Case B — Single-binary stage with WORKDIR at subdir:
+   # Dockerfile:
+   #   WORKDIR /azure-container-networking/cns/service
+   #   RUN go build -v -o /go/bin/azure-cns ... .
    # ❌ WRONG: missing cd — go build runs at repo root, finds no Go files
    buildCommand: "go build -v -o /go/bin/azure-cns -ldflags \"-X main.version=${VERSION}\" ."
    # ❌ WRONG: synthesized && chain — LLM must not create && joins
@@ -302,7 +330,7 @@ targets:
    # ✅ CORRECT: cd on separate line (newline-separated)
    buildCommand: "cd ${CNS_DIR}\ngo build -v -o /go/bin/azure-cns -ldflags \"-X main.version=${VERSION}\" ."
 
-   # Multi-binary stage (all from repo root WORKDIR):
+   # Case C — Multi-binary stage (all from repo root WORKDIR):
    # ❌ WRONG: per-binary cd — each cd is relative to $BUILD_ROOT, breaks merged script
    buildCommand: "cd cni/network/plugin\ngo build -a -o /go/bin/azure-vnet ... main.go"
    buildCommand: "cd cni/telemetry/service\ngo build -a -o /go/bin/azure-vnet-telemetry ... telemetrymain.go"
@@ -449,7 +477,7 @@ Many repos use a root Makefile with many `*-binary` targets and `*_DIR` variable
 #### 1.3 Extraction Checklist
 
 - [ ] **Check Dockerfile first** for `RUN go build` — this is the canonical build command
-- [ ] **Check for `WORKDIR` before `RUN go build`** — single-binary stage: include `cd <subdir>` on a separate line (newline, NOT `&&`). Multi-binary stage: use repo-relative package path instead (Rule 9)
+- [ ] **Check for `WORKDIR` before `RUN go build`** — Case A (repo root + package path argument): NO `cd`, keep `./subdir/` as build target. Case B (WORKDIR at subdir): include `cd <subdir>` on a separate line (newline, NOT `&&`). Case C (multi-binary): use repo-relative package path instead
 - [ ] Extract package path directly from Dockerfile `RUN` instruction — NOT from Makefile
 - [ ] Use Makefile only to resolve variable values referenced in the Dockerfile command
 - [ ] Identify which binary is being built (from Dockerfile ENTRYPOINT)
@@ -510,6 +538,11 @@ Many repos use a root Makefile with many `*-binary` targets and `*_DIR` variable
 # ❌ buildCommand: "go build -o /go/bin/azure-cns ."  (WORKDIR set subdir before RUN)
 # ❌ buildCommand: "cd ${CNS_DIR} && go build -o /go/bin/azure-cns ."  (synthesized && — LLM must not create && joins)
 # ✅ buildCommand: "cd ${CNS_DIR}\ngo build -o /go/bin/azure-cns ."  (newline-separated)
+
+# Package path decomposed into cd (WORKDIR at repo root, go build has subdir/*.go)
+# ❌ buildCommand: "cd cns/service\ngo build -a -o /go/bin/azure-cns ... ."  (split package path into cd + .)
+# ❌ buildCommand: "cd cns/service go build -a -o /go/bin/azure-cns ... ."  (smashed together — no separator)
+# ✅ buildCommand: "go build -a -o /go/bin/azure-cns ... ./cns/service/"  (no cd, keep package path as argument)
 
 # Multi-binary stage: per-binary cd instead of package path
 # ❌ buildCommand: "cd cni/network/plugin\ngo build -o /go/bin/azure-vnet ... main.go"  (per-binary cd breaks merged script)
@@ -646,7 +679,10 @@ targets:
 
 1. **Remove environment variable assignments** that Dalec manages: `CGO_ENABLED=`, `GOOS=`, `GOARCH=`, `GOARM=`, `OS=`, `ARCH=`.
 2. **Convert `$(VAR)` to `${VAR}`.** Version variables (`$(CNS_VERSION)`, `$(TAG)`, `$(IMAGE_VERSION)`, any `*_VERSION`/`*_TAG`) → **`${VERSION}`**. Keep all other variable names as-is.
-3. **Replace shell glob `*.go` with Go package path `.`**. After `cd <subdir>`: use `.`. From repo root: use `./path/to/`. **Never emit `*.go`.**
+3. **Replace shell glob `*.go` with Go package path.** The glob is always a build target argument — never split it into a `cd` + `.`.
+   - After explicit `cd <subdir>`: replace `*.go` with `.`
+   - From repo root (no `cd`): replace `path/to/subdir/*.go` with `./path/to/subdir/` — keep the full relative path as the build target argument
+   - **Never emit `*.go`.** **Never decompose `subdir/*.go` into `cd subdir` + `.`.**
 4. **Remove `docker run` wrappers.** Extract only the inner `go build` command.
 
 ---
@@ -673,8 +709,9 @@ Before returning the NonDeterministicValues YAML, verify each item:
 - [ ] Each Docker `COPY` → `cp` translation matches the Dockerfile's intent 1:1
 
 **WORKDIR / cd:**
-- [ ] Single-binary stage with `WORKDIR <subdir>`: `buildCommand` includes `cd <subdir>` on a separate line (newline, NOT `&&`)
-- [ ] Multi-binary stage: NO per-binary `cd` — each `buildCommand` uses repo-relative package path (e.g. `cni/network/plugin/main.go`)
+- [ ] WORKDIR at repo root + `go build ... subdir/*.go`: NO `cd` needed — keep `./subdir/` as the build target argument (Case A)
+- [ ] Single-binary stage with `WORKDIR <subdir>`: `buildCommand` includes `cd <subdir>` on a separate line (newline, NOT `&&`) (Case B)
+- [ ] Multi-binary stage: NO per-binary `cd` — each `buildCommand` uses repo-relative package path (e.g. `cni/network/plugin/main.go`) (Case C)
 - [ ] No synthesized `&&` chains anywhere — each command is a separate line or array entry. Only preserve `&&` that exists verbatim in the Dockerfile's `RUN` line
 
 **Pipeline Completeness:**
