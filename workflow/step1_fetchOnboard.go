@@ -37,7 +37,7 @@ func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, isFirstOnboar
 		inputPath = "specs/" + inputPath
 	}
 
-	onboardItems, treePaths, err := fetchRepoTree()
+	onboardItems, treePaths, err := fetchRepoTree(inputPath)
 	if err != nil {
 		return err
 	}
@@ -73,8 +73,9 @@ func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, isFirstOnboar
 // ─── Chunk 2 · TREE & CONFIG ─────────────────────────────────────────────────
 
 // fetchRepoTree fetches the full recursive tree from the onboard repo and
-// returns the raw tree items plus a path-lookup set.
-func fetchRepoTree() ([]interface{}, map[string]bool, error) {
+// returns the raw tree items plus a path-lookup set. Logs only onboard files
+// under the given inputPath prefix.
+func fetchRepoTree(inputPath string) ([]interface{}, map[string]bool, error) {
 	data, err := repository.FetchJSON(fmt.Sprintf(
 		"repos/%s/%s/git/trees/%s?recursive=1",
 		utils.OnboardOwner, utils.OnboardRepo, utils.OnboardBranch,
@@ -91,7 +92,7 @@ func fetchRepoTree() ([]interface{}, map[string]bool, error) {
 
 	for _, item := range items {
 		if m, ok := item.(map[string]interface{}); ok {
-			if p, ok := m["path"].(string); ok && strings.HasSuffix(p, "/onboard.yml") {
+			if p, ok := m["path"].(string); ok && strings.HasPrefix(p, inputPath) && strings.HasSuffix(p, "/onboard.yml") {
 				log.Printf("📋 Discovered onboard file: %s\n", p)
 			}
 		}
