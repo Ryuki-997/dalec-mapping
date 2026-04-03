@@ -29,9 +29,9 @@ run_and_stream() {
   return 0
 }
 
-# run_and_stream "Run 1: -path=auto/aks-container-networking/azure-cns" -path=aks-container-networking/azure-cns
-# run_and_stream "Run 2: -path=aks-container-networking/azure-cni" -path=aks-container-networking/azure-cni
-# run_and_stream "Run 3: -path=aks-container-networking/azure-ipam" -path=aks-container-networking/azure-ipam
-run_and_stream "Run 4: -path=auto/aks-secure-tls-bootstrap" -path=auto/aks-secure-tls-bootstrap
+# run_and_stream "Run 1: -path=auto/aks-container-networking/azure-cns" -path=auto/aks-container-networking/azure-cns
+# run_and_stream "Run 2: -path=auto/aks-container-networking/azure-cni" -path=auto/aks-container-networking/azure-cni
+run_and_stream "Run 3: -path=auto/aks-container-networking/azure-ipam" -path=auto/aks-container-networking/azure-ipam
+# run_and_stream "Run 4: -path=auto/aks-secure-tls-bootstrap" -path=auto/aks-secure-tls-bootstrap
 # run_and_stream "Run 5: -path=auto/aks-node-controller" -path=auto/aks-node-controller
 exit $overall_exit

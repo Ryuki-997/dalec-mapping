@@ -32,6 +32,7 @@ import (
 
 	"dalec-mapping/domain/contents"
 	"dalec-mapping/domain/llm"
+	"dalec-mapping/infrastructure/parser"
 )
 
 // cdDirRe matches `cd <dir> && <rest>` or `cd <dir>\n<rest>` patterns.
@@ -202,6 +203,32 @@ func buildSteps(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.N
 		if mkdirs := stageWorkdirs(defaultSpec.Stages, nonDeterministicValues.PipelineSteps, baseDir); len(mkdirs) > 0 {
 			parts = append(parts, "mkdir -p "+strings.Join(mkdirs, " "))
 		}
+
+		// Collect COPY --from instructions from intermediate stages so we can
+		// inject them as cp commands after the matching cd <workdir>.
+		// Skip injection when the LLM's pipelineSteps already contain cp
+		// commands whose destination targets the same directory.
+		workdirCopies := intermediateStageCopies(defaultSpec.Stages, baseDir)
+		for dir := range workdirCopies {
+			for _, raw := range nonDeterministicValues.PipelineSteps {
+				raw = strings.TrimSpace(raw)
+				if !strings.HasPrefix(raw, "cp ") {
+					continue
+				}
+				// The destination is the last token; only match if it
+				// targets this workdir (not merely reads from it).
+				fields := strings.Fields(raw)
+				if len(fields) < 3 {
+					continue
+				}
+				dest := fields[len(fields)-1]
+				if strings.HasPrefix(dest, dir+"/") || dest == dir {
+					delete(workdirCopies, dir)
+					break
+				}
+			}
+		}
+
 		for _, step := range nonDeterministicValues.PipelineSteps {
 			step = strings.TrimSpace(step)
 			if step == "" {
@@ -217,6 +244,16 @@ func buildSteps(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.N
 			// the path resolves correctly after an absolute cd (e.g. cd /payload).
 			step = rewriteRelativeSourceCd(step, goModDownloads)
 			parts = append(parts, step)
+
+			// After a cd that matches an intermediate stage's WORKDIR, inject
+			// the COPY --from instructions (as cp commands) for that stage.
+			if strings.HasPrefix(step, "cd ") {
+				dir := strings.TrimSpace(strings.TrimPrefix(step, "cd "))
+				if cpCmds, ok := workdirCopies[dir]; ok {
+					parts = append(parts, cpCmds...)
+					delete(workdirCopies, dir)
+				}
+			}
 		}
 	}
 
@@ -438,6 +475,74 @@ var standardWorkdirs = map[string]bool{
 	"/go":     true,
 	"/go/src": true,
 	"/go/bin": true,
+}
+
+// intermediateStageCopies extracts COPY --from instructions from non-Go,
+// non-final intermediate stages and returns them as cp shell commands keyed
+// by the stage's WORKDIR. Only COPY --from references that target another
+// parsed stage (i.e. cross-stage copies) are included.
+// Source paths that reference the repo tree (/<baseDir>/...) are rewritten to
+// "$BUILD_ROOT"/<baseDir>/... for the Dalec sandbox.
+func intermediateStageCopies(stages []contents.Stage, baseDir string) map[string][]string {
+	if len(stages) == 0 {
+		return nil
+	}
+
+	// Build set of all stage names/indices so we can identify cross-stage refs.
+	stageRefs := make(map[string]bool)
+	for i, s := range stages {
+		if s.Name != "" {
+			stageRefs[s.Name] = true
+		}
+		stageRefs[fmt.Sprintf("%d", i)] = true
+	}
+
+	// Prefix to detect and rewrite source-tree absolute paths.
+	srcPrefix := "/" + baseDir + "/"
+
+	result := make(map[string][]string)
+
+	for i, stage := range stages {
+		// Skip Go builder stages — their COPY outputs are the main binaries.
+		if parser.IsGoImage(stage.From) {
+			continue
+		}
+		// Skip scratch stages (final images).
+		if strings.EqualFold(stage.From, "scratch") {
+			continue
+		}
+		// Skip the very last stage.
+		if i == len(stages)-1 {
+			continue
+		}
+		// Need a WORKDIR to key on.
+		if stage.Workdir == "" {
+			continue
+		}
+
+		var cpCmds []string
+		for _, cp := range stage.Copies {
+			if cp.From == "" || !stageRefs[cp.From] {
+				continue
+			}
+			// Rewrite source paths from the Docker stage filesystem to
+			// the Dalec sandbox layout: /<baseDir>/... → "$BUILD_ROOT"/<baseDir>/...
+			var rewritten []string
+			for _, src := range cp.Source {
+				if strings.HasPrefix(src, srcPrefix) {
+					src = `"$BUILD_ROOT"/` + baseDir + "/" + strings.TrimPrefix(src, srcPrefix)
+				}
+				rewritten = append(rewritten, src)
+			}
+			srcs := strings.Join(rewritten, " ")
+			cpCmds = append(cpCmds, fmt.Sprintf("cp %s %s", srcs, cp.Dest))
+		}
+		if len(cpCmds) > 0 {
+			result[stage.Workdir] = append(result[stage.Workdir], cpCmds...)
+		}
+	}
+
+	return result
 }
 
 // stageWorkdirs collects non-standard WORKDIR paths from Dockerfile stages that

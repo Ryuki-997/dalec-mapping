@@ -1,4 +1,4 @@
-package transformer
+package parser
 
 import (
 	"bytes"
@@ -10,6 +10,9 @@ import (
 )
 
 type DalecSpecWriter struct{}
+
+// DalecSpec represents a Dalec specification using flexible maps for dynamic keys
+type DalecSpec map[string]interface{}
 
 type PreviousDalecSpec struct {
 	Args struct {

@@ -5,15 +5,13 @@ import (
 	"dalec-mapping/domain/llm"
 	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/domain/repository"
+	"dalec-mapping/infrastructure/parser"
 
 	"fmt"
 	"strings"
 )
 
-// DalecSpec represents a Dalec specification using flexible maps for dynamic keys
-type DalecSpec map[string]interface{}
-
-func InitDefaultSpec(onboardInfo *onboarding.OnboardingInfo, repoInfo *repository.RepoInfo, dockerfileInfo *contents.DockerfileInfo, previousDalecSpecInfo PreviousDalecSpec) *contents.DefaultSpec {
+func InitDefaultSpec(onboardInfo *onboarding.OnboardingInfo, repoInfo *repository.RepoInfo, dockerfileInfo *contents.DockerfileInfo, previousDalecSpecInfo parser.PreviousDalecSpec) *contents.DefaultSpec {
 	// Initialize & Populate Source of Truth Attributes from onboarding and repository info
 	defaultSpec := &contents.DefaultSpec{}
 	defaultSpec.RepoInfo = *repoInfo
@@ -41,11 +39,17 @@ func InitDefaultSpec(onboardInfo *onboarding.OnboardingInfo, repoInfo *repositor
 }
 
 // TransformToDalec converts parsed Dockerfile info to Dalec spec format
-func TransformToDalec(defaultSpec *contents.DefaultSpec, makefileInfo *contents.MakefileInfo, nonDeterministicValues *llm.NonDeterministicValues) DalecSpec {
-	spec := make(DalecSpec)
+func TransformToDalec(defaultSpec *contents.DefaultSpec, makefileInfo *contents.MakefileInfo, nonDeterministicValues *llm.NonDeterministicValues) parser.DalecSpec {
+	spec := make(parser.DalecSpec)
 
 	// Add syntax header (special comment format)
 	spec["# syntax"] = "ghcr.io/azure/dalec/frontend:latest"
+
+	// Detect pinned Go toolchain image from Dockerfile stages and store version.
+	if pin := parser.DetectGoToolchainPin(defaultSpec.Stages); pin != nil {
+		defaultSpec.GoVersion = pin.GoVersion()
+		fmt.Printf("🔧 Go toolchain pin detected: %s (version: %s)\n", pin.ImageRef, defaultSpec.GoVersion)
+	}
 
 	// Detect go mod download patterns once — shared across build, sources, and args.
 	goModDownloads := DetectGoModDownloads(defaultSpec, nonDeterministicValues)

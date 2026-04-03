@@ -13,4 +13,5 @@ type DefaultSpec struct {
 
 	Revision     int
 	BuildTargets []BuildTarget
+	GoVersion    string // Go toolchain version extracted from Dockerfile (e.g. "1.24")
 }

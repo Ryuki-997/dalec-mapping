@@ -35,6 +35,7 @@ import (
 	"dalec-mapping/domain/contents"
 	"dalec-mapping/domain/llm"
 	"dalec-mapping/domain/repository"
+	"dalec-mapping/infrastructure/parser"
 	"dalec-mapping/infrastructure/test"
 
 	"fmt"
@@ -49,6 +50,10 @@ import (
 func extractTargetsSection(defaultSpec *contents.DefaultSpec,  nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
 	tp := resolveTestPaths(defaultSpec, nonDeterministicValues)
 
+	// Analyse Dockerfile stages for intermediate runtime deps and final Linux base.
+	intermediateDeps := parser.ExtractIntermediateRuntimeDeps(defaultSpec.Stages)
+	finalLinuxBase := parser.DetectFinalLinuxBase(defaultSpec.Stages)
+
 	targets := make(map[string]interface{})
 	seen := make(map[string]bool)
 
@@ -62,13 +67,13 @@ func extractTargetsSection(defaultSpec *contents.DefaultSpec,  nonDeterministicV
 			continue
 		}
 		seen[osName] = true
-		targets[osName] = buildTargetEntry(osName, tp, defaultSpec, nonDeterministicValues)
+		targets[osName] = buildTargetEntry(osName, tp, defaultSpec, nonDeterministicValues, intermediateDeps, finalLinuxBase)
 	}
 	return targets
 }
 
 // buildTargetEntry assembles the full target map for one OS.
-func buildTargetEntry(osName string, tp testPaths, defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
+func buildTargetEntry(osName string, tp testPaths, defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues, intermediateDeps []parser.IntermediateRuntimeDeps, finalLinuxBase string) map[string]interface{} {
 	target := make(map[string]interface{})
 
 	if osName == "windowscross" {
@@ -76,8 +81,8 @@ func buildTargetEntry(osName string, tp testPaths, defaultSpec *contents.Default
 		target["artifacts"] = windowsArtifacts(defaultSpec, nonDeterministicValues)
 		target["image"] = windowsImageConfig(tp.binaryName, defaultSpec, nonDeterministicValues)
 	} else {
-		target["dependencies"] = linuxDeps(osName, defaultSpec, nonDeterministicValues)
-		target["image"] = linuxImageConfig(osName, tp.binaryName, nonDeterministicValues)
+		target["dependencies"] = linuxDeps(osName, defaultSpec, nonDeterministicValues, intermediateDeps)
+		target["image"] = linuxImageConfig(osName, tp.binaryName, nonDeterministicValues, finalLinuxBase)
 	}
 
 	target["tests"] = []interface{}{
@@ -139,14 +144,14 @@ func resolveTestPaths(defaultSpec *contents.DefaultSpec, nonDeterministicValues 
 // ─── Chunk 3 · LINUX TARGETS ────────────────────────────────────────────────
 
 // linuxDeps builds the dependencies map for a Linux target.
-func linuxDeps(osName string, defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
+func linuxDeps(osName string, defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues, intermediateDeps []parser.IntermediateRuntimeDeps) map[string]interface{} {
 	buildDeps := map[string]interface{}{}
 	runtimeDeps := map[string]interface{}{}
 
 	switch osName {
 	case "azlinux3":
 		if defaultSpec.Generator == repository.GoModGenerator {
-			buildDeps["msft-golang"] = map[string]interface{}{}
+			buildDeps["msft-golang"] = goToolchainDep(defaultSpec.GoVersion)
 		}
 		for _, pkg := range []string{"SymCrypt", "SymCrypt-OpenSSL", "openssl-libs"} {
 			buildDeps[pkg] = map[string]interface{}{}
@@ -156,10 +161,22 @@ func linuxDeps(osName string, defaultSpec *contents.DefaultSpec, nonDeterministi
 
 	case "bookworm", "bullseye", "noble", "jammy", "focal", "bionic":
 		if defaultSpec.Generator == repository.GoModGenerator {
-			buildDeps["msft-golang"] = map[string]interface{}{}
+			buildDeps["msft-golang"] = goToolchainDep(defaultSpec.GoVersion)
 			buildDeps["gcc"] = map[string]interface{}{}
 		}
 		mergeTargetDeps(buildDeps, runtimeDeps, osName, nonDeterministicValues)
+	}
+
+	// Merge runtime deps extracted from Dockerfile intermediate stages.
+	for _, idep := range intermediateDeps {
+		for _, pkg := range idep.Packages {
+			if _, exists := runtimeDeps[pkg]; !exists {
+				runtimeDeps[pkg] = map[string]interface{}{}
+				if idep.SelectiveCopy {
+					fmt.Printf("⚠️  Runtime dep %q from stage %q: Dockerfile selectively copies files — full package will be installed by Dalec.\n", pkg, idep.StageName)
+				}
+			}
+		}
 	}
 
 	deps := map[string]interface{}{}
@@ -193,11 +210,12 @@ func mergeTargetDeps(buildDeps, runtimeDeps map[string]interface{}, osName strin
 	}
 }
 
-// linuxImageConfig builds the image map (entrypoint + symlinks) for a Linux target.
+// linuxImageConfig builds the image map (entrypoint + symlinks + optional base) for a Linux target.
 // Entrypoint and symlink values from the LLM are only used when they reference the
 // actual binary name being built. Paths to unrelated packaging wrappers (e.g. a
 // Dockerfile-level bundler binary) are ignored in favour of the binaryName defaults.
-func linuxImageConfig(osName, binaryName string, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
+// When finalLinuxBase is provided, it is emitted as a single image.bases entry.
+func linuxImageConfig(osName, binaryName string, nonDeterministicValues *llm.NonDeterministicValues, finalLinuxBase string) map[string]interface{} {
 	entrypoint := "/usr/local/bin/" + binaryName
 	symlink := "/usr/bin/" + binaryName
 
@@ -213,6 +231,20 @@ func linuxImageConfig(osName, binaryName string, nonDeterministicValues *llm.Non
 	}
 
 	image := map[string]interface{}{"entrypoint": entrypoint}
+
+	// Add base image when detected from Dockerfile's final Linux stage.
+	if finalLinuxBase != "" {
+		image["bases"] = []map[string]interface{}{
+			{
+				"rootfs": map[string]interface{}{
+					"image": map[string]interface{}{
+						"ref": finalLinuxBase,
+					},
+				},
+			},
+		}
+	}
+
 	if symlink != "" {
 		image["post"] = map[string]interface{}{
 			"symlinks": extractLinuxSymlinks(symlink, entrypoint),
@@ -228,7 +260,7 @@ func linuxImageConfig(osName, binaryName string, nonDeterministicValues *llm.Non
 func windowsDeps(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
 	buildDeps := map[string]interface{}{}
 	if defaultSpec.Generator == repository.GoModGenerator {
-		buildDeps["msft-golang"] = map[string]interface{}{}
+		buildDeps["msft-golang"] = goToolchainDep(defaultSpec.GoVersion)
 	}
 	if nonDeterministicValues != nil {
 		if ts := findTargetSpecByOS(nonDeterministicValues.Targets, "windowscross"); ts != nil {
@@ -427,4 +459,16 @@ func canonicalBase(entrypoint string) string {
 		return entrypoint[i+1:]
 	}
 	return entrypoint
+}
+
+// goToolchainDep returns the msft-golang dependency entry.
+// When goVersion is set (e.g. "1.24"), a version constraint is added.
+// Otherwise, an empty constraint (any version) is returned.
+func goToolchainDep(goVersion string) map[string]interface{} {
+	if goVersion != "" {
+		return map[string]interface{}{
+			"version": []string{">=" + goVersion},
+		}
+	}
+	return map[string]interface{}{}
 }

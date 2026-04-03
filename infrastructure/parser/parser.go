@@ -9,12 +9,11 @@ import (
 
 	"dalec-mapping/domain/contents"
 	"dalec-mapping/domain/llm"
-	"dalec-mapping/infrastructure/transformer"
 
 	"gopkg.in/yaml.v3"
 )
 
-func ParseOptionalFileInfo(dockerfile, makefile []byte, specFilePath string, agentResponse []byte) (contents.DockerfileInfo, contents.MakefileInfo, *llm.NonDeterministicValues, transformer.PreviousDalecSpec, error) {
+func ParseOptionalFileInfo(dockerfile, makefile []byte, specFilePath string, agentResponse []byte) (contents.DockerfileInfo, contents.MakefileInfo, *llm.NonDeterministicValues, PreviousDalecSpec, error) {
 	dockerfileInfo := contents.DockerfileInfo{
 		Args:   make(map[string]string),
 		Labels: make(map[string]string),
@@ -30,42 +29,42 @@ func ParseOptionalFileInfo(dockerfile, makefile []byte, specFilePath string, age
 
 	previousDalecSpecInfo, err := fetchPreviousYAMLInfo(specFilePath)
 	if err != nil {
-		return dockerfileInfo, makefileInfo, nil, transformer.PreviousDalecSpec{}, err
+		return dockerfileInfo, makefileInfo, nil, PreviousDalecSpec{}, err
 	}
 
 	nonDeterministicInfo, err := fetchNonDeterministicValue(agentResponse)
 	if err != nil {
-		return dockerfileInfo, makefileInfo, nil, transformer.PreviousDalecSpec{}, err
+		return dockerfileInfo, makefileInfo, nil, PreviousDalecSpec{}, err
 	}
 
 	return dockerfileInfo, makefileInfo, nonDeterministicInfo, previousDalecSpecInfo, nil
 }
 
-func fetchPreviousYAMLInfo(filepath string) (transformer.PreviousDalecSpec, error) {
+func fetchPreviousYAMLInfo(filepath string) (PreviousDalecSpec, error) {
 	fmt.Println("=== READING PREVIOUS YAML FILE ===")
 
 	if filepath == "" {
 		fmt.Println("⚠️  No previous YAML path provided to read previous spec.")
-		return transformer.PreviousDalecSpec{}, nil
+		return PreviousDalecSpec{}, nil
 	}
 
-	writer := &transformer.DalecSpecWriter{}
+	writer := &DalecSpecWriter{}
 	yamlInfo, err := writer.ReadYAML(filepath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			fmt.Println("⚠️  No previous YAML file found, proceeding without it.")
-			return transformer.PreviousDalecSpec{}, nil
+			return PreviousDalecSpec{}, nil
 		}
 		fmt.Printf("❌ Error reading previous YAML file: %v\n", err)
-		return transformer.PreviousDalecSpec{}, err
+		return PreviousDalecSpec{}, err
 	}
 
 	fmt.Println("✅ Successfully read previous YAML file.")
 	return yamlInfo, nil
 }
 
-func WriteOutput(dalecSpec transformer.DalecSpec) error {
-	writer := &transformer.DalecSpecWriter{}
+func WriteOutput(dalecSpec DalecSpec) error {
+	writer := &DalecSpecWriter{}
 
 	outputPath := filepath.Join("result", "output.yml")
 

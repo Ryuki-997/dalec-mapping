@@ -4,6 +4,7 @@ import (
 	"dalec-mapping/domain/contents"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/moby/buildkit/frontend/dockerfile/parser"
@@ -315,4 +316,365 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DOCKERFILE ANALYSIS — Analyses multi-stage Dockerfiles for patterns
+// that map to Dalec spec fields but are NOT handled by the LLM.
+//
+//   Chunk 1 · GO TOOLCHAIN PIN         DetectGoToolchainPin()
+//     Detects FROM stages that reference a Go SDK image and extracts the
+//     digest/tag. Dalec does not support pinning the Go toolchain — this is
+//     emitted as a spec-level comment for traceability.
+//
+//   Chunk 2 · INTERMEDIATE RUNTIME     ExtractIntermediateRuntimeDeps()
+//     Detects intermediate stages that install packages (tdnf, apt-get, …)
+//     and are only consumed via COPY --from. Extracts the package names and
+//     returns them as runtime dependency candidates.
+//
+//   Chunk 3 · FINAL LINUX BASE         DetectFinalLinuxBase()
+//     Identifies the final Linux stage's base image reference for use in
+//     image.bases[].rootfs.image.ref.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// goImagePatterns matches common Go SDK image references.
+var goImagePatterns = []string{
+	"mcr.microsoft.com/oss/go/microsoft/golang",
+	"golang",
+	"docker.io/library/golang",
+	"docker.io/golang",
+}
+
+// pkgInstallRe matches package manager install commands and captures the
+// package list. Supports tdnf, yum, dnf, apt-get, and apk.
+var pkgInstallRe = regexp.MustCompile(
+	`(?:tdnf|yum|dnf|apt-get|apk)\s+(?:install|add)\s+(?:-\S+\s+)*(.+)`)
+
+// windowsImageIndicators are substrings that identify a Windows base image.
+var windowsImageIndicators = []string{
+	"nanoserver", "servercore", "windows",
+}
+
+// ─── Chunk 1 · GO TOOLCHAIN PIN ─────────────────────────────────────────────
+
+// GoToolchainPin holds information about a pinned Go build image.
+type GoToolchainPin struct {
+	// StageName is the AS alias of the Go stage (e.g. "go", "builder").
+	StageName string
+	// ImageRef is the full FROM reference (e.g. "mcr.microsoft.com/oss/go/microsoft/golang@sha256:6a56...").
+	ImageRef string
+	// Digest is the @sha256:... portion, if present.
+	Digest string
+	// Tag is the :tag portion, if present (e.g. "1.24-azurelinux3.0").
+	Tag string
+}
+
+// DetectGoToolchainPin scans Dockerfile stages for Go SDK base images and
+// returns pin information. Returns nil if no Go stage is found.
+func DetectGoToolchainPin(stages []contents.Stage) *GoToolchainPin {
+	for _, stage := range stages {
+		ref := stage.From
+		if !IsGoImage(ref) {
+			continue
+		}
+
+		pin := &GoToolchainPin{
+			StageName: stage.Name,
+			ImageRef:  ref,
+		}
+
+		// Extract digest (@sha256:...)
+		if idx := strings.Index(ref, "@"); idx >= 0 {
+			pin.Digest = ref[idx+1:]
+		}
+
+		// Extract tag (:tag) — present with or without digest.
+		// E.g. "golang:1.24@sha256:..." has both tag and digest.
+		// Strip the digest first to find the tag.
+		refNoDigest := ref
+		if idx := strings.Index(refNoDigest, "@"); idx >= 0 {
+			refNoDigest = refNoDigest[:idx]
+		}
+		if idx := strings.LastIndex(refNoDigest, ":"); idx >= 0 {
+			pin.Tag = refNoDigest[idx+1:]
+		}
+
+		return pin
+	}
+	return nil
+}
+
+// IsGoImage checks whether an image reference matches a known Go SDK image.
+func IsGoImage(ref string) bool {
+	lower := strings.ToLower(ref)
+	for _, pattern := range goImagePatterns {
+		// Match the base image name before any tag/digest separator.
+		base := lower
+		if idx := strings.Index(base, "@"); idx >= 0 {
+			base = base[:idx]
+		}
+		if idx := strings.LastIndex(base, ":"); idx >= 0 {
+			base = base[:idx]
+		}
+		if base == pattern {
+			return true
+		}
+	}
+	return false
+}
+
+// GoVersion extracts the Go version string from the pin.
+// For tags like "1.24-azurelinux3.0", returns "1.24".
+// For digest-only pins, returns "" (version cannot be determined from digest alone).
+func (p *GoToolchainPin) GoVersion() string {
+	if p == nil {
+		return ""
+	}
+	if p.Tag != "" {
+		// Tag format: "1.24-azurelinux3.0" or "1.24.1" or "1.24"
+		// Extract the version prefix before any distro suffix.
+		ver := p.Tag
+		if idx := strings.Index(ver, "-"); idx >= 0 {
+			ver = ver[:idx]
+		}
+		return ver
+	}
+	return ""
+}
+
+// ─── Chunk 2 · INTERMEDIATE RUNTIME ─────────────────────────────────────────
+
+// IntermediateRuntimeDeps holds packages extracted from an intermediate stage.
+type IntermediateRuntimeDeps struct {
+	// StageName is the AS alias of the intermediate stage.
+	StageName string
+	// Packages are the package names installed via the package manager.
+	Packages []string
+	// SelectiveCopy is true when COPY --from selects specific files/dirs
+	// rather than copying the full package tree. Flags the entry for review.
+	SelectiveCopy bool
+}
+
+// ExtractIntermediateRuntimeDeps analyses Dockerfile stages to find intermediate
+// stages that install packages and are consumed only via COPY --from.
+// Returns the extracted runtime dependency candidates grouped by stage.
+func ExtractIntermediateRuntimeDeps(stages []contents.Stage) []IntermediateRuntimeDeps {
+	// Build set of stage names/indices referenced by COPY --from.
+	copyFromTargets := make(map[string]bool)
+	// Track whether the COPY is selective (specific files) vs whole-tree.
+	copyFromSelective := make(map[string]bool)
+
+	for _, stage := range stages {
+		for _, cp := range stage.Copies {
+			if cp.From == "" {
+				continue
+			}
+			copyFromTargets[cp.From] = true
+
+			// Heuristic: if the source is a specific file path (not / or a top-level dir),
+			// consider it selective. Patterns like /usr/sbin/*tables* or /usr/lib are selective.
+			for _, src := range cp.Source {
+				src = strings.TrimSpace(src)
+				if src != "/" && src != "." {
+					copyFromSelective[cp.From] = true
+				}
+			}
+		}
+	}
+
+	// Find the last stage (final image) — it's never an intermediate.
+	if len(stages) == 0 {
+		return nil
+	}
+	finalIdx := len(stages) - 1
+
+	var results []IntermediateRuntimeDeps
+
+	for i, stage := range stages {
+		if i == finalIdx {
+			continue
+		}
+
+		// Check if this stage is referenced by COPY --from.
+		stageRef := stage.Name
+		if stageRef == "" {
+			stageRef = fmt.Sprintf("%d", i)
+		}
+		if !copyFromTargets[stageRef] {
+			continue
+		}
+
+		// Skip Go/builder stages (they're build stages, not runtime dep providers).
+		if IsGoImage(stage.From) {
+			continue
+		}
+
+		// Look for package install commands in RUN instructions.
+		packages := extractPackagesFromRuns(stage.Runs)
+		if len(packages) == 0 {
+			continue
+		}
+
+		results = append(results, IntermediateRuntimeDeps{
+			StageName:     stageRef,
+			Packages:      packages,
+			SelectiveCopy: copyFromSelective[stageRef],
+		})
+
+		fmt.Printf("📦 Intermediate stage %q installs packages: %v (selective=%v)\n",
+			stageRef, packages, copyFromSelective[stageRef])
+	}
+
+	return results
+}
+
+// extractPackagesFromRuns scans RUN commands for package manager install lines
+// and returns the deduplicated list of package names.
+func extractPackagesFromRuns(runs []string) []string {
+	seen := make(map[string]bool)
+	var packages []string
+
+	for _, run := range runs {
+		// Normalise: collapse shell continuations, split on && and ;.
+		normalized := strings.ReplaceAll(run, "\\\n", " ")
+		cmds := splitShellCommands(normalized)
+
+		for _, cmd := range cmds {
+			cmd = strings.TrimSpace(cmd)
+			m := pkgInstallRe.FindStringSubmatch(cmd)
+			if m == nil {
+				continue
+			}
+			// m[1] is the package list portion after flags.
+			for _, token := range strings.Fields(m[1]) {
+				// Skip flags and shell operators.
+				if strings.HasPrefix(token, "-") || token == "&&" || token == "||" || token == ";" {
+					continue
+				}
+				pkg := strings.TrimSpace(token)
+				if pkg != "" && !seen[pkg] {
+					seen[pkg] = true
+					packages = append(packages, pkg)
+				}
+			}
+		}
+	}
+	return packages
+}
+
+// splitShellCommands splits a shell line on && and ; delimiters.
+func splitShellCommands(s string) []string {
+	// Replace ; with && so we can split on one delimiter.
+	s = strings.ReplaceAll(s, ";", "&&")
+	parts := strings.Split(s, "&&")
+	var result []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+// ─── Chunk 3 · FINAL LINUX BASE ────────────────────────────────────────────
+
+// DetectFinalLinuxBase identifies the last non-Windows, non-Go, non-intermediate
+// stage as the final Linux base and returns its image reference.
+// Returns "" if no suitable final Linux stage is found.
+func DetectFinalLinuxBase(stages []contents.Stage) string {
+	if len(stages) == 0 {
+		return ""
+	}
+
+	// Build set of stages referenced by other stages — either via COPY --from
+	// or via FROM (multi-stage base). These are intermediates, not the final image.
+	referencedStages := make(map[string]bool)
+	for i, stage := range stages {
+		for _, cp := range stage.Copies {
+			if cp.From != "" {
+				referencedStages[cp.From] = true
+			}
+		}
+		// A FROM that references an earlier stage name/index makes that
+		// earlier stage an intermediate too.
+		for j := 0; j < i; j++ {
+			if stages[j].Name != "" && stages[j].Name == stage.From {
+				referencedStages[stages[j].Name] = true
+			}
+			if stage.From == fmt.Sprintf("%d", j) {
+				referencedStages[stage.From] = true
+			}
+		}
+	}
+
+	// Walk stages in reverse to find the last Linux final stage.
+	for i := len(stages) - 1; i >= 0; i-- {
+		stage := stages[i]
+
+		// Skip intermediate stages referenced by COPY --from or FROM.
+		stageRef := stage.Name
+		if stageRef == "" {
+			stageRef = fmt.Sprintf("%d", i)
+		}
+		if referencedStages[stageRef] {
+			continue
+		}
+
+		// Skip if base image references an earlier stage (alias or index).
+		if isStageSelfReference(stage.From, stages, i) {
+			continue
+		}
+
+		// Skip Go toolchain images.
+		if IsGoImage(stage.From) {
+			continue
+		}
+
+		// Skip Windows images.
+		if IsWindowsImage(stage.From) {
+			continue
+		}
+
+		// Skip if platform explicitly targets Windows.
+		if strings.Contains(strings.ToLower(stage.Platform), "windows") {
+			continue
+		}
+
+		// Skip scratch — it's a pseudo-image with no manifest; Dalec
+		// can't resolve it and will use its own default base instead.
+		if strings.EqualFold(stage.From, "scratch") {
+			continue
+		}
+
+		return stage.From
+	}
+
+	return ""
+}
+
+// IsWindowsImage returns true if the image reference contains Windows indicators.
+func IsWindowsImage(ref string) bool {
+	lower := strings.ToLower(ref)
+	for _, ind := range windowsImageIndicators {
+		if strings.Contains(lower, ind) {
+			return true
+		}
+	}
+	return false
+}
+
+// isStageSelfReference returns true if ref matches a stage alias or index
+// preceding the current stage (i.e. it's a multi-stage FROM referencing
+// an earlier stage, not an external image).
+func isStageSelfReference(ref string, stages []contents.Stage, currentIdx int) bool {
+	for j := 0; j < currentIdx; j++ {
+		if stages[j].Name != "" && stages[j].Name == ref {
+			return true
+		}
+		if ref == fmt.Sprintf("%d", j) {
+			return true
+		}
+	}
+	return false
 }
