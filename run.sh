@@ -29,12 +29,9 @@ run_and_stream() {
   return 0
 }
 
-run_and_stream "Run All Container-Networking Specs" -path=containernetworkingauto
-# run_and_stream "Run 1: default (all onboard files)"
-# run_and_stream "Run 3: -path=prometheus-collector" -path=prometheus-collector
-# run_and_stream "Run 2: -path=containernetworkingauto/azure-cns" -path=containernetworkingauto/azure-cns
-# run_and_stream "Run 4: -path=containernetworkingauto/azure-cni" -path=containernetworkingauto/azure-cni
-# run_and_stream "Run 5: -path=containernetworkingauto/azure-ipam" -path=containernetworkingauto/azure-ipam
-# run_and_stream "Run ADO: -path=containernetworkingauto/ado" -path=containernetworkingauto/ado
-# run_and_stream "Run Test PR: -path=containernetworkingauto/test-pr" -path=containernetworkingauto/test-pr
+# run_and_stream "Run 1: -path=auto/aks-container-networking/azure-cns" -path=aks-container-networking/azure-cns
+# run_and_stream "Run 2: -path=aks-container-networking/azure-cni" -path=aks-container-networking/azure-cni
+# run_and_stream "Run 3: -path=aks-container-networking/azure-ipam" -path=aks-container-networking/azure-ipam
+run_and_stream "Run 4: -path=auto/aks-secure-tls-bootstrap" -path=auto/aks-secure-tls-bootstrap
+# run_and_stream "Run 5: -path=auto/aks-node-controller" -path=auto/aks-node-controller
 exit $overall_exit

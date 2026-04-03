@@ -2,7 +2,7 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 # test.sh — Decision-tree integration tests for the dalec-mapping pipeline.
 #
-# Uses specs/containernetworkingauto/test-pr/ in aks-dalec-build-defs as the
+# Uses specs/containernetworkingauto/1sttest-pr/ in aks-dalec-build-defs as the
 # test fixture.  Tests run sequentially — each builds on the prior state.
 #
 #   Test 1  First-time onboard  → actionNotify → PR created
@@ -16,7 +16,7 @@ set -uo pipefail
 # ─── Constants ────────────────────────────────────────────────────────────────
 DALEC_DIR="$(cd "$(dirname "$0")" && pwd)"
 ONBOARD_CLONE="$DALEC_DIR/../aks-dalec-build-defs"
-TEST_DIR="specs/containernetworkingauto/test-pr"
+TEST_DIR="specs/containernetworkingauto/1sttest-pr"
 BRANCH="ksehgal/fix-publish-poc"
 REPO="azure-management-and-platforms/aks-dalec-build-defs"
 
@@ -78,14 +78,14 @@ extract_feature_branch() {
 
 run_pipeline() {
   cd "$DALEC_DIR"
-  echo -e "  ${YELLOW}▶ Running pipeline: go run . -path=containernetworkingauto/test-pr${NC}"
-  go run . -path=containernetworkingauto/test-pr 2>&1 | tee "$TMPFILE"
+  echo -e "  ${YELLOW}▶ Running pipeline: go run . -path=containernetworkingauto/1sttest-pr${NC}"
+  go run . -path=containernetworkingauto/1sttest-pr 2>&1 | tee "$TMPFILE"
   local pipe_exit=${PIPESTATUS[0]}
   echo ""
   return $pipe_exit
 }
 
-# clean_test_dir removes everything in test-pr/ except onboard.yml on the
+# clean_test_dir removes everything in 1sttest-pr/ except onboard.yml on the
 # remote branch, so the next test starts from a clean first-time state.
 clean_test_dir() {
   echo -e "  ${YELLOW}▶ Cleaning $TEST_DIR on $BRANCH …${NC}"
@@ -99,7 +99,7 @@ clean_test_dir() {
 
   if [[ -n "$to_remove" ]]; then
     echo "$to_remove" | xargs git rm -f 2>/dev/null || true
-    git commit -m "[test] Clean test-pr dir for integration test" 2>/dev/null
+    git commit -m "[test] Clean 1sttest-pr dir for integration test" 2>/dev/null
     git push origin "$BRANCH" 2>/dev/null
     echo -e "  ${GREEN}✔ Cleaned: removed $(echo "$to_remove" | wc -l | tr -d ' ') file(s)${NC}"
   else
@@ -162,14 +162,14 @@ if ! git diff --cached --quiet; then
 fi
 cd "$DALEC_DIR"
 
-# Clean test-pr directory (remove specfiles, Dockerfile, Makefile siblings)
+# Clean 1sttest-pr directory (remove specfiles, Dockerfile, Makefile siblings)
 clean_test_dir
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Test 1 — First-time Onboard (actionNotify → PR created)
 # ═══════════════════════════════════════════════════════════════════════════════
 banner "Test 1 — First-time Onboard"
-echo "  Precondition: only onboard.yml in test-pr, tags=[v1.6.41], ManualReview"
+echo "  Precondition: only onboard.yml in 1sttest-pr, tags=[v1.6.41], ManualReview"
 echo "  Expected: pipeline generates spec, creates PR"
 echo ""
 
@@ -179,7 +179,7 @@ PIPELINE_EXIT=$?
 echo -e "\n  ${CYAN}── Assertions ──${NC}"
 assert_log "No sibling Dockerfile/Makefile found" "Detected as first-time onboard (no siblings)"
 assert_log "(Created PR #|PR created for)" "PR was created"
-assert_log_absent "Skipping test-pr" "Did NOT skip"
+assert_log_absent "Skipping 1sttest-pr" "Did NOT skip"
 
 FEATURE_BRANCH=$(extract_feature_branch)
 if [[ -z "$FEATURE_BRANCH" ]]; then
@@ -226,7 +226,7 @@ PIPELINE_EXIT=$?
 
 echo -e "\n  ${CYAN}── Assertions ──${NC}"
 assert_log "sibling" "Detected existing siblings (re-onboard)"
-assert_log "Skipping test-pr.*no actionable tags" "Skipped — no actionable tags"
+assert_log "Skipping 1sttest-pr.*no actionable tags" "Skipped — no actionable tags"
 assert_log_absent "(Created PR #|PR created for)" "No PR was created"
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -266,7 +266,7 @@ PIPELINE_EXIT=$?
 
 echo -e "\n  ${CYAN}── Assertions ──${NC}"
 assert_log "sibling" "Detected existing siblings (re-onboard)"
-assert_log_absent "Skipping test-pr" "Did NOT skip"
+assert_log_absent "Skipping 1sttest-pr" "Did NOT skip"
 
 # Test 3 has two valid outcomes depending on whether Dockerfile/Makefile changed
 if grep -qE 'Content unchanged|Revision bump pushed' "$TMPFILE"; then
@@ -291,7 +291,7 @@ banner "Phase 5 — Cleanup"
 # Restore original onboard.yml
 restore_onboard
 
-# Remove generated files from test-pr/
+# Remove generated files from 1sttest-pr/
 clean_test_dir
 
 # Cleanup temp files

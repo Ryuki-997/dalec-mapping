@@ -16,18 +16,6 @@ package transformer
 //     Order: preamble → normal binary builds → pipeline steps → deferred sub-module builds.
 //     Calls → rawBuildCommands(), extractCdDir(), rewriteGoModCdPaths(),
 //             injectAllBinSuffixVars(), binSuffixPreamble()
-//
-//   Chunk 4 · PER-BINARY PROCESSING rawBuildCommands()
-//     Cleans each binary's build command (inlines ldflags, strips env assignments),
-//     injects ${BIN_SUFFIX}, optionally renames the -o target to match the entrypoint.
-//     Calls → cleanBuildCommand(), injectBinSuffixVar(), isSubmoduleName(),
-//             stripGoModDownloadPrefix()
-//
-//   Chunk 5 · UTILITIES
-//     binSuffixPreamble()       — shell preamble setting BIN_SUFFIX + CC
-//     injectBinSuffixVar()      — appends ${BIN_SUFFIX} to first -o /go/bin/<name>
-//     injectAllBinSuffixVars()  — same, all occurrences (for pipeline steps)
-//     scanVarReferences()       — finds ${VAR} refs in commands for arg promotion
 //     extractOutputFlag()       — extracts -o path from a go build command
 //     extractCdDir()            — splits "cd X && rest" into (X, rest)
 //     stripGoModDownloadPrefix()— removes go mod download prefix handled as source
@@ -107,12 +95,22 @@ func buildEnv() map[string]interface{} {
 // ─── Chunk 3 · COMMAND ASSEMBLY ──────────────────────────────────────────────
 
 // buildSteps converts NonDeterministicValues binaries into a single Dalec `steps` entry.
-// All binaries are merged into one command block so BIN_SUFFIX and CC are set once.
+// All binaries are merged into one command block so BIN_SUFFIX is set once.
 // Also returns the combined command text for var scanning.
 // baseDir is always the repo source name (the root of the cloned source). The LLM-provided
 // build command's `cd` paths are always relative to the repo root, not the Dockerfile subdir.
 func buildSteps(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues, goModDownloads []GoModDownloadInfo) ([]map[string]interface{}, string) {
 	baseDir := defaultSpec.Repo
+
+	// For monorepos where go.mod is in a subdirectory (detected via MakefileDir,
+	// e.g. "client/Makefile" → subdir "client"), extend baseDir so the build
+	// cd's into the correct module root.
+	if defaultSpec.MakefileDir != "" {
+		dir := strings.TrimSuffix(defaultSpec.MakefileDir, "/")
+		if idx := strings.LastIndex(dir, "/"); idx >= 0 {
+			baseDir = baseDir + "/" + dir[:idx]
+		}
+	}
 
 	rawCmds := rawBuildCommands(nonDeterministicValues, goModDownloads)
 
@@ -294,8 +292,7 @@ func rawBuildCommands(nonDeterministicValues *llm.NonDeterministicValues, goModD
 
 // ─── Chunk 5 · UTILITIES ─────────────────────────────────────────────────────
 
-// binSuffixPreamble returns the shell preamble that sets BIN_SUFFIX and, when
-// GOOS=windows, exports CC pointing to the MinGW cross-compiler.
+// binSuffixPreamble returns the shell preamble that sets BIN_SUFFIX.
 func binSuffixPreamble() string {
 	return `BUILD_ROOT="$PWD"
 BIN_SUFFIX=""
@@ -303,7 +300,6 @@ OS="linux"
 if [ "${GOOS}" = "windows" ]; then
   BIN_SUFFIX=".exe"
   OS="windows"
-  export CC=` + MingwBinDir + `/x86_64-w64-mingw32-clang
 fi`
 }
 
@@ -433,7 +429,6 @@ func isSubmoduleName(name string, downloads []GoModDownloadInfo) bool {
 var dalecHandledEnvs = map[string]bool{
 	"CGO_ENABLED": true, "GOOS": true, "GOARCH": true,
 	"GOARM": true, "GOARM64": true, "OS": true, "ARCH": true,
-	"CC": true, // set globally via MinGW toolchain source
 }
 
 // standardWorkdirs lists working directories that are always available in the
@@ -539,11 +534,18 @@ func cleanBuildCommand(cmd, ldflags string) string {
 		return ""
 	}
 
-	// 1. Inline ldflags.
+	// 1. Inline ldflags — wrap in double quotes when the placeholder isn't
+	//    already inside quotes (e.g. `-ldflags ${LDFLAGS}` vs `-ldflags "${LDFLAGS}"`).
 	cleanedLd := strings.Trim(ldflags, `"'`)
-	cmd = strings.ReplaceAll(cmd, "${LDFLAGS}", cleanedLd)
+	cmd = strings.ReplaceAll(cmd, "${LDFLAGS}", `"`+cleanedLd+`"`)
 
-	// 2. Strip inner quotes wrapping $VAR / ${VAR} references.
+	// 2. Strip inner single quotes around -X values inside -ldflags.
+	//    e.g. -ldflags "-X 'pkg.var=${VERSION}'" → -ldflags "-X pkg.var=${VERSION}"
+	//    These come from Makefile LDFLAGS like: "-X '$(PKG).version=$(VERSION)'"
+	innerSingleQuoted := regexp.MustCompile(`'([^']*)'`)
+	cmd = innerSingleQuoted.ReplaceAllString(cmd, "$1")
+
+	// 3. Strip inner double quotes wrapping $VAR / ${VAR} references.
 	//    e.g. "$VERSION" → ${VERSION}, "$CNS_AI_PATH"="$CNS_AI_ID" → ${CNS_AI_PATH}=${CNS_AI_ID}
 	innerQuotedVar := regexp.MustCompile(`"(\$\{?\w+\}?)"`)
 	cmd = innerQuotedVar.ReplaceAllString(cmd, "$1")

@@ -4,8 +4,8 @@ package transformer
 // extractSources.go — Generates the `sources:` section of a Dalec spec.
 //
 //   Chunk 1 · ORCHESTRATION            extractSourcesSection()
-//     Assembles all source entries: primary repo, sub-modules, MinGW toolchain.
-//     Calls → buildPrimarySource(), buildSubmoduleSources(), buildMingwSource()
+//     Assembles all source entries: primary repo, sub-modules.
+//     Calls → buildPrimarySource(), buildSubmoduleSources()
 //
 //   Chunk 2 · PRIMARY SOURCE           buildPrimarySource()
 //     Main git repo + gomod generate entries (root + any subdirectories).
@@ -14,10 +14,7 @@ package transformer
 //   Chunk 3 · SUBMODULE SOURCES        buildSubmoduleSources()
 //     Separate git+gomod entries for each `go mod download` dependency.
 //
-//   Chunk 4 · MINGW TOOLCHAIN          buildMingwSource()
-//     HTTP source for the MinGW cross-compiler (windowscross targets only).
-//
-//   Chunk 5 · DISCOVERY                DetectGoModDownloads(), collectGoModSubpaths()
+//   Chunk 4 · DISCOVERY                DetectGoModDownloads(), collectGoModSubpaths()
 //     Scans pipeline steps + binary commands to detect go mod download patterns
 //     and literal cd subdirectories that need gomod generate entries.
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -29,19 +26,6 @@ import (
 	"regexp"
 	"strings"
 )
-
-// mingwURL is the prebuilt MinGW cross-compiler toolchain for a Linux/x86_64 host.
-// It provides x86_64-w64-mingw32-clang for windows/amd64 cross-builds.
-// Note: the release only ships ubuntu-20.04 Linux host builds.
-const mingwURL = "https://github.com/mstorsjo/llvm-mingw/releases/download/20241217/llvm-mingw-20241217-ucrt-ubuntu-20.04-x86_64.tar.xz"
-
-// MingwSourceKey is the Dalec source name for the MinGW toolchain.
-const MingwSourceKey = "mingw-toolchain"
-
-// MingwBinDir is the absolute path to the bin/ directory inside the build sandbox.
-// Dalec strips the top-level directory from http source tarballs and extracts the
-// contents under /build/top/BUILD/<key>/ during RPM %prep.
-const MingwBinDir = "/build/top/BUILD/" + MingwSourceKey + "/bin"
 
 // cdLiteralRe matches the leading `cd <dir> &&` or `cd <dir>\n` of a build command
 // where <dir> is a literal path (no shell variable references like ${X}).
@@ -81,7 +65,6 @@ func extractSourcesSection(defaultSpec *contents.DefaultSpec, nonDeterministicVa
 
 	buildPrimarySource(sources, defaultSpec, nonDeterministicValues)
 	buildSubmoduleSources(sources, defaultSpec, goModDownloads)
-	buildMingwSource(sources, defaultSpec)
 
 	return sources
 }
@@ -90,12 +73,29 @@ func extractSourcesSection(defaultSpec *contents.DefaultSpec, nonDeterministicVa
 
 // buildPrimarySource adds the main repo git source with gomod generate entries
 // for the root module and any subdirectories discovered in build commands.
+// When the go.mod is in a subdirectory (detected via MakefileDir), the primary
+// generate entry uses that subpath instead of the repo root.
 func buildPrimarySource(sources map[string]interface{}, defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) {
 	subpaths := collectGoModSubpaths(defaultSpec, nonDeterministicValues)
 
-	generateEntries := []map[string]interface{}{
-		{string(defaultSpec.Generator): map[string]interface{}{}},
+	// Determine where the primary go.mod lives. If the Makefile is in a
+	// subdirectory (e.g. "client/Makefile"), the go.mod is likely alongside it.
+	rootGoModSubpath := ""
+	if defaultSpec.MakefileDir != "" {
+		dir := strings.TrimSuffix(defaultSpec.MakefileDir, "/")
+		if idx := strings.LastIndex(dir, "/"); idx >= 0 {
+			rootGoModSubpath = dir[:idx]
+		}
 	}
+
+	rootEntry := map[string]interface{}{
+		string(defaultSpec.Generator): map[string]interface{}{},
+	}
+	if rootGoModSubpath != "" {
+		rootEntry["subpath"] = rootGoModSubpath
+	}
+
+	generateEntries := []map[string]interface{}{rootEntry}
 	for _, sub := range subpaths {
 		generateEntries = append(generateEntries, map[string]interface{}{
 			string(defaultSpec.Generator): map[string]interface{}{},
@@ -140,24 +140,7 @@ func buildSubmoduleSources(sources map[string]interface{}, defaultSpec *contents
 	}
 }
 
-// ─── Chunk 4 · MINGW TOOLCHAIN ──────────────────────────────────────────────
-
-// buildMingwSource adds the MinGW cross-compiler HTTP source when any build
-// target requires windowscross.
-func buildMingwSource(sources map[string]interface{}, defaultSpec *contents.DefaultSpec) {
-	for _, bt := range defaultSpec.BuildTargets {
-		if strings.HasPrefix(string(bt), "windowscross") {
-			sources[MingwSourceKey] = map[string]interface{}{
-				"http": map[string]interface{}{
-					"url": mingwURL,
-				},
-			}
-			return
-		}
-	}
-}
-
-// ─── Chunk 5 · DISCOVERY ─────────────────────────────────────────────────────
+// ─── Chunk 4 · DISCOVERY ─────────────────────────────────────────────────────
 
 // collectGoModSubpaths returns ordered unique subdirectory paths found via
 // literal `cd <subdir> &&` in binary build commands and pipeline steps.

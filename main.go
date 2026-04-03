@@ -174,9 +174,9 @@ func generateSpec(onboard *onboarding.OnboardingInfo, fullTag string) (string, [
 }
 
 func testAndCreatePR(onboard *onboarding.OnboardingInfo, remotePath, tag string, resolvedTargets []string) {
-	// if err := workflow.TestImage(remotePath, onboard.SpecImageName, tag, resolvedTargets); err != nil {
-	// 	log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
-	// }
+	if err := workflow.TestImage(remotePath, onboard.SpecImageName, tag, resolvedTargets); err != nil {
+		log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
+	}
 	prURL, err := workflow.CreateSpecPR(onboard, tag)
 	if err != nil {
 		log.Fatalf("❌ PR creation failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
