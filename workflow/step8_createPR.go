@@ -2,13 +2,14 @@
 // Step 8 — Create Pull Request & Notify Reviewers
 //
 //   Creates a PR on the onboard repo containing the specfile, Dockerfile,
-//   and Makefile in a single branch. Reviewers from the onboarding config
-//   are added to the PR. After 1 reviewer approval the PR can be merged.
-//   Sends an email notification to all reviewers with the PR link via
-//   Azure Communication Services.
+//   and Makefile committed directly to the OnboardBranch. The PR targets the
+//   repo's default branch. No feature branches are created or destroyed.
+//   Reviewers from the onboarding config are added to the PR. After 1
+//   reviewer approval the PR can be merged. Sends an email notification
+//   to all reviewers with the PR link via Azure Communication Services.
 //
 //   Chunk 1 · MAIN      CreateSpecPR()
-//   Chunk 2 · GIT       createBranch(), commitFileToBranch(),
+//   Chunk 2 · GIT       fetchDefaultBranch(), commitFileToBranch(),
 //                        createPullRequest(), addReviewers()
 //   Chunk 3 · EMAIL     notifyReviewersEmail(), sendACSEmail()
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -25,7 +26,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"time"
 
 	"dalec-mapping/domain/onboarding"
 	repo "dalec-mapping/domain/repository"
@@ -38,8 +38,9 @@ import (
 
 // ─── Chunk 1 · MAIN ─────────────────────────────────────────────────────────
 
-// CreateSpecPR creates a feature branch, commits the specfile (and optionally
-// Dockerfile/Makefile), opens a PR against the base branch, and adds reviewers.
+// CreateSpecPR commits the specfile (and optionally Dockerfile/Makefile)
+// directly to the OnboardBranch, then opens a PR targeting OnboardBranch.
+// No feature branches are created or destroyed.
 // When specOnly is true, only the specfile is committed.
 // Returns the PR URL on success.
 func CreateSpecPR(onboard *onboarding.OnboardingInfo, tag string, specOnly bool) (string, error) {
@@ -54,16 +55,7 @@ func CreateSpecPR(onboard *onboarding.OnboardingInfo, tag string, specOnly bool)
 		dir = fmt.Sprintf("specs/auto/%s", specImageName)
 	}
 
-	// Create a timestamped branch name
-	branchName := fmt.Sprintf("dalec/%s-%s-%s", specImageName, tag, time.Now().Format("20060102-150405"))
-
-	// 1. Create the feature branch from the base branch HEAD
-	if err := createBranch(branchName); err != nil {
-		return "", fmt.Errorf("failed to create branch %s: %w", branchName, err)
-	}
-	log.Printf("🌿 Created branch %s\n", branchName)
-
-	// 2. Commit specfile
+	// 1. Commit specfile directly to the base branch
 	specFile := fmt.Sprintf("%s-%s-specfile.yml", specImageName, tag)
 	specContent, err := os.ReadFile(utils.SpecPath)
 	if err != nil {
@@ -73,47 +65,47 @@ func CreateSpecPR(onboard *onboarding.OnboardingInfo, tag string, specOnly bool)
 		fmt.Sprintf("%s/%s", dir, specFile),
 		fmt.Sprintf("Add %s", specFile),
 		specContent,
-		branchName,
+		utils.OnboardBranch,
 	); err != nil {
 		return "", fmt.Errorf("failed to commit spec file: %w", err)
 	}
 
-	// 3. Commit Dockerfile (if present and not spec-only)
+	// 2. Commit Dockerfile (if present and not spec-only)
 	if !specOnly && len(onboard.DockerfileContent) > 0 {
 		if err := commitFileToBranch(
 			fmt.Sprintf("%s/Dockerfile", dir),
 			fmt.Sprintf("Add Dockerfile for %s", specImageName),
 			onboard.DockerfileContent,
-			branchName,
+			utils.OnboardBranch,
 		); err != nil {
 			return "", fmt.Errorf("failed to commit Dockerfile: %w", err)
 		}
 	}
 
-	// 4. Commit Makefile (if present and not spec-only)
+	// 3. Commit Makefile (if present and not spec-only)
 	if !specOnly && len(onboard.MakefileContent) > 0 {
 		if err := commitFileToBranch(
 			fmt.Sprintf("%s/Makefile", dir),
 			fmt.Sprintf("Add Makefile for %s", specImageName),
 			onboard.MakefileContent,
-			branchName,
+			utils.OnboardBranch,
 		); err != nil {
 			return "", fmt.Errorf("failed to commit Makefile: %w", err)
 		}
 	}
 
-	// 5. Create the pull request
+	// 4. Create the pull request targeting OnboardBranch
 	prTitle := fmt.Sprintf("[Dalec] %s @ %s", specImageName, tag)
 	prBody := fmt.Sprintf("Auto-generated Dalec spec for **%s** @ `%s`.\n\nRepository: %s\n\nRequires 1 reviewer approval before merge.",
 		specImageName, tag, onboard.Repository)
 
-	prURL, prNumber, err := createPullRequest(branchName, prTitle, prBody)
+	prURL, prNumber, err := createPullRequest(prTitle, prBody)
 	if err != nil {
 		return "", fmt.Errorf("failed to create PR: %w", err)
 	}
 	log.Printf("📝 Created PR #%d: %s\n", prNumber, prURL)
 
-	// 6. Add reviewers
+	// 5. Add reviewers
 	if len(onboard.Reviewers) > 0 {
 		if err := addReviewers(prNumber, onboard.Reviewers); err != nil {
 			log.Printf("⚠️  Failed to add reviewers to PR #%d: %v\n", prNumber, err)
@@ -122,7 +114,7 @@ func CreateSpecPR(onboard *onboarding.OnboardingInfo, tag string, specOnly bool)
 		}
 	}
 
-	// 7. Send email notification to reviewers with the PR link
+	// 6. Send email notification to reviewers with the PR link
 	if len(onboard.Reviewers) > 0 {
 		if err := notifyReviewersEmail(onboard, tag, prURL); err != nil {
 			log.Printf("⚠️  Failed to send email notification: %v\n", err)
@@ -135,36 +127,6 @@ func CreateSpecPR(onboard *onboarding.OnboardingInfo, tag string, specOnly bool)
 }
 
 // ─── Chunk 2 · GIT ───────────────────────────────────────────────────────────
-
-// createBranch creates a new branch from the HEAD of the base branch.
-func createBranch(branchName string) error {
-	// Get the SHA of the base branch HEAD
-	refPath := fmt.Sprintf("repos/%s/%s/git/ref/heads/%s", utils.OnboardOwner, utils.OnboardRepo, utils.OnboardBranch)
-	refData, err := repository.FetchJSON(refPath)
-	if err != nil {
-		return fmt.Errorf("failed to fetch base branch ref: %w", err)
-	}
-
-	obj, ok := refData["object"].(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("unexpected ref response format")
-	}
-	baseSHA, ok := obj["sha"].(string)
-	if !ok {
-		return fmt.Errorf("could not extract SHA from base branch ref")
-	}
-
-	// Create the new branch ref
-	_, err = repository.WriteJSON(
-		fmt.Sprintf("repos/%s/%s/git/refs", utils.OnboardOwner, utils.OnboardRepo),
-		repo.POST,
-		map[string]interface{}{
-			"ref": "refs/heads/" + branchName,
-			"sha": baseSHA,
-		},
-	)
-	return err
-}
 
 // commitFileToBranch pushes a single file to a specific branch via the GitHub
 // Contents API. If the file already exists on that branch, its SHA is included
@@ -198,15 +160,15 @@ func commitFileToBranch(filePath, message string, content []byte, branch string)
 	return err
 }
 
-// createPullRequest opens a PR from the feature branch to the base branch.
+// createPullRequest opens a PR targeting OnboardBranch.
 // Returns the PR URL and PR number.
-func createPullRequest(branchName, title, body string) (string, int, error) {
+func createPullRequest(title, body string) (string, int, error) {
 	prPath := fmt.Sprintf("repos/%s/%s/pulls", utils.OnboardOwner, utils.OnboardRepo)
 
 	result, err := repository.WriteJSON(prPath, repo.POST, map[string]interface{}{
 		"title": title,
 		"body":  body,
-		"head":  branchName,
+		"head":  utils.OnboardBranch,
 		"base":  utils.OnboardBranch,
 	})
 	if err != nil {
@@ -216,6 +178,15 @@ func createPullRequest(branchName, title, body string) (string, int, error) {
 	prURL, _ := result["html_url"].(string)
 	prNumberFloat, _ := result["number"].(float64)
 	prNumber := int(prNumberFloat)
+
+	// Add "specfile" label to the PR.
+	labelPath := fmt.Sprintf("repos/%s/%s/issues/%d/labels", utils.OnboardOwner, utils.OnboardRepo, prNumber)
+	_, err = repository.WriteJSON(labelPath, repo.POST, map[string]interface{}{
+		"labels": []string{"specfile"},
+	})
+	if err != nil {
+		log.Printf("⚠️  Failed to add 'specfile' label to PR #%d: %v", prNumber, err)
+	}
 
 	return prURL, prNumber, nil
 }

@@ -32,6 +32,7 @@ run_and_stream() {
 # run_and_stream "Run 1: -path=aks-container-networking/azure-cns" -path=aks-container-networking/azure-cns
 # run_and_stream "Run 2: -path=aks-container-networking/azure-cni" -path=aks-container-networking/azure-cni
 # run_and_stream "Run 3: -path=aks-container-networking/azure-ipam" -path=aks-container-networking/azure-ipam
-run_and_stream "Run 4: -path=aks-secure-tls-bootstrap" -path=aks-secure-tls-bootstrap
+# run_and_stream "Run 4: -path=aks-secure-tls-bootstrap" -path=aks-secure-tls-bootstrap
 # run_and_stream "Run 5: -path=aks-node-controller" -path=aks-node-controller
+run_and_stream "Run ?: -path=" -path=
 exit $overall_exit
