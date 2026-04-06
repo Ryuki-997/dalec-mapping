@@ -51,6 +51,9 @@ func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, isFirstOnboar
 		if !strings.HasPrefix(path, inputPath) {
 			continue
 		}
+		if strings.HasSuffix(path, "onboard.yml") {
+			log.Printf("📂 Processing onboard file: %s\n", path)
+		}
 
 		specRepository, specImageName, err := getOnboardFilepath(path)
 		if err != nil {
