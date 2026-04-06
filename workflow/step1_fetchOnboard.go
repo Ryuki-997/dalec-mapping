@@ -31,11 +31,13 @@ import (
 // FetchOnboardFiles reads onboard.yml files from the spec repo, resolves tags,
 // fetches cached siblings, and populates the onboardImages slice.
 func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, isFirstOnboard *[]bool, templateTags *[]string, inputPath string) error {
+	log.Printf("🔍 Input path flag: %q\n", inputPath)
 	if inputPath == "" {
 		inputPath = "specs/auto"
 	} else {
 		inputPath = "specs/auto/" + inputPath
 	}
+	log.Printf("🔍 Full onboard search path: %s\n", inputPath)
 
 	onboardItems, treePaths, err := fetchRepoTree(inputPath)
 	if err != nil {
