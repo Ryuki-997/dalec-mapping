@@ -23,9 +23,9 @@ import (
 
 // ─── Chunk 1 · MAIN ─────────────────────────────────────────────────────────
 
-// PushToRemote commits the spec file and its sibling Dockerfile/Makefile to the
-// onboard repo's base branch.
-func PushToRemote(onboard *onboarding.OnboardingInfo, tag string) error {
+// PushToRemote commits the spec file to the onboard repo's base branch.
+// When specOnly is false, sibling Dockerfile/Makefile are also committed.
+func PushToRemote(onboard *onboarding.OnboardingInfo, tag string, specOnly bool) error {
 	specRepository := onboard.SpecRepository
 	specImageName := onboard.SpecImageName
 
@@ -38,9 +38,9 @@ func PushToRemote(onboard *onboarding.OnboardingInfo, tag string) error {
 	// Build the directory prefix for all files
 	var dir string
 	if specRepository != "" {
-		dir = fmt.Sprintf("specs/%s/%s", specRepository, specImageName)
+		dir = fmt.Sprintf("specs/auto/%s/%s", specRepository, specImageName)
 	} else {
-		dir = fmt.Sprintf("specs/%s", specImageName)
+		dir = fmt.Sprintf("specs/auto/%s", specImageName)
 	}
 
 	specFile := fmt.Sprintf("%s-%s-specfile.yml", specImageName, tag)
@@ -54,8 +54,8 @@ func PushToRemote(onboard *onboarding.OnboardingInfo, tag string) error {
 		return err
 	}
 
-	// Push sibling Dockerfile (if present)
-	if len(onboard.DockerfileContent) > 0 {
+	// Push sibling Dockerfile (if present and not spec-only)
+	if !specOnly && len(onboard.DockerfileContent) > 0 {
 		if err := commitFile(
 			fmt.Sprintf("%s/Dockerfile", dir),
 			fmt.Sprintf("Add Dockerfile for %s", specImageName),
@@ -65,8 +65,8 @@ func PushToRemote(onboard *onboarding.OnboardingInfo, tag string) error {
 		}
 	}
 
-	// Push sibling Makefile (if present)
-	if len(onboard.MakefileContent) > 0 {
+	// Push sibling Makefile (if present and not spec-only)
+	if !specOnly && len(onboard.MakefileContent) > 0 {
 		if err := commitFile(
 			fmt.Sprintf("%s/Makefile", dir),
 			fmt.Sprintf("Add Makefile for %s", specImageName),

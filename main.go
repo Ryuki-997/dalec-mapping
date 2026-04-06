@@ -26,7 +26,7 @@ import (
 // ─── Chunk 1 · ENTRY ────────────────────────────────────────────────────────
 
 func main() {
-	inputPath := flag.String("path", "", "Input path to search for onboarding files (e.g. specs/containernetworking and specs/containernetworking/azure-cns both work). Omit to fetch all under specs/")
+	inputPath := flag.String("path", "", "Input path to search for onboarding files (e.g. containernetworking and containernetworking/azure-cns both work). Omit to fetch all under specs/auto/")
 	flag.Parse()
 
 	loadEnv()
@@ -35,7 +35,7 @@ func main() {
 
 	var specPaths []string
 	for i, onboard := range onboardFiles {
-		log.Printf("Onboard Documents: %v\n", onboard)
+		log.Printf("Onboard Documents: %v %v %v\n", onboard.Repository, onboard.SpecImageName, onboard.Tag)
 		for _, fullTag := range onboard.Tag {
 			if remotePath := processTag(&onboard, fullTag, firstOnboardFlags[i], templateTags[i]); remotePath != "" {
 				specPaths = append(specPaths, remotePath)
@@ -83,20 +83,19 @@ func processTag(onboard *onboarding.OnboardingInfo, fullTag string, isFirstOnboa
 		log.Fatalf("❌ DiscoverBuildFiles failed: %v", err)
 	}
 
-	action := decideAction(onboard.ReviewMode, isFirstOnboard, contentChanged)
+	action := decideAction(isFirstOnboard, contentChanged)
 
 	switch action {
-	case actionNotify:
-		remotePath, resolvedTargets := generateSpec(onboard, fullTag)
-		testAndCreatePR(onboard, remotePath, tag, resolvedTargets)
-		log.Printf("📋 First-time onboard (manual review) for %s @ %s — generating spec and creating PR\n", onboard.SpecImageName, tag)
-		return ""
 	case actionBumpCommit:
 		bumpCommit(onboard, fullTag, tag, templateTag)
 		return ""
 	case actionGenerate:
 		remotePath, resolvedTargets := generateSpec(onboard, fullTag)
-		testAndCreatePR(onboard, remotePath, tag, resolvedTargets)
+		if onboard.ReviewMode == onboarding.AutoReview {
+			testAndPush(onboard, remotePath, tag, resolvedTargets)
+		} else {
+			testAndCreatePR(onboard, remotePath, tag, resolvedTargets)
+		}
 		return remotePath
 	}
 
@@ -106,34 +105,22 @@ func processTag(onboard *onboarding.OnboardingInfo, fullTag string, isFirstOnboa
 type pipelineAction int
 
 const (
-	actionNotify     pipelineAction = iota // Notify reviewers, skip generation
-	actionBumpCommit                       // Copy template spec with new commit hash
-	actionGenerate                         // Full LLM generate → test → push
+	actionBumpCommit pipelineAction = iota // Copy template spec with new commit hash
+	actionGenerate                         // Full LLM generate → test → PR
 )
 
 // decideAction maps the decision matrix to a pipeline action.
 //
-//	First time  + ManualReview             → notify
-//	First time  + AutoReview               → generate
-//	Re-onboard  + content unchanged        → bump commit
-//	Re-onboard  + content changed + Manual → notify
-//	Re-onboard  + content changed + Auto   → generate
-func decideAction(mode onboarding.ReviewMode, isFirstOnboard, contentChanged bool) pipelineAction {
-	if isFirstOnboard {
-		if mode == onboarding.ManualReview {
-			return actionNotify
-		}
+//	First time onboard                → generate (full LLM pipeline)
+//	Re-onboard + content changed      → generate (full LLM pipeline)
+//	Re-onboard + content unchanged    → bump commit (update tag/hash, direct push)
+//
+// ReviewMode determines delivery: ManualReview → PR, AutoReview → direct push.
+func decideAction(isFirstOnboard, contentChanged bool) pipelineAction {
+	if isFirstOnboard || contentChanged {
 		return actionGenerate
 	}
-
-	if !contentChanged {
-		return actionBumpCommit
-	}
-
-	if mode == onboarding.ManualReview {
-		return actionNotify
-	}
-	return actionGenerate
+	return actionBumpCommit
 }
 
 // ─── Chunk 3 · ACTIONS ──────────────────────────────────────────────────────
@@ -143,10 +130,18 @@ func bumpCommit(onboard *onboarding.OnboardingInfo, fullTag, tag, templateTag st
 	if _, err := workflow.BumpCommit(onboard, fullTag, templateTag); err != nil {
 		log.Fatalf("❌ Revision bump failed: %v", err)
 	}
-	if err := workflow.PushToRemote(onboard, tag); err != nil {
-		log.Fatalf("❌ Push failed: %v", err)
+	if onboard.ReviewMode == onboarding.AutoReview {
+		if err := workflow.PushToRemote(onboard, tag, true); err != nil {
+			log.Fatalf("❌ Push failed: %v", err)
+		}
+		log.Printf("✅ Revision bump pushed for %s @ %s (AutoReview)\n", onboard.SpecImageName, tag)
+	} else {
+		prURL, err := workflow.CreateSpecPR(onboard, tag, true)
+		if err != nil {
+			log.Fatalf("❌ PR creation failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
+		}
+		log.Printf("✅ Bump-commit PR created for %s @ %s: %s\n", onboard.SpecImageName, tag, prURL)
 	}
-	log.Printf("✅ Revision bump pushed for %s @ %s\n", onboard.SpecImageName, tag)
 }
 
 func generateSpec(onboard *onboarding.OnboardingInfo, fullTag string) (string, []string) {
@@ -177,9 +172,19 @@ func testAndCreatePR(onboard *onboarding.OnboardingInfo, remotePath, tag string,
 	if err := workflow.TestImage(remotePath, onboard.SpecImageName, tag, resolvedTargets); err != nil {
 		log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
 	}
-	prURL, err := workflow.CreateSpecPR(onboard, tag)
+	prURL, err := workflow.CreateSpecPR(onboard, tag, false)
 	if err != nil {
 		log.Fatalf("❌ PR creation failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
 	}
 	log.Printf("✅ PR created for %s @ %s: %s\n", onboard.SpecImageName, tag, prURL)
+}
+
+func testAndPush(onboard *onboarding.OnboardingInfo, remotePath, tag string, resolvedTargets []string) {
+	if err := workflow.TestImage(remotePath, onboard.SpecImageName, tag, resolvedTargets); err != nil {
+		log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
+	}
+	if err := workflow.PushToRemote(onboard, tag, false); err != nil {
+		log.Fatalf("❌ Push failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
+	}
+	log.Printf("✅ Spec pushed directly for %s @ %s (AutoReview)\n", onboard.SpecImageName, tag)
 }

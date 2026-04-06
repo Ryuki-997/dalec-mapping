@@ -22,12 +22,7 @@ func InitDefaultSpec(onboardInfo *onboarding.OnboardingInfo, repoInfo *repositor
 		defaultSpec.DockerfileInfo = *dockerfileInfo
 	}
 
-	// Versioning logic: if repo version has changed since last spec, reset revision to 1, else increment
-	if repoInfo.Version != previousDalecSpecInfo.Args.Version {
-		defaultSpec.Revision = 1
-	} else {
-		defaultSpec.Revision = previousDalecSpecInfo.Args.Revision + 1
-	}
+	defaultSpec.Revision = 1
 
 	// Default Build Targets (can be overridden by LLM-extracted targets)
 	defaultSpec.BuildTargets = []contents.BuildTarget{

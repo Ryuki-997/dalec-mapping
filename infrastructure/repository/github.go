@@ -378,8 +378,9 @@ func fetchSourceGenerator(info *repository.RepoInfo) error {
 
 // ─── Chunk 4 · TAGS ────────────────────────────────────────────────────────
 
-// fetchTagInfo resolves `tag` to a commit SHA and populates info.LatestCommit and info.Version.
-// If a direct ref lookup 404s (e.g. the actual ref is "azure-ipam/v0.4.0"), it searches
+// fetchTagInfo resolves `tag` to a release commit SHA and populates info.LatestCommit and info.Version.
+// Looks up the release by tag name, then resolves the tag to a commit SHA via the commits API.
+// If a direct release lookup 404s (e.g. the actual tag is "azure-ipam/v0.4.0"), it searches
 // FetchAllTags for a matching semver and retries.
 func fetchTagInfo(info *repository.RepoInfo, tag string) error {
 	if tag == "" {
@@ -387,8 +388,11 @@ func fetchTagInfo(info *repository.RepoInfo, tag string) error {
 	}
 
 	fullTag := tag
-	data, err := FetchJSON(fmt.Sprintf("repos/%s/%s/git/ref/tags/%s", info.Owner, info.Repo, fullTag))
+
+	// Try to find the release by tag name
+	_, err := FetchJSON(fmt.Sprintf("repos/%s/%s/releases/tags/%s", info.Owner, info.Repo, fullTag))
 	if err != nil {
+		// Tag not found directly — search all tags for a matching semver
 		_, allGitTags, fetchErr := FetchAllGithubTags(info.Owner, info.Repo)
 		if fetchErr != nil {
 			return fmt.Errorf("tag %q not found and could not fetch tag list: %w", tag, fetchErr)
@@ -400,39 +404,44 @@ func fetchTagInfo(info *repository.RepoInfo, tag string) error {
 			}
 		}
 		if fullTag == tag {
-			return fmt.Errorf("tag %q not found in repository", tag)
+			return fmt.Errorf("tag %q not found in repository releases", tag)
 		}
-		data, err = FetchJSON(fmt.Sprintf("repos/%s/%s/git/ref/tags/%s", info.Owner, info.Repo, fullTag))
+		// Verify the resolved tag has a release
+		_, err = FetchJSON(fmt.Sprintf("repos/%s/%s/releases/tags/%s", info.Owner, info.Repo, fullTag))
 		if err != nil {
-			return err
+			return fmt.Errorf("release for tag %q not found: %w", fullTag, err)
 		}
 	}
 
-	if object, ok := data["object"].(map[string]interface{}); ok {
-		if sha, ok := object["sha"].(string); ok {
-			if m := semverInTag.FindString(tag); m != "" {
-				info.Version = strings.TrimPrefix(m, "v")
-			} else {
-				info.Version = strings.TrimPrefix(tag, "v")
-			}
-			info.LatestCommit = sha
-			return nil
-		}
+	// Extract version from the tag
+	if m := semverInTag.FindString(tag); m != "" {
+		info.Version = strings.TrimPrefix(m, "v")
+	} else {
+		info.Version = strings.TrimPrefix(tag, "v")
 	}
 
-	return fmt.Errorf("failed to extract commit SHA from tag")
+	// Resolve tag to commit SHA via the commits API
+	commitData, err := FetchJSON(fmt.Sprintf("repos/%s/%s/commits/%s", info.Owner, info.Repo, fullTag))
+	if err != nil {
+		return fmt.Errorf("failed to resolve commit for tag %q: %w", fullTag, err)
+	}
+	if sha, ok := commitData["sha"].(string); ok {
+		info.LatestCommit = sha
+		return nil
+	}
+
+	return fmt.Errorf("failed to extract commit SHA from tag %q", fullTag)
 }
 
-// FetchTagCommit resolves a git tag to its commit SHA for the given owner/repo.
+// FetchTagCommit resolves a git tag to its release commit SHA for the given owner/repo.
+// Uses the commits API to dereference annotated tags to the actual commit.
 func FetchTagCommit(owner, repo, tagRef string) (string, error) {
-	data, err := FetchJSON(fmt.Sprintf("repos/%s/%s/git/ref/tags/%s", owner, repo, tagRef))
+	data, err := FetchJSON(fmt.Sprintf("repos/%s/%s/commits/%s", owner, repo, tagRef))
 	if err != nil {
-		return "", fmt.Errorf("tag %q not found in %s/%s: %w", tagRef, owner, repo, err)
+		return "", fmt.Errorf("failed to resolve commit for tag %q in %s/%s: %w", tagRef, owner, repo, err)
 	}
-	if object, ok := data["object"].(map[string]interface{}); ok {
-		if sha, ok := object["sha"].(string); ok {
-			return sha, nil
-		}
+	if sha, ok := data["sha"].(string); ok {
+		return sha, nil
 	}
 	return "", fmt.Errorf("failed to extract commit SHA from tag %q", tagRef)
 }

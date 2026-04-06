@@ -38,19 +38,20 @@ import (
 
 // ─── Chunk 1 · MAIN ─────────────────────────────────────────────────────────
 
-// CreateSpecPR creates a feature branch, commits the specfile + Dockerfile +
-// Makefile, opens a PR against the base branch, and adds reviewers.
+// CreateSpecPR creates a feature branch, commits the specfile (and optionally
+// Dockerfile/Makefile), opens a PR against the base branch, and adds reviewers.
+// When specOnly is true, only the specfile is committed.
 // Returns the PR URL on success.
-func CreateSpecPR(onboard *onboarding.OnboardingInfo, tag string) (string, error) {
+func CreateSpecPR(onboard *onboarding.OnboardingInfo, tag string, specOnly bool) (string, error) {
 	specRepository := onboard.SpecRepository
 	specImageName := onboard.SpecImageName
 
 	// Build directory prefix
 	var dir string
 	if specRepository != "" {
-		dir = fmt.Sprintf("specs/%s/%s", specRepository, specImageName)
+		dir = fmt.Sprintf("specs/auto/%s/%s", specRepository, specImageName)
 	} else {
-		dir = fmt.Sprintf("specs/%s", specImageName)
+		dir = fmt.Sprintf("specs/auto/%s", specImageName)
 	}
 
 	// Create a timestamped branch name
@@ -77,8 +78,8 @@ func CreateSpecPR(onboard *onboarding.OnboardingInfo, tag string) (string, error
 		return "", fmt.Errorf("failed to commit spec file: %w", err)
 	}
 
-	// 3. Commit Dockerfile (if present)
-	if len(onboard.DockerfileContent) > 0 {
+	// 3. Commit Dockerfile (if present and not spec-only)
+	if !specOnly && len(onboard.DockerfileContent) > 0 {
 		if err := commitFileToBranch(
 			fmt.Sprintf("%s/Dockerfile", dir),
 			fmt.Sprintf("Add Dockerfile for %s", specImageName),
@@ -89,8 +90,8 @@ func CreateSpecPR(onboard *onboarding.OnboardingInfo, tag string) (string, error
 		}
 	}
 
-	// 4. Commit Makefile (if present)
-	if len(onboard.MakefileContent) > 0 {
+	// 4. Commit Makefile (if present and not spec-only)
+	if !specOnly && len(onboard.MakefileContent) > 0 {
 		if err := commitFileToBranch(
 			fmt.Sprintf("%s/Makefile", dir),
 			fmt.Sprintf("Add Makefile for %s", specImageName),

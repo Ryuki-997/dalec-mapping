@@ -1,19 +1,18 @@
 package onboarding
 
-// ReviewMode indicates whether this is a first-time onboard, a revision bump,
-// or a content change that requires owner notification.
+// ReviewMode controls how generated specs are delivered.
 type ReviewMode string
 
 const (
-	ManualReview   ReviewMode = "ManualReview"  // Both Initial and Content changes require manual review (default) 
-	AutoReview     ReviewMode = "AutoReview"    // Auto generates
+	ManualReview ReviewMode = "ManualReview" // Generate spec → test → create PR for approval (default)
+	AutoReview   ReviewMode = "AutoReview"   // Generate spec → test → push directly to remote (no PR)
 )
 
 type OnboardingInfo struct {
 	Repository     string      `yaml:"repository"`
 	Tag            []string    `yaml:"tags"`
 	Reviewers      []string    `yaml:"reviewers,omitempty"`
-	ReviewMode     ReviewMode  `yaml:"reviewMode,omitempty"` 
+	ReviewMode     ReviewMode  `yaml:"reviewMode,omitempty"`
 	DockerfileDir     string      `yaml:"dockerfile"`
 	MakefileDir       string      `yaml:"makefile"`
 	OnboardDir     string      `yaml:"-"` // folder path in onboard repo (e.g. "specs/containernetworking/azure-cns")

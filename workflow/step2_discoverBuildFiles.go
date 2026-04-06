@@ -35,7 +35,12 @@ func DiscoverBuildFiles(onboard *onboarding.OnboardingInfo, repoInfo *repo.RepoI
 	}
 
 	// Fetch repo metadata (populates repoInfo)
-	subdir := path.Dir(onboard.DockerfileDir)
+	subdir := "."
+	if onboard.DockerfileDir != "" {
+		subdir = path.Dir(onboard.DockerfileDir)
+	} else if onboard.MakefileDir != "" {
+		subdir = path.Dir(onboard.MakefileDir)
+	}
 	repoInfo, err := repository.FetchRepoInfo(onboard.Repository, subdir, tag)
 	if err != nil {
 		return false, fmt.Errorf("failed to fetch repository info: %w", err)
@@ -51,16 +56,22 @@ func DiscoverBuildFiles(onboard *onboarding.OnboardingInfo, repoInfo *repo.RepoI
 	rawPath := fmt.Sprintf("%s/%s/%s", owner, repoName, ref)
 
 	// Fetch fresh Dockerfile and Makefile from the source repo
-	dockerfileURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s", rawPath, onboard.DockerfileDir)
-	dockerfileContent, err := repository.FetchRawContent(dockerfileURL)
-	if err != nil {
-		fmt.Printf("⚠️  Warning: failed to fetch Dockerfile from %s: %v\n", dockerfileURL, err)
+	var dockerfileContent []byte
+	if onboard.DockerfileDir != "" {
+		dockerfileURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s", rawPath, onboard.DockerfileDir)
+		dockerfileContent, err = repository.FetchRawContent(dockerfileURL)
+		if err != nil {
+			fmt.Printf("⚠️  Warning: failed to fetch Dockerfile from %s: %v\n", dockerfileURL, err)
+		}
 	}
 
-	makefileURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s", rawPath, onboard.MakefileDir)
-	makefileContent, err := repository.FetchRawContent(makefileURL)
-	if err != nil {
-		fmt.Printf("⚠️  Warning: failed to fetch Makefile from %s: %v\n", makefileURL, err)
+	var makefileContent []byte
+	if onboard.MakefileDir != "" {
+		makefileURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s", rawPath, onboard.MakefileDir)
+		makefileContent, err = repository.FetchRawContent(makefileURL)
+		if err != nil {
+			fmt.Printf("⚠️  Warning: failed to fetch Makefile from %s: %v\n", makefileURL, err)
+		}
 	}
 
 	// Save cached copies before overwriting, then store fresh content
@@ -78,22 +89,31 @@ func DiscoverBuildFiles(onboard *onboarding.OnboardingInfo, repoInfo *repo.RepoI
 // ─── Chunk 2 · HELPERS ──────────────────────────────────────────────────────
 
 // diffSiblings compares fresh Dockerfile/Makefile against cached versions and
-// returns true if content has changed.
+// returns true if content has changed. Only compares files that have both a
+// fresh and cached version (skips files where either side is nil/empty).
 func diffSiblings(onboard *onboarding.OnboardingInfo, cachedDF, cachedMF []byte) bool {
-	if cachedDF == nil || cachedMF == nil {
+	if cachedDF == nil && cachedMF == nil {
 		return false
 	}
 
-	dfMatch := bytes.Equal(onboard.DockerfileContent, cachedDF)
-	mfMatch := bytes.Equal(onboard.MakefileContent, cachedMF)
-
-	if dfMatch && mfMatch {
-		log.Printf("✅ Dockerfile and Makefile unchanged for %s\n", onboard.SpecImageName)
-		return false
+	changed := false
+	if cachedDF != nil && onboard.DockerfileContent != nil {
+		if !bytes.Equal(onboard.DockerfileContent, cachedDF) {
+			log.Printf("🔄 Dockerfile changed for %s\n", onboard.SpecImageName)
+			changed = true
+		}
+	}
+	if cachedMF != nil && onboard.MakefileContent != nil {
+		if !bytes.Equal(onboard.MakefileContent, cachedMF) {
+			log.Printf("🔄 Makefile changed for %s\n", onboard.SpecImageName)
+			changed = true
+		}
 	}
 
-	log.Printf("🔄 Dockerfile or Makefile changed for %s\n", onboard.SpecImageName)
-	return true
+	if !changed {
+		log.Printf("✅ Build files unchanged for %s\n", onboard.SpecImageName)
+	}
+	return changed
 }
 
 // clearResultDirectory removes all contents from the result directory.

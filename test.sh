@@ -5,9 +5,9 @@
 # Uses specs/containernetworkingauto/1sttest-pr/ in aks-dalec-build-defs as the
 # test fixture.  Tests run sequentially — each builds on the prior state.
 #
-#   Test 1  First-time onboard  → actionNotify → PR created
+#   Test 1  First-time onboard  → actionGenerate → PR created
 #   Test 2  Rerun, no new tag   → skip (no actionable tags)
-#   Test 3  Tag bump v1.6.42    → actionBumpCommit or actionNotify (PR)
+#   Test 3  Tag bump v1.6.42    → actionBumpCommit or actionGenerate (PR)
 #
 # Prerequisites: gh CLI authenticated, local clone of aks-dalec-build-defs
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -166,10 +166,10 @@ cd "$DALEC_DIR"
 clean_test_dir
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Test 1 — First-time Onboard (actionNotify → PR created)
+# Test 1 — First-time Onboard (actionGenerate → PR created)
 # ═══════════════════════════════════════════════════════════════════════════════
 banner "Test 1 — First-time Onboard"
-echo "  Precondition: only onboard.yml in 1sttest-pr, tags=[v1.6.41], ManualReview"
+echo "  Precondition: only onboard.yml in 1sttest-pr, tags=[v1.6.41]"
 echo "  Expected: pipeline generates spec, creates PR"
 echo ""
 
@@ -230,7 +230,7 @@ assert_log "Skipping 1sttest-pr.*no actionable tags" "Skipped — no actionable 
 assert_log_absent "(Created PR #|PR created for)" "No PR was created"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Test 3 — Tag Bump v1.7.12 (actionBumpCommit or actionNotify)
+# Test 3 — Tag Bump v1.7.12 (actionBumpCommit or actionGenerate)
 # ═══════════════════════════════════════════════════════════════════════════════
 banner "Test 3 — Tag Bump to v1.6.42"
 echo "  Precondition: update onboard.yml tags to [v1.6.41, v1.6.42]"
@@ -274,7 +274,7 @@ if grep -qE 'Content unchanged|Revision bump pushed' "$TMPFILE"; then
   ((PASS++))
   assert_log "Revision bump pushed" "Revision bump was pushed to remote"
 elif grep -qE '(Created PR #|PR created for)' "$TMPFILE"; then
-  echo -e "  ${GREEN}✅ PASS${NC} — Route: actionNotify (Dockerfile/Makefile changed between v1.6.41 → v1.6.42)"
+  echo -e "  ${GREEN}✅ PASS${NC} — Route: actionGenerate (Dockerfile/Makefile changed between v1.6.41 → v1.6.42)"
   ((PASS++))
   TEST3_PR_URL=$(grep -oE 'Created PR #[0-9]+' "$TMPFILE" | head -1 || true)
   echo -e "  ${YELLOW}  ℹ $TEST3_PR_URL — content changed, so a new PR was created${NC}"

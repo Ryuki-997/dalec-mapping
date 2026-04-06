@@ -32,9 +32,9 @@ import (
 // fetches cached siblings, and populates the onboardImages slice.
 func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, isFirstOnboard *[]bool, templateTags *[]string, inputPath string) error {
 	if inputPath == "" {
-		inputPath = "specs"
+		inputPath = "specs/auto"
 	} else {
-		inputPath = "specs/" + inputPath
+		inputPath = "specs/auto/" + inputPath
 	}
 
 	onboardItems, treePaths, err := fetchRepoTree(inputPath)
@@ -128,11 +128,13 @@ func loadOnboardConfig(path, specRepository, specImageName string) (onboarding.O
 }
 
 // fetchCachedSiblings checks for and loads sibling Dockerfile/Makefile from the
-// onboard repo. Returns true if both siblings exist (re-onboard scenario).
+// onboard repo. Returns true if at least one sibling exists (re-onboard scenario).
 func fetchCachedSiblings(onboard *onboarding.OnboardingInfo, treePaths map[string]bool) bool {
 	siblingDF := onboard.OnboardDir + "/Dockerfile"
 	siblingMF := onboard.OnboardDir + "/Makefile"
-	if !treePaths[siblingDF] || !treePaths[siblingMF] {
+	hasDF := treePaths[siblingDF]
+	hasMF := treePaths[siblingMF]
+	if !hasDF && !hasMF {
 		log.Printf("No sibling Dockerfile/Makefile found for %s — treating as first-time onboard\n", onboard.SpecImageName)
 		return false
 	}
@@ -140,20 +142,24 @@ func fetchCachedSiblings(onboard *onboarding.OnboardingInfo, treePaths map[strin
 	rawBase := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s",
 		utils.OnboardOwner, utils.OnboardRepo, utils.OnboardBranch)
 
-	cachedDF, err := repository.FetchRawContent(rawBase + "/" + siblingDF)
-	if err != nil {
-		log.Printf("⚠️  Failed to fetch cached Dockerfile %s: %v\n", siblingDF, err)
-		return false
+	if hasDF {
+		cachedDF, err := repository.FetchRawContent(rawBase + "/" + siblingDF)
+		if err != nil {
+			log.Printf("⚠️  Failed to fetch cached Dockerfile %s: %v\n", siblingDF, err)
+		} else {
+			onboard.DockerfileContent = cachedDF
+		}
 	}
-	cachedMF, err := repository.FetchRawContent(rawBase + "/" + siblingMF)
-	if err != nil {
-		log.Printf("⚠️  Failed to fetch cached Makefile %s: %v\n", siblingMF, err)
-		return false
+	if hasMF {
+		cachedMF, err := repository.FetchRawContent(rawBase + "/" + siblingMF)
+		if err != nil {
+			log.Printf("⚠️  Failed to fetch cached Makefile %s: %v\n", siblingMF, err)
+		} else {
+			onboard.MakefileContent = cachedMF
+		}
 	}
 
-	onboard.DockerfileContent = cachedDF
-	onboard.MakefileContent = cachedMF
-	log.Printf("📂 Found existing siblings for %s — will diff in Discover\n", onboard.SpecImageName)
+	log.Printf("📂 Found existing siblings for %s (Dockerfile=%v, Makefile=%v) — will diff in Discover\n", onboard.SpecImageName, hasDF, hasMF)
 	return true
 }
 

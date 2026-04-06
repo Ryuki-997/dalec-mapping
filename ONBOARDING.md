@@ -37,18 +37,15 @@ dockerfile: Dockerfile
 # Required: Path to the Makefile relative to the repository root.
 makefile: Makefile
 
-# Optional: Review mode — controls how the service handles spec generation.
-#   ManualReview (default) — When build files (Dockerfile/Makefile) change or
-#     on initial generation, the service notifies reviewers and waits for
-#     manual approval before promoting the spec.
-#   AutoReview — The service automatically generates and promotes specs without
-#     waiting for reviewer approval. Trusts the auto-generation process.
+# Optional: Review mode — controls how generated specs are delivered.
+#   ManualReview (default) — Generated specs are submitted as a PR for
+#     manual approval before merging. Reviewers are notified via email.
+#   AutoReview — Generated specs are pushed directly to the base branch
+#     after passing tests, without creating a PR or sending notifications.
 reviewMode: ManualReview
 
 # Optional: List of reviewer email addresses for notifications.
-# Reviewers are notified when:
-#   - A spec is generated for the first time (initial onboard)
-#   - Build files (Dockerfile/Makefile) change on a re-onboard (ManualReview mode)
+# Reviewers are notified when a PR is created (ManualReview mode only).
 reviewers:
   - alice@example.com
   - bob@example.com

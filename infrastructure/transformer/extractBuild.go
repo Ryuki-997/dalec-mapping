@@ -267,6 +267,7 @@ func buildSteps(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.N
 	// across the entire assembled command block — regardless of whether it
 	// came from a normal line, pipeline step, or deferred line.
 	stepCmd := strings.Join(parts, "\n")
+	stepCmd = strings.ReplaceAll(stepCmd, "'", "")
 	stepCmd = injectLastBinSuffix(stepCmd)
 	return []map[string]interface{}{{"command": stepCmd}}, stepCmd
 }
@@ -313,9 +314,15 @@ func rawBuildCommands(nonDeterministicValues *llm.NonDeterministicValues, goModD
 		// — in that case the sub-module is built separately via pipeline steps, and the
 		// binary listed here is the real intermediate build that should keep its original name.
 		if cmd != "" && epBase != "" && epBase != aux.Name && len(nonDeterministicValues.Binaries) == 1 && !isSubmoduleName(epBase, goModDownloads) {
+			// Replace both with and without ${BIN_SUFFIX} since suffix injection
+			// may or may not have occurred at this point.
 			cmd = strings.ReplaceAll(cmd,
 				"/go/bin/"+aux.Name+"${BIN_SUFFIX}",
 				"/go/bin/"+epBase+"${BIN_SUFFIX}",
+			)
+			cmd = strings.ReplaceAll(cmd,
+				"/go/bin/"+aux.Name,
+				"/go/bin/"+epBase,
 			)
 		}
 
@@ -644,11 +651,11 @@ func cleanBuildCommand(cmd, ldflags string) string {
 	cleanedLd := strings.Trim(ldflags, `"'`)
 	cmd = strings.ReplaceAll(cmd, "${LDFLAGS}", `"`+cleanedLd+`"`)
 
-	// 2. Strip inner single quotes around -X values inside -ldflags.
-	//    e.g. -ldflags "-X 'pkg.var=${VERSION}'" → -ldflags "-X pkg.var=${VERSION}"
-	//    These come from Makefile LDFLAGS like: "-X '$(PKG).version=$(VERSION)'"
-	innerSingleQuoted := regexp.MustCompile(`'([^']*)'`)
-	cmd = innerSingleQuoted.ReplaceAllString(cmd, "$1")
+	// 2. Strip all single quotes from the command.
+	//    Dalec build steps run in a controlled sandbox — single quotes from
+	//    Makefile LDFLAGS (e.g. -X 'pkg.var=${VERSION}') are unnecessary and
+	//    can cause issues when unpaired.
+	cmd = strings.ReplaceAll(cmd, "'", "")
 
 	// 3. Strip inner double quotes wrapping $VAR / ${VAR} references.
 	//    e.g. "$VERSION" → ${VERSION}, "$CNS_AI_PATH"="$CNS_AI_ID" → ${CNS_AI_PATH}=${CNS_AI_ID}
