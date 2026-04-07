@@ -13,10 +13,10 @@ func extractBuildExtensions(defaultSpec *contents.DefaultSpec) map[string]interf
 	}
 
 	for _, bt := range defaultSpec.BuildTargets {
-		if string(bt) == "windowscross/container" {
+		if bt.IsWindows() {
 			ext["per-target"] = map[string]interface{}{
-				"windowscross": map[string]interface{}{
-					"platforms": []string{"windows/amd64"},
+				bt.OS(): map[string]interface{}{
+					"platforms": []string{bt.Platform()},
 				},
 			}
 			break

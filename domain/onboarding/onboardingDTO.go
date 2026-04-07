@@ -11,6 +11,7 @@ const (
 type OnboardingInfo struct {
 	Repository     string      `yaml:"repository"`
 	Tag            []string    `yaml:"tags"`
+	Targets        []string    `yaml:"targets"`
 	Reviewers      []string    `yaml:"reviewers,omitempty"`
 	ReviewMode     ReviewMode  `yaml:"reviewMode,omitempty"`
 	DockerfileDir     string      `yaml:"dockerfile"`

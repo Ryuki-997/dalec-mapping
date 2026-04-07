@@ -43,13 +43,9 @@ func GenerateSpec(onboard *onboarding.OnboardingInfo, agentResponse []byte, tag 
 	}
 
 	// Build the default spec from repo metadata + Dockerfile info
-	defaultSpec := transformer.InitDefaultSpec(onboard, repoInfo, &dockerfileInfo, previousDalecSpecInfo)
-
-	// Override build targets from LLM-extracted values if present
-	if nonDeterministicInfo != nil {
-		if resolved := transformer.ResolveTargets(nonDeterministicInfo.Targets); resolved != nil {
-			defaultSpec.BuildTargets = resolved
-		}
+	defaultSpec, err := transformer.InitDefaultSpec(onboard, repoInfo, &dockerfileInfo, previousDalecSpecInfo)
+	if err != nil {
+		return nil, err
 	}
 
 	// Collect resolved target strings for downstream use

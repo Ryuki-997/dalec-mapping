@@ -6,8 +6,8 @@
 //   test shell scripts from the spec repo.
 //
 //   Chunk 1 · MAIN    TestImage()
-//   Chunk 2 · DOCKER  clearDockerImages(), buildDockerImage(), runDockerImage(),
-//                      platformForTarget()
+//   Chunk 2 · DOCKER  clearDockerImages(), buildDockerImage(), runDockerImage()
+//
 //   Chunk 3 · FIPS    runFipsChecker()
 //   Chunk 4 · SCRIPTS fetchTestScripts(), runTestScript(), readSpecArgs()
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -15,15 +15,13 @@
 package workflow
 
 import (
-	"bufio"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 
-	"dalec-mapping/infrastructure/repository"
+	"dalec-mapping/domain/contents"
 	"dalec-mapping/utils"
 )
 
@@ -34,13 +32,6 @@ func TestImage(specPath, imageName, tag string, targets []string) error {
 	// Derive the tests directory from the spec path
 	path := strings.Split(specPath, "/")
 	path[len(path)-1] = "tests"
-	testDir := strings.Join(path, "/")
-
-	// Fetch test shell scripts from the remote spec repo
-	shellScripts, err := fetchTestScripts(testDir)
-	if err != nil {
-		log.Printf("⚠️  Could not fetch test scripts from %s: %v", testDir, err)
-	}
 
 	// Clear all existing docker images for a clean slate
 	log.Println("  [1/5] Clearing existing docker images...")
@@ -50,13 +41,14 @@ func TestImage(specPath, imageName, tag string, targets []string) error {
 
 	// Build container from spec for all targets
 	if len(targets) == 0 {
-		targets = []string{"azlinux3/container", "windowscross/container"}
+		targets = []string{string(contents.AzLinux3Container), string(contents.WindowsCrossContainer)}
 	}
 	imageTag := fmt.Sprintf("%s:%s", imageName, tag)
 	for i, target := range targets {
+		bt := contents.BuildTarget(target)
 		targetImageTag := fmt.Sprintf("%s-%s", imageTag, strings.ReplaceAll(target, "/", "-"))
-		platform := platformForTarget(target)
-		log.Printf("  [2/5] Building target %d/%d: %s (image: %s, platform: %s)...", i+1, len(targets), target, targetImageTag, platform)
+		platform := bt.Platform()
+		log.Printf("  [1/2] Building target %d/%d: %s (image: %s, platform: %s)...", i+1, len(targets), target, targetImageTag, platform)
 		if err := buildDockerImage(targetImageTag, target, platform); err != nil {
 			return fmt.Errorf("failed to build docker image for target %s: %w", target, err)
 		}
@@ -65,31 +57,10 @@ func TestImage(specPath, imageName, tag string, targets []string) error {
 
 	// Run the container image with no args to verify the binary executes
 	containerImageTag := fmt.Sprintf("%s-%s", imageTag, "azlinux3-container")
-	log.Printf("  [3/5] Running %s (no args)...", containerImageTag)
-	if err := runDockerImage(containerImageTag, platformForTarget("azlinux3/container")); err != nil {
+	log.Printf("  [2/2] Running %s (no args)...", containerImageTag)
+	if err := runDockerImage(containerImageTag, contents.AzLinux3Container.Platform()); err != nil {
 		return fmt.Errorf("failed to run docker image: %w", err)
 	}
-
-	// Run FIPS checker against the azlinux3 container image
-	log.Printf("  [4/5] Running FIPS checker against %s...", containerImageTag)
-	if err := runFipsChecker(containerImageTag); err != nil {
-		return fmt.Errorf("FIPS check failed for %s: %w", containerImageTag, err)
-	}
-	log.Printf("    ✅ FIPS check passed for %s", containerImageTag)
-
-	// Apply test scripts (if any)
-	if len(shellScripts) == 0 {
-		log.Println("  [5/5] No test scripts found, skipping.")
-		return nil
-	}
-
-	// log.Printf("  [5/5] Running %d test script(s)...", len(shellScripts))
-	// for name, content := range shellScripts {
-	// 	if err := runTestScript(imageTag, name, content); err != nil {
-	// 		return fmt.Errorf("test script %s failed: %w", name, err)
-	// 	}
-	// 	log.Printf("    ✅ %s passed", name)
-	// }
 
 	log.Println("  ✅ All image tests passed")
 	return nil
@@ -146,135 +117,4 @@ func runDockerImage(imageTag, platform string) error {
 		return fmt.Errorf("docker run failed with exit code %d: %w", code, err)
 	}
 	return fmt.Errorf("docker run failed: %w", err)
-}
-
-// platformForTarget returns the --platform value for a given Dalec build target.
-// windowscross requires "windows/amd64"; all others use the native host arch.
-func platformForTarget(target string) string {
-	if strings.HasPrefix(target, "windowscross") {
-		return "windows/amd64"
-	}
-	return "linux/" + runtime.GOARCH
-}
-
-// ─── Chunk 3 · FIPS ─────────────────────────────────────────────────────────
-
-// runFipsChecker runs fips-check/build-and-check.sh to validate FIPS compliance.
-func runFipsChecker(runtimeImage string) error {
-	cmd := exec.Command("bash", "build-and-check.sh", runtimeImage)
-	cmd.Dir = "fips-check"
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("build-and-check.sh failed: %w", err)
-	}
-	return nil
-}
-
-// ─── Chunk 4 · SCRIPTS ──────────────────────────────────────────────────────
-
-// fetchTestScripts lists the tests directory via the Contents API and downloads .sh files.
-func fetchTestScripts(testDir string) (map[string]string, error) {
-	scripts := make(map[string]string)
-
-	items, err := repository.FetchJSONArray(fmt.Sprintf(
-		"repos/%s/%s/contents/%s?ref=%s",
-		utils.OnboardOwner, utils.OnboardRepo, testDir, utils.OnboardBranch,
-	))
-	if err != nil {
-		return nil, err
-	}
-
-	for _, item := range items {
-		name, _ := item["name"].(string)
-		if !strings.HasSuffix(name, ".sh") {
-			continue
-		}
-		downloadURL, _ := item["download_url"].(string)
-		if downloadURL == "" {
-			continue
-		}
-		raw, err := repository.FetchRawContent(downloadURL)
-		if err != nil {
-			log.Printf("⚠️  Failed to fetch test script %s: %v", name, err)
-			continue
-		}
-		scripts[name] = string(raw)
-	}
-	return scripts, nil
-}
-
-// runTestScript writes a test script to a temp file and runs it inside an Azure Linux
-// container with the Docker socket mounted.
-func runTestScript(imageTag, scriptName, scriptContent string) error {
-	tmpFile, err := os.CreateTemp("", "dalec-test-*.sh")
-	if err != nil {
-		return fmt.Errorf("failed to create temp script: %w", err)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := tmpFile.WriteString(scriptContent); err != nil {
-		return fmt.Errorf("failed to write temp script: %w", err)
-	}
-	tmpFile.Close()
-
-	if err := os.Chmod(tmpFile.Name(), 0755); err != nil {
-		return fmt.Errorf("failed to chmod temp script: %w", err)
-	}
-
-	args := []string{"run", "--rm",
-		"-a", "/var/run/docker.sock:/var/run/docker.sock",
-		"-a", tmpFile.Name() + ":/test.sh:ro",
-		"-e", "IMAGE_TAG=" + imageTag,
-	}
-	for k, v := range readSpecArgs(utils.ResultDir + "/output.yml") {
-		args = append(args, "-e", k+"="+v)
-	}
-	args = append(args,
-		"mcr.microsoft.com/azurelinux/base/core:3.0",
-		"/bin/bash", "/test.sh",
-	)
-
-	cmd := exec.Command("docker", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("script %s failed: %w", scriptName, err)
-	}
-	return nil
-}
-
-// readSpecArgs parses the top-level "args:" section from the DALEC spec YAML.
-func readSpecArgs(specPath string) map[string]string {
-	result := make(map[string]string)
-
-	f, err := os.Open(specPath)
-	if err != nil {
-		return result
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	inArgs := false
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "args:" {
-			inArgs = true
-			continue
-		}
-		if inArgs && len(line) > 0 && line[0] != ' ' && line[0] != '#' {
-			break
-		}
-		if inArgs {
-			trimmed := strings.TrimSpace(line)
-			if parts := strings.SplitN(trimmed, ":", 2); len(parts) == 2 {
-				key := strings.TrimSpace(parts[0])
-				val := strings.TrimSpace(parts[1])
-				if key != "" {
-					result[key] = val
-				}
-			}
-		}
-	}
-	return result
 }

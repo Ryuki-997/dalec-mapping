@@ -25,7 +25,7 @@ package transformer
 //                                       msftWindowsExtraRepo()
 //     Microsoft package repository definitions for apt sources.
 //
-//   Chunk 6 · UTILITIES                parseTargetOS(), findTargetSpecByOS(),
+//   Chunk 6 · UTILITIES                findTargetSpecByOS(),
 //                                       findPrimaryLinuxTarget(),
 //                                       entrypointBinaryName(), canonicalBase()
 //     Target lookup helpers and shared functions used by other extract* files.
@@ -39,7 +39,6 @@ import (
 	"dalec-mapping/infrastructure/test"
 
 	"fmt"
-	"os"
 	"strings"
 )
 
@@ -58,11 +57,7 @@ func extractTargetsSection(defaultSpec *contents.DefaultSpec,  nonDeterministicV
 	seen := make(map[string]bool)
 
 	for _, buildTarget := range defaultSpec.BuildTargets {
-		osName, ok := parseTargetOS(string(buildTarget))
-		if !ok {
-			fmt.Printf("❌ Invalid build target format: %s\n    Expected: os/platform (e.g. azlinux3/container)\n", buildTarget)
-			os.Exit(1)
-		}
+		osName := buildTarget.OS()
 		if seen[osName] {
 			continue
 		}
@@ -407,19 +402,10 @@ func msftWindowsExtraRepo() map[string]interface{} {
 
 // ─── Chunk 6 · UTILITIES ────────────────────────────────────────────────────
 
-// parseTargetOS splits "os/platform" and returns the OS portion.
-func parseTargetOS(buildTarget string) (string, bool) {
-	parts := strings.SplitN(buildTarget, "/", 2)
-	if len(parts) != 2 {
-		return "", false
-	}
-	return parts[0], true
-}
-
 // findTargetSpecByOS returns the TargetSpec whose TargetOS prefix matches osName.
 func findTargetSpecByOS(targets []llm.TargetSpec, osName string) *llm.TargetSpec {
 	for i, ts := range targets {
-		if strings.SplitN(ts.TargetOS, "/", 2)[0] == osName {
+		if contents.BuildTarget(ts.TargetOS).OS() == osName {
 			return &targets[i]
 		}
 	}
@@ -429,7 +415,7 @@ func findTargetSpecByOS(targets []llm.TargetSpec, osName string) *llm.TargetSpec
 // findPrimaryLinuxTarget returns the first non-windowscross TargetSpec.
 func findPrimaryLinuxTarget(targets []llm.TargetSpec) *llm.TargetSpec {
 	for i, ts := range targets {
-		if !strings.HasPrefix(ts.TargetOS, "windowscross") {
+		if !contents.BuildTarget(ts.TargetOS).IsWindows() {
 			return &targets[i]
 		}
 	}

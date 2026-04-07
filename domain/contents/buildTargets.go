@@ -1,5 +1,11 @@
 package contents
 
+import (
+	"runtime"
+	"strings"
+)
+
+// BuildTarget represents a Dalec build target in OS/output format.
 type BuildTarget string
 
 const (
@@ -35,8 +41,31 @@ func IsValidTarget(s string) (BuildTarget, bool) {
 	return "", false
 }
 
-// DefaultTargets is used when no targets are specified.
-var DefaultTargets = []BuildTarget{
-	AzLinux3Container,
-	WindowsCrossContainer,
+// OS returns the OS portion of the target (e.g. "azlinux3" from "azlinux3/container").
+func (bt BuildTarget) OS() string {
+	if parts := strings.SplitN(string(bt), "/", 2); len(parts) == 2 {
+		return parts[0]
+	}
+	return string(bt)
+}
+
+// Output returns the output type (e.g. "container", "rpm", "deb").
+func (bt BuildTarget) Output() string {
+	if parts := strings.SplitN(string(bt), "/", 2); len(parts) == 2 {
+		return parts[1]
+	}
+	return ""
+}
+
+// IsWindows returns true for windowscross targets.
+func (bt BuildTarget) IsWindows() bool {
+	return bt.OS() == "windowscross"
+}
+
+// Platform returns the docker --platform value for this target.
+func (bt BuildTarget) Platform() string {
+	if bt.IsWindows() {
+		return "windows/amd64"
+	}
+	return "linux/" + runtime.GOARCH
 }

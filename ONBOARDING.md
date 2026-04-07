@@ -31,6 +31,20 @@ tags:
   - "^v1\\.2\\.\\d+$"
   - "^v1\\.3\\.\\d+$"
 
+# Required: Build targets to generate specs for.
+# Available targets:
+#   azlinux3/container  — Azure Linux 3 container image
+#   azlinux3/rpm        — Azure Linux 3 RPM package
+#   noble/deb           — Ubuntu Noble (24.04) deb package
+#   jammy/deb           — Ubuntu Jammy (22.04) deb package
+#   focal/deb           — Ubuntu Focal (20.04) deb package
+#   bionic/deb          — Ubuntu Bionic (18.04) deb package
+#   bookworm/deb        — Debian Bookworm deb package
+#   windowscross/container — Windows cross-compiled container image
+targets:
+  - azlinux3/container
+  - windowscross/container
+
 # Required: Path to the Dockerfile relative to the repository root.
 dockerfile: Dockerfile
 
@@ -92,6 +106,7 @@ Once your PR is merged, your repository is onboarded and ready for DALEC spec ge
 | ---------------- | -------- | ------------------------------------------------ |
 | `repository`     | Yes      | GitHub repository in `owner/repo` format         |
 | `tags`           | Yes      | List of regex patterns or `latest` keyword       |
+| `targets`        | Yes      | List of build targets (see available targets)    |
 | `dockerfile`     | Yes      | Path to the Dockerfile relative to the repo root |
 | `makefile`       | Yes      | Path to the Makefile relative to the repo root   |
 | `reviewMode`     | No       | `ManualReview` (default) or `AutoReview`         |

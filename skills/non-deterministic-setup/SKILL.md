@@ -41,7 +41,7 @@ type NonDeterministicValues struct {
 
 // TargetSpec holds ALL per-target configuration in one struct.
 type TargetSpec struct {
-    TargetOS   string   `yaml:"targetOS"`   // e.g. "azlinux3/container"
+    TargetOS   string   `yaml:"targetOS"`   // e.g. "azlinux3/image"
     Entrypoint string   `yaml:"entrypoint"` // absolute path inside the image
     Symlink    string   `yaml:"symlink"`    // secondary path → Entrypoint (Linux only)
     Build      []string `yaml:"build"`      // app-specific compile-time packages
@@ -146,7 +146,7 @@ Each Dockerfile may build multiple components (binaries), but **one spec is gene
    - Preserve `${VERSION}`, `${COMMIT}`, `${REVISION}` as Dalec spec args.
    - Convert `$(VAR)` Makefile syntax to `${VAR}` Dalec syntax.
 
-6. **Determine targets.** Linux final stage → `azlinux3/container`. Windows final stage → `windowscross/container`. Entrypoint per target: Linux → full absolute path; Windows → bare binary name, no path prefix, no `.exe`.
+6. **Determine targets.** Linux final stage → `azlinux3/image`. Windows final stage → `windowscross/image`. Entrypoint per target: Linux → full absolute path; Windows → bare binary name, no path prefix, no `.exe`.
 
 7. **Target component usage.** The component name from the prompt identifies which pipeline to extract. It is never the source of binary names or paths.
 
@@ -173,22 +173,22 @@ The transformer automatically adds these — do NOT emit them:
 
 | Target | Description |
 | ------ | ----------- |
-| `azlinux3/container` | Azure Linux 3 container image (primary Linux target) |
+| `azlinux3/image` | Azure Linux 3 container image (primary Linux target) |
 | `azlinux3/rpm` | Azure Linux 3 RPM package |
 | `bookworm/deb` | Debian Bookworm deb package |
 | `noble/deb` | Ubuntu Noble deb package |
 | `jammy/deb` | Ubuntu Jammy deb package |
 | `focal/deb` | Ubuntu Focal deb package |
 | `bionic/deb` | Ubuntu Bionic deb package |
-| `windowscross/container` | Windows cross-compiled container image |
+| `windowscross/image` | Windows cross-compiled container image |
 
 #### 0.2 Selection Rules
 
-1. **Default (cross-platform):** Both Linux and Windows (or unspecified) → emit `azlinux3/container` + `windowscross/container`.
-2. **Windows-only:** Only Windows targets → emit **only** `windowscross/container`.
-3. **Linux-only:** Only Linux targets → emit **only** `azlinux3/container`.
+1. **Default (cross-platform):** Both Linux and Windows (or unspecified) → emit `azlinux3/image` + `windowscross/image`.
+2. **Windows-only:** Only Windows targets → emit **only** `windowscross/image`.
+3. **Linux-only:** Only Linux targets → emit **only** `azlinux3/image`.
 4. **Additional targets:** Add rpm/deb only if explicitly indicated in build files.
-5. **When in doubt**, default to `azlinux3/container` + `windowscross/container`.
+5. **When in doubt**, default to `azlinux3/image` + `windowscross/image`.
 
 #### 0.3 Multi-Image Dockerfiles
 
@@ -216,13 +216,13 @@ Some Dockerfiles produce multiple images from a single file.
 ```yaml
 # Cross-platform (default):
 targets:
-  - targetOS: "azlinux3/container"
+  - targetOS: "azlinux3/image"
     entrypoint: "/usr/local/bin/myapp"   # from Dockerfile ENTRYPOINT
     symlink: "/usr/bin/myapp"
     build: []                            # app-specific only
     runtime:
       - "ca-certificates"
-  - targetOS: "windowscross/container"
+  - targetOS: "windowscross/image"
     entrypoint: "myapp"                  # bare name, NO .exe — transformer adds it
     symlink: ""
     build: []
@@ -249,7 +249,7 @@ targets:
 2. **Resolve platform-specific output paths.** Strip `${OS}`, `${ARCH}`, `${GOOS}`, `${GOARCH}`, `${TARGETARCH}`, `$(GOOS)`, `$(GOARCH)`, `$(ARCH)`, `$(OS)` from paths. Collapse any `//` or trailing `/`.
    - `bin/${GOOS}_${GOARCH}/kubelogin` → `/go/bin/kubelogin`
    - `_output/${ARCH}/blobplugin` → `/go/bin/blobplugin`
-   - **No `.exe` in `outputPath` or `name`** — transformer appends `.exe` for `windowscross/container` automatically.
+   - **No `.exe` in `outputPath` or `name`** — transformer appends `.exe` for `windowscross/image` automatically.
 
 3. **Preserve `${VERSION}`, `${COMMIT}`, `${REVISION}` variables.** These are Dalec spec args.
 
@@ -385,12 +385,12 @@ targets:
      - "cp /payload/* pkg/embed/fs/"
      - "go build -a -o /go/bin/wrapper -trimpath -ldflags \"...\" -gcflags=\"...\" main.go"
    targets:
-     - targetOS: "azlinux3/container"
+     - targetOS: "azlinux3/image"
        entrypoint: "/wrapper"
        symlink: "/usr/bin/wrapper"
        build: []
        runtime: []
-     - targetOS: "windowscross/container"
+     - targetOS: "windowscross/image"
        entrypoint: "wrapper"
        symlink: ""
        build: []
@@ -613,12 +613,12 @@ Only emit **application-specific** packages.
 
 ```yaml
 targets:
-  - targetOS: "azlinux3/container"
+  - targetOS: "azlinux3/image"
     build:
       - "curl"              # app-specific compile-time
     runtime:
       - "ca-certificates"   # app-specific runtime
-  - targetOS: "windowscross/container"
+  - targetOS: "windowscross/image"
     build: []
     runtime: []              # ALWAYS empty — Dalec rejects runtime deps on Windows
 ```
@@ -648,10 +648,10 @@ RUN apt install -y ca-certificates iptables
 ENTRYPOINT ["/usr/local/bin/myapp"]
 
 # → targets:
-#   - targetOS: "azlinux3/container"
+#   - targetOS: "azlinux3/image"
 #     build: ["curl"]
 #     runtime: ["ca-certificates", "iptables"]
-#   - targetOS: "windowscross/container"
+#   - targetOS: "windowscross/image"
 #     build: []
 #     runtime: []    # always empty
 ```
@@ -664,7 +664,7 @@ perTargetDeps:
 
 # ✅ CORRECT: per-target fields inside each TargetSpec
 targets:
-  - targetOS: "azlinux3/container"
+  - targetOS: "azlinux3/image"
     runtime: ["iptables"]
 ```
 
@@ -778,7 +778,7 @@ binaries:
     ldFlags: ""
 
 targets:
-  - targetOS: "azlinux3/container"
+  - targetOS: "azlinux3/image"
     entrypoint: "/blobplugin"
     symlink: "/usr/bin/blobplugin"
     build:
@@ -786,7 +786,7 @@ targets:
     runtime:
       - "ca-certificates"
       - "fuse"
-  - targetOS: "windowscross/container"
+  - targetOS: "windowscross/image"
     entrypoint: "blobplugin"
     symlink: ""
     build: []

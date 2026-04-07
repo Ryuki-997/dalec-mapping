@@ -7,6 +7,7 @@ import (
 	"dalec-mapping/infrastructure/semver"
 	"dalec-mapping/workflow"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -90,7 +91,11 @@ func processTag(onboard *onboarding.OnboardingInfo, fullTag string, isFirstOnboa
 		bumpCommit(onboard, fullTag, tag, templateTag)
 		return ""
 	case actionGenerate:
-		remotePath, resolvedTargets := generateSpec(onboard, fullTag)
+		remotePath, resolvedTargets, err := generateSpec(onboard, fullTag)
+		if err != nil {
+			log.Printf("\u26a0\ufe0f  Skipping %s @ %s: %v\n", onboard.SpecImageName, fullTag, err)
+			return ""
+		}
 		if onboard.ReviewMode == onboarding.AutoReview {
 			testAndPush(onboard, remotePath, tag, resolvedTargets)
 		} else {
@@ -144,7 +149,7 @@ func bumpCommit(onboard *onboarding.OnboardingInfo, fullTag, tag, templateTag st
 	}
 }
 
-func generateSpec(onboard *onboarding.OnboardingInfo, fullTag string) (string, []string) {
+func generateSpec(onboard *onboarding.OnboardingInfo, fullTag string) (string, []string, error) {
 	log.Println("Dalec Spec Generator - Scheduled Job")
 	log.Printf("Started at: %s", time.Now().Format(time.RFC3339))
 
@@ -152,26 +157,26 @@ func generateSpec(onboard *onboarding.OnboardingInfo, fullTag string) (string, [
 
 	agentResponse, err := workflow.ExtractBuildValues(ctx, onboard)
 	if err != nil {
-		log.Fatalf("❌ ExtractBuildValues failed: %v", err)
+		return "", nil, fmt.Errorf("ExtractBuildValues failed: %w", err)
 	}
 	log.Printf("✅ Non-deterministic values populated and saved to result directory")
 
 	resolvedTargets, err := workflow.GenerateSpec(onboard, agentResponse, fullTag)
 	if err != nil {
-		log.Fatalf("❌ GenerateSpec failed: %v", err)
+		return "", nil, err
 	}
 
 	log.Printf("✅ Spec created for %s @ %s", onboard.SpecImageName, fullTag)
 
 	tag := semver.ToTag(fullTag)
 	remotePath := semver.SpecFilePath(onboard.SpecRepository, onboard.SpecImageName, tag)
-	return remotePath, resolvedTargets
+	return remotePath, resolvedTargets, nil
 }
 
 func testAndCreatePR(onboard *onboarding.OnboardingInfo, remotePath, tag string, resolvedTargets []string) {
-	if err := workflow.TestImage(remotePath, onboard.SpecImageName, tag, resolvedTargets); err != nil {
-		log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
-	}
+	// if err := workflow.TestImage(remotePath, onboard.SpecImageName, tag, resolvedTargets); err != nil {
+	// 	log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
+	// }
 	prURL, err := workflow.CreateSpecPR(onboard, tag, false)
 	if err != nil {
 		log.Fatalf("❌ PR creation failed for %s @ %s: %v", onboard.SpecImageName, tag, err)

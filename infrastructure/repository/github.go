@@ -143,16 +143,23 @@ func FetchJSONArray(path string) ([]map[string]interface{}, error) {
 
 // WriteJSON performs a write (PUT/POST) to the GitHub API and returns a JSON object.
 // path is relative to api.github.com.
+// WriteJSON performs a write (PUT/POST) to the GitHub API.
+// Returns the response as a JSON object when possible; returns (nil, nil) for
+// non-object responses (e.g. the labels API returns an array).
 func WriteJSON(path string, method repository.CRUDRequest, payload interface{}) (map[string]interface{}, error) {
-	result, err := makeGitHubRequest(repository.GithubRequest{
+	raw, err := makeGitHubRequest(repository.GithubRequest{
 		URL:     githubAPIBase + "/" + path,
 		Method:  method,
 		Payload: payload,
-	}, ReturnJSON)
+	}, ReturnRaw)
 	if err != nil {
 		return nil, err
 	}
-	return result.(map[string]interface{}), nil
+	var m map[string]interface{}
+	if json.Unmarshal(raw.([]byte), &m) != nil {
+		return nil, nil
+	}
+	return m, nil
 }
 
 // ─── Chunk 2 · REPOSITORY INFO ──────────────────────────────────────────────

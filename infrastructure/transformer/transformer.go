@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-func InitDefaultSpec(onboardInfo *onboarding.OnboardingInfo, repoInfo *repository.RepoInfo, dockerfileInfo *contents.DockerfileInfo, previousDalecSpecInfo parser.PreviousDalecSpec) *contents.DefaultSpec {
+func InitDefaultSpec(onboardInfo *onboarding.OnboardingInfo, repoInfo *repository.RepoInfo, dockerfileInfo *contents.DockerfileInfo, previousDalecSpecInfo parser.PreviousDalecSpec) (*contents.DefaultSpec, error) {
 	// Initialize & Populate Source of Truth Attributes from onboarding and repository info
 	defaultSpec := &contents.DefaultSpec{}
 	defaultSpec.RepoInfo = *repoInfo
@@ -24,13 +24,28 @@ func InitDefaultSpec(onboardInfo *onboarding.OnboardingInfo, repoInfo *repositor
 
 	defaultSpec.Revision = 1
 
-	// Default Build Targets (can be overridden by LLM-extracted targets)
-	defaultSpec.BuildTargets = []contents.BuildTarget{
-		contents.AzLinux3Container,
-		contents.WindowsCrossContainer,
+	// Resolve build targets from onboard.yml (required field).
+	defaultSpec.BuildTargets = resolveOnboardTargets(onboardInfo.Targets)
+	if len(defaultSpec.BuildTargets) == 0 {
+		return nil, fmt.Errorf("no valid targets in onboard.yml for %s", onboardInfo.SpecImageName)
 	}
 
-	return defaultSpec
+	return defaultSpec, nil
+}
+
+// resolveOnboardTargets validates the targets list from onboard.yml and returns
+// the corresponding BuildTarget values. Logs a warning for any invalid entries.
+func resolveOnboardTargets(targets []string) []contents.BuildTarget {
+	var resolved []contents.BuildTarget
+	for _, t := range targets {
+		t = strings.TrimSpace(t)
+		if bt, ok := contents.IsValidTarget(t); ok {
+			resolved = append(resolved, bt)
+		} else {
+			fmt.Printf("\u26a0\ufe0f  Ignoring unsupported onboard target: %s\n", t)
+		}
+	}
+	return resolved
 }
 
 // TransformToDalec converts parsed Dockerfile info to Dalec spec format
@@ -69,30 +84,4 @@ func TransformToDalec(defaultSpec *contents.DefaultSpec, makefileInfo *contents.
 	spec["tests"] = extractTests()
 
 	return spec
-}
-
-// ResolveTargets validates and converts TargetSpec values from NonDeterministicValues
-// into BuildTarget values. Returns nil if none provided (caller uses InitDefaultSpec defaults).
-func ResolveTargets(targets []llm.TargetSpec) []contents.BuildTarget {
-	if len(targets) == 0 {
-		fmt.Println("ℹ️  No targets specified, using InitDefaultSpec defaults")
-		return nil
-	}
-
-	resolved := []contents.BuildTarget{}
-	for _, ts := range targets {
-		name := strings.TrimSpace(ts.TargetOS)
-		if bt, ok := contents.IsValidTarget(name); ok {
-			resolved = append(resolved, bt)
-		} else {
-			fmt.Printf("⚠️  Ignoring unsupported target: %s\n", name)
-		}
-	}
-
-	if len(resolved) == 0 {
-		fmt.Println("⚠️  No valid targets found, keeping InitDefaultSpec defaults")
-		return nil
-	}
-
-	return resolved
 }

@@ -113,11 +113,19 @@ func buildSteps(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.N
 		}
 	}
 
+	// When the primary source has a subpath (go.mod lives in a subdirectory,
+	// e.g. "aks-node-controller"), extend baseDir so builds cd into the
+	// correct module root.
+	if subpaths := collectGoModSubpaths(defaultSpec, nonDeterministicValues); len(subpaths) > 0 {
+		// Use the first discovered subpath as the module root.
+		baseDir = defaultSpec.Repo + "/" + subpaths[0]
+	}
+
 	rawCmds := rawBuildCommands(nonDeterministicValues, goModDownloads)
 
 	// Fallback: no commands extracted — emit a minimal go build step.
 	if len(rawCmds) == 0 {
-		fallback := fmt.Sprintf("cd %s\ngo build -o /go/bin/%s ./main.go", baseDir, defaultSpec.Repo)
+		fallback := fmt.Sprintf("cd %s\ngo build -o /go/bin/%s .", baseDir, defaultSpec.Repo)
 		return []map[string]interface{}{{"command": fallback}}, fallback
 	}
 
@@ -160,7 +168,7 @@ func buildSteps(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.N
 	}
 
 	if len(buildLines) == 0 {
-		fallback := fmt.Sprintf("cd %s\ngo build -o /go/bin/%s ./main.go", baseDir, defaultSpec.Repo)
+		fallback := fmt.Sprintf("cd %s\ngo build -o /go/bin/%s .", baseDir, defaultSpec.Repo)
 		return []map[string]interface{}{{"command": fallback}}, fallback
 	}
 
