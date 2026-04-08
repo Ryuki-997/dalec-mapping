@@ -88,8 +88,7 @@ func processTag(onboard *onboarding.OnboardingInfo, fullTag string, isFirstOnboa
 
 	switch action {
 	case actionBumpCommit:
-		bumpCommit(onboard, fullTag, tag, templateTag)
-		return ""
+		return bumpCommit(onboard, fullTag, tag, templateTag)
 	case actionGenerate:
 		remotePath, resolvedTargets, err := generateSpec(onboard, fullTag)
 		if err != nil {
@@ -98,10 +97,10 @@ func processTag(onboard *onboarding.OnboardingInfo, fullTag string, isFirstOnboa
 		}
 		if onboard.ReviewMode == onboarding.AutoReview {
 			testAndPush(onboard, remotePath, tag, resolvedTargets)
-		} else {
-			testAndCreatePR(onboard, remotePath, tag, resolvedTargets)
+			return remotePath
 		}
-		return remotePath
+		testAndCreatePR(onboard, remotePath, tag, resolvedTargets)
+		return "" // PR created — path not collected
 	}
 
 	return ""
@@ -130,23 +129,17 @@ func decideAction(isFirstOnboard, contentChanged bool) pipelineAction {
 
 // ─── Chunk 3 · ACTIONS ──────────────────────────────────────────────────────
 
-func bumpCommit(onboard *onboarding.OnboardingInfo, fullTag, tag, templateTag string) {
+func bumpCommit(onboard *onboarding.OnboardingInfo, fullTag, tag, templateTag string) string {
 	log.Printf("🔄 Content unchanged for %s @ %s — bumping commit hash\n", onboard.SpecImageName, tag)
 	if _, err := workflow.BumpCommit(onboard, fullTag, templateTag); err != nil {
 		log.Fatalf("❌ Revision bump failed: %v", err)
 	}
-	if onboard.ReviewMode == onboarding.AutoReview {
-		if err := workflow.PushToRemote(onboard, tag, true); err != nil {
-			log.Fatalf("❌ Push failed: %v", err)
-		}
-		log.Printf("✅ Revision bump pushed for %s @ %s (AutoReview)\n", onboard.SpecImageName, tag)
-	} else {
-		prURL, err := workflow.CreateSpecPR(onboard, tag, true)
-		if err != nil {
-			log.Fatalf("❌ PR creation failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
-		}
-		log.Printf("✅ Bump-commit PR created for %s @ %s: %s\n", onboard.SpecImageName, tag, prURL)
+	if err := workflow.PushToRemote(onboard, tag, true); err != nil {
+		log.Fatalf("❌ Push failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
 	}
+	remotePath := semver.SpecFilePath(onboard.SpecRepository, onboard.SpecImageName, tag)
+	log.Printf("✅ Revision bump pushed for %s @ %s\n", onboard.SpecImageName, tag)
+	return remotePath
 }
 
 func generateSpec(onboard *onboarding.OnboardingInfo, fullTag string) (string, []string, error) {
@@ -174,9 +167,9 @@ func generateSpec(onboard *onboarding.OnboardingInfo, fullTag string) (string, [
 }
 
 func testAndCreatePR(onboard *onboarding.OnboardingInfo, remotePath, tag string, resolvedTargets []string) {
-	// if err := workflow.TestImage(remotePath, onboard.SpecImageName, tag, resolvedTargets); err != nil {
-	// 	log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
-	// }
+	if err := workflow.TestImage(remotePath, onboard.SpecImageName, tag, resolvedTargets); err != nil {
+		log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
+	}
 	prURL, err := workflow.CreateSpecPR(onboard, tag, false)
 	if err != nil {
 		log.Fatalf("❌ PR creation failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
@@ -191,5 +184,5 @@ func testAndPush(onboard *onboarding.OnboardingInfo, remotePath, tag string, res
 	if err := workflow.PushToRemote(onboard, tag, false); err != nil {
 		log.Fatalf("❌ Push failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
 	}
-	log.Printf("✅ Spec pushed directly for %s @ %s (AutoReview)\n", onboard.SpecImageName, tag)
+	log.Printf("✅ Spec pushed for %s @ %s\n", onboard.SpecImageName, tag)
 }

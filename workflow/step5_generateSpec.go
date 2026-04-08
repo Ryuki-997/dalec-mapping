@@ -23,7 +23,10 @@ import (
 
 // ─── Chunk 1 · MAIN ─────────────────────────────────────────────────────────
 
-// GenerateSpec creates the DALEC spec from parsed build files and LLM output.
+// GenerateSpec creates the DALEC spec from parsed build files.
+// Uses static Dockerfile analysis as the primary extraction method.
+// The agentResponse (LLM output) is used as a fallback when static extraction
+// yields no results.
 // Returns the resolved build target strings for downstream use (e.g. image test).
 func GenerateSpec(onboard *onboarding.OnboardingInfo, agentResponse []byte, tag string) ([]string, error) {
 	// Fetch repository metadata
@@ -34,12 +37,20 @@ func GenerateSpec(onboard *onboarding.OnboardingInfo, agentResponse []byte, tag 
 		os.Exit(1)
 	}
 
-	// Parse Dockerfile, Makefile, and LLM response into structured info
+	// Parse Dockerfile, Makefile, and extract build values
 	specFilePath := "" // TODO: later
 	dockerfileInfo, makefileInfo, nonDeterministicInfo, previousDalecSpecInfo, err := parser.ParseOptionalFileInfo(onboard.DockerfileContent, onboard.MakefileContent, specFilePath, agentResponse)
 	if err != nil {
 		fmt.Printf("❌ Error parsing optional files: %v\n", err)
 		os.Exit(1)
+	}
+
+	// Prefer static extraction over LLM output.
+	if staticNDV := parser.ExtractStaticBuildValues(dockerfileInfo.Stages, dockerfileInfo.Args); staticNDV != nil {
+		fmt.Println("✅ Using static Dockerfile extraction (LLM bypassed)")
+		nonDeterministicInfo = staticNDV
+	} else if nonDeterministicInfo != nil {
+		fmt.Println("⚠️  Static extraction yielded no results, falling back to LLM output")
 	}
 
 	// Build the default spec from repo metadata + Dockerfile info

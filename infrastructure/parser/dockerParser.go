@@ -2,8 +2,10 @@ package parser
 
 import (
 	"dalec-mapping/domain/contents"
+	"dalec-mapping/domain/llm"
 	"fmt"
 	"os"
+	"path"
 	"regexp"
 	"strings"
 
@@ -677,4 +679,359 @@ func isStageSelfReference(ref string, stages []contents.Stage, currentIdx int) b
 		}
 	}
 	return false
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STATIC BUILD VALUE EXTRACTION — Deterministic extraction of build values
+// from parsed Dockerfile stages, replacing LLM-based NonDeterministicValues.
+//
+//   Chunk 5 · MAIN              ExtractStaticBuildValues()
+//   Chunk 6 · BINARY EXTRACTION extractGoBinaries(), parseGoBuildCommand(),
+//                                cleanStaticBuildCommand()
+//   Chunk 7 · PIPELINE STEPS    extractPipelineSteps()
+//   Chunk 8 · ENTRYPOINT        resolveEntrypoint(), defaultEntrypoints()
+//   Chunk 9 · STAGE HELPERS     findBuilderStage(), findFinalStage(),
+//                                findIntermediateStages()
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// goBuildRe matches `go build` commands in RUN instructions.
+var goBuildRe = regexp.MustCompile(`go\s+build\b`)
+
+// goBuildOutputFlagRe captures the -o <path> argument from a go build command.
+var goBuildOutputFlagRe = regexp.MustCompile(`-o\s+(\S+)`)
+
+// goLdflagsRe captures the -ldflags "..." argument from a go build command.
+var goLdflagsRe = regexp.MustCompile(`-ldflags\s+["']([^"']+)["']`)
+
+// goLdflagsVarRe captures -ldflags ${VAR} (unquoted variable reference).
+var goLdflagsVarRe = regexp.MustCompile(`-ldflags\s+(\$\{?\w+\}?)`)
+
+// lineContinuationRe matches shell line continuations.
+var lineContinuationRe = regexp.MustCompile(`\\\s*\n\s*`)
+
+// ─── Chunk 5 · MAIN ─────────────────────────────────────────────────────────
+
+// ExtractStaticBuildValues derives NonDeterministicValues from the parsed
+// Dockerfile stages without using an LLM. Returns nil if no Dockerfile stages
+// are available.
+func ExtractStaticBuildValues(stages []contents.Stage, globalArgs map[string]string) *llm.NonDeterministicValues {
+	if len(stages) == 0 {
+		return nil
+	}
+
+	builderIdx := findBuilderStage(stages)
+	if builderIdx < 0 {
+		fmt.Println("⚠️  Static extractor: no Go builder stage found")
+		return nil
+	}
+
+	binaries := extractGoBinaries(stages[builderIdx], globalArgs)
+	pipelineSteps := extractPipelineSteps(stages, builderIdx)
+	entrypoint, symlink := resolveEntrypoint(stages, binaries)
+
+	// Build target specs — entrypoint/symlink only; build/runtime deps are
+	// derived elsewhere by the transformer from Dockerfile analysis.
+	var targets []llm.TargetSpec
+	targets = append(targets, llm.TargetSpec{
+		TargetOS:   "azlinux3/container",
+		Entrypoint: entrypoint,
+		Symlink:    symlink,
+	})
+	// Windows target gets just the binary name (no path prefix).
+	winEntry := path.Base(entrypoint)
+	if winEntry == "." || winEntry == "/" {
+		winEntry = path.Base(symlink)
+	}
+	targets = append(targets, llm.TargetSpec{
+		TargetOS:   "windowscross/container",
+		Entrypoint: winEntry,
+	})
+
+	ndv := &llm.NonDeterministicValues{
+		Binaries:      binaries,
+		PipelineSteps: pipelineSteps,
+		Targets:       targets,
+	}
+
+	fmt.Printf("📊 Static extractor: %d binaries, %d pipeline steps, entrypoint=%s, symlink=%s\n",
+		len(binaries), len(pipelineSteps), entrypoint, symlink)
+
+	return ndv
+}
+
+// ─── Chunk 6 · BINARY EXTRACTION ─────────────────────────────────────────────
+
+// extractGoBinaries finds all `go build` commands in the builder stage and
+// parses them into Binary structs.
+func extractGoBinaries(builder contents.Stage, globalArgs map[string]string) []llm.Binary {
+	var binaries []llm.Binary
+
+	// Merge global args with stage args and env for variable substitution.
+	vars := make(map[string]string)
+	for k, v := range globalArgs {
+		vars[k] = v
+	}
+	for k, v := range builder.Args {
+		vars[k] = v
+	}
+	for k, v := range builder.Env {
+		vars[k] = v
+	}
+
+	for _, run := range builder.Runs {
+		// Normalize line continuations.
+		run = lineContinuationRe.ReplaceAllString(run, " ")
+
+		// Split on && and ; to find individual commands.
+		cmds := splitShellCommands(run)
+		for _, cmd := range cmds {
+			cmd = strings.TrimSpace(cmd)
+			if !goBuildRe.MatchString(cmd) {
+				continue
+			}
+
+			bin := parseGoBuildCommand(cmd, vars)
+			if bin.Name != "" {
+				binaries = append(binaries, bin)
+			}
+		}
+	}
+
+	return binaries
+}
+
+// parseGoBuildCommand parses a single `go build ...` command into a Binary.
+func parseGoBuildCommand(cmd string, vars map[string]string) llm.Binary {
+	bin := llm.Binary{
+		BuildCommand: cleanStaticBuildCommand(cmd),
+	}
+
+	// Extract -o <path>
+	if m := goBuildOutputFlagRe.FindStringSubmatch(cmd); m != nil {
+		outputPath := m[1]
+		bin.OutputPath = outputPath
+		bin.Name = path.Base(strings.TrimSuffix(outputPath, "${BIN_SUFFIX}"))
+	}
+
+	// Extract -ldflags "..."
+	if m := goLdflagsRe.FindStringSubmatch(cmd); m != nil {
+		bin.LdFlags = m[1]
+	} else if m := goLdflagsVarRe.FindStringSubmatch(cmd); m != nil {
+		bin.LdFlags = m[1]
+	}
+
+	// If no -o flag, try to derive name from the last argument (package path).
+	if bin.Name == "" {
+		fields := strings.Fields(cmd)
+		if len(fields) > 0 {
+			lastArg := fields[len(fields)-1]
+			// The last argument is typically a package path like ./cmd/client/main.go
+			// or ./cmd/foo or just .
+			if strings.HasPrefix(lastArg, "./") || strings.HasPrefix(lastArg, "/") {
+				base := path.Base(lastArg)
+				if base != "." && base != "main.go" {
+					bin.Name = strings.TrimSuffix(base, ".go")
+				}
+			}
+		}
+	}
+
+	return bin
+}
+
+// cleanStaticBuildCommand strips env assignments and unnecessary prefixes.
+func cleanStaticBuildCommand(cmd string) string {
+	// Remove GOOS/GOARCH/CGO_ENABLED env prefixes — handled by Dalec.
+	envPrefixes := []string{"GOOS=linux", "GOOS=windows", "GOARCH=amd64", "GOARCH=arm64", "CGO_ENABLED=0", "CGO_ENABLED=1"}
+	for _, prefix := range envPrefixes {
+		cmd = strings.ReplaceAll(cmd, prefix+" ", "")
+	}
+	cmd = strings.TrimSpace(cmd)
+	// Remove single quotes (Dalec doesn't use them in commands).
+	cmd = strings.ReplaceAll(cmd, "'", "")
+	return cmd
+}
+
+// ─── Chunk 7 · PIPELINE STEPS ────────────────────────────────────────────────
+
+// extractPipelineSteps collects RUN commands from intermediate stages
+// (non-builder, non-final) that contain build-related operations.
+func extractPipelineSteps(stages []contents.Stage, builderIdx int) []string {
+	intermediateIdxs := findIntermediateStages(stages, builderIdx)
+	var steps []string
+
+	for _, idx := range intermediateIdxs {
+		stage := stages[idx]
+		for _, run := range stage.Runs {
+			run = lineContinuationRe.ReplaceAllString(run, " ")
+			run = strings.TrimSpace(run)
+			if run == "" {
+				continue
+			}
+			steps = append(steps, run)
+		}
+	}
+
+	return steps
+}
+
+// ─── Chunk 8 · ENTRYPOINT ────────────────────────────────────────────────────
+
+// resolveEntrypoint determines the binary's entrypoint and symlink path from
+// the final stage's ENTRYPOINT instruction and COPY destinations.
+//
+// Convention:
+//   - symlink = the real installed binary path (e.g. /usr/bin/<name>) → tested with permissions
+//   - entrypoint = where the symlink points (e.g. /usr/local/bin/<name>) → the container entrypoint
+func resolveEntrypoint(stages []contents.Stage, binaries []llm.Binary) (entrypoint, symlink string) {
+	finalIdx := findFinalStage(stages)
+	if finalIdx < 0 {
+		return defaultEntrypoints(binaries)
+	}
+
+	final := stages[finalIdx]
+
+	// Check ENTRYPOINT instruction.
+	if len(final.Entrypoint) > 0 {
+		ep := final.Entrypoint[0]
+		if strings.HasPrefix(ep, "/") {
+			entrypoint = ep
+		}
+	}
+
+	// Look at COPY --from destinations to find installed binary paths.
+	for _, cp := range final.Copies {
+		if cp.From == "" {
+			continue
+		}
+		dest := cp.Dest
+		if strings.HasPrefix(dest, "/usr/bin/") || strings.HasPrefix(dest, "/usr/local/bin/") ||
+			strings.HasPrefix(dest, "/usr/sbin/") {
+			if entrypoint == "" {
+				entrypoint = dest
+			} else if dest != entrypoint {
+				symlink = dest
+			}
+		}
+	}
+
+	// Normalize: entrypoint should be /usr/local/bin/<name>, symlink should be /usr/bin/<name>.
+	if entrypoint != "" && symlink != "" {
+		if strings.HasPrefix(symlink, "/usr/local/bin/") && !strings.HasPrefix(entrypoint, "/usr/local/bin/") {
+			entrypoint, symlink = symlink, entrypoint
+		}
+	}
+
+	// If we only have entrypoint and no symlink, derive the standard pair.
+	if entrypoint != "" && symlink == "" {
+		name := path.Base(entrypoint)
+		if strings.HasPrefix(entrypoint, "/usr/local/bin/") {
+			symlink = "/usr/bin/" + name
+		} else if strings.HasPrefix(entrypoint, "/usr/bin/") {
+			symlink = entrypoint
+			entrypoint = "/usr/local/bin/" + name
+		} else {
+			// Root-level or non-standard path (e.g. /my-binary). Dockerfiles
+			// often COPY binaries to root, but Dalec installs via artifact
+			// packaging to /usr/bin/. Use the build binary name when available
+			// to keep the entrypoint consistent with the artifact.
+			if len(binaries) > 0 && binaries[0].Name != "" {
+				name = binaries[0].Name
+			}
+			entrypoint = "/usr/local/bin/" + name
+			symlink = "/usr/bin/" + name
+		}
+	}
+
+	if entrypoint == "" {
+		return defaultEntrypoints(binaries)
+	}
+
+	return entrypoint, symlink
+}
+
+// defaultEntrypoints returns standard /usr/local/bin + /usr/bin paths from the first binary name.
+func defaultEntrypoints(binaries []llm.Binary) (string, string) {
+	name := ""
+	if len(binaries) > 0 && binaries[0].Name != "" {
+		name = binaries[0].Name
+	}
+	if name == "" {
+		return "", ""
+	}
+	return "/usr/local/bin/" + name, "/usr/bin/" + name
+}
+
+// ─── Chunk 9 · STAGE HELPERS ─────────────────────────────────────────────────
+
+// findBuilderStage returns the index of the primary Go builder stage.
+func findBuilderStage(stages []contents.Stage) int {
+	for i, stage := range stages {
+		if IsGoImage(stage.From) {
+			return i
+		}
+	}
+	return -1
+}
+
+// findFinalStage returns the index of the final image stage (last non-referenced,
+// non-builder, non-windows stage).
+func findFinalStage(stages []contents.Stage) int {
+	if len(stages) == 0 {
+		return -1
+	}
+
+	referenced := make(map[string]bool)
+	for i, stage := range stages {
+		for _, cp := range stage.Copies {
+			if cp.From != "" {
+				referenced[cp.From] = true
+			}
+		}
+		for j := 0; j < i; j++ {
+			if stages[j].Name != "" && stages[j].Name == stage.From {
+				referenced[stages[j].Name] = true
+			}
+		}
+	}
+
+	for i := len(stages) - 1; i >= 0; i-- {
+		stage := stages[i]
+		ref := stage.Name
+		if ref == "" {
+			ref = fmt.Sprintf("%d", i)
+		}
+		if referenced[ref] {
+			continue
+		}
+		if IsGoImage(stage.From) {
+			continue
+		}
+		if IsWindowsImage(stage.From) {
+			continue
+		}
+		if strings.Contains(strings.ToLower(stage.Platform), "windows") {
+			continue
+		}
+		return i
+	}
+	return len(stages) - 1
+}
+
+// findIntermediateStages returns indices of stages between the builder and
+// the final stage that contain pipeline/wrapper steps.
+func findIntermediateStages(stages []contents.Stage, builderIdx int) []int {
+	finalIdx := findFinalStage(stages)
+	builderName := stages[builderIdx].Name
+
+	var indices []int
+	for i := builderIdx + 1; i < len(stages); i++ {
+		if i == finalIdx {
+			continue
+		}
+		if stages[i].From == builderName || IsGoImage(stages[i].From) || isStageSelfReference(stages[i].From, stages, i) {
+			indices = append(indices, i)
+		}
+	}
+	return indices
 }

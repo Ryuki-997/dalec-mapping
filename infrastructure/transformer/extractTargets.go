@@ -47,8 +47,6 @@ import (
 // extractTargetsSection builds the `targets:` map for every build target in the spec.
 // Each unique OS (azlinux3, windowscross, jammy, …) gets exactly one entry.
 func extractTargetsSection(defaultSpec *contents.DefaultSpec,  nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
-	tp := resolveTestPaths(defaultSpec, nonDeterministicValues)
-
 	// Analyse Dockerfile stages for intermediate runtime deps and final Linux base.
 	intermediateDeps := parser.ExtractIntermediateRuntimeDeps(defaultSpec.Stages)
 	finalLinuxBase := parser.DetectFinalLinuxBase(defaultSpec.Stages)
@@ -62,6 +60,7 @@ func extractTargetsSection(defaultSpec *contents.DefaultSpec,  nonDeterministicV
 			continue
 		}
 		seen[osName] = true
+		tp := resolveTestPaths(osName, defaultSpec, nonDeterministicValues)
 		targets[osName] = buildTargetEntry(osName, tp, defaultSpec, nonDeterministicValues, intermediateDeps, finalLinuxBase)
 	}
 	return targets
@@ -95,14 +94,17 @@ type testPaths struct {
 	symlinkPath string // symlink (existence-only test)
 }
 
-// resolveTestPaths determines the binary name and install paths used in file tests.
+// resolveTestPaths determines the binary name and install paths used in file tests
+// for a specific target OS. Uses findTargetSpecByOS to match the LLM's per-target
+// config so that tests stay aligned with the image config for that OS.
+//
 // Dalec's image.post.symlinks format: key = real installed binary path (e.g. /usr/bin/dropgz),
 // path value = where the symlink is created (e.g. /dropgz). This means:
 //   - lt.Symlink (map key) = real binary → tested with permissions 0755
 //   - lt.Entrypoint (map path value) = the symlink location → tested for existence only
 //
 // The canonical binary name is derived from lt.Symlink's base (e.g. "dropgz" from "/usr/bin/dropgz").
-func resolveTestPaths(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) testPaths {
+func resolveTestPaths(osName string, defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) testPaths {
 	tp := testPaths{
 		binaryName:  defaultSpec.SpecImageName,
 		binaryPath:  "/usr/bin/" + defaultSpec.SpecImageName,
@@ -116,20 +118,16 @@ func resolveTestPaths(defaultSpec *contents.DefaultSpec, nonDeterministicValues 
 		tp.binaryPath = "/usr/bin/" + tp.binaryName
 		tp.symlinkPath = "/usr/local/bin/" + tp.binaryName
 	}
-	if lt := findPrimaryLinuxTarget(nonDeterministicValues.Targets); lt != nil && lt.Symlink != "" {
-		// Dalec symlinks format: key = target (real binary), path = symlink location.
-		// lt.Symlink = map key = real installed binary path (permissions test).
-		// lt.Entrypoint = map path value = the symlink created in the image (existence test).
-		tp.binaryPath = lt.Symlink
-		tp.symlinkPath = lt.Entrypoint
-		if base := canonicalBase(lt.Symlink); base != "" {
+	if ts := findTargetSpecByOS(nonDeterministicValues.Targets, osName); ts != nil && ts.Symlink != "" {
+		tp.binaryPath = ts.Symlink
+		tp.symlinkPath = ts.Entrypoint
+		if base := canonicalBase(ts.Symlink); base != "" {
 			tp.binaryName = base
 		}
-	} else if lt := findPrimaryLinuxTarget(nonDeterministicValues.Targets); lt != nil && lt.Entrypoint != "" {
-		// No symlink — entrypoint is the only path, test it with permissions.
-		tp.binaryPath = lt.Entrypoint
+	} else if ts := findTargetSpecByOS(nonDeterministicValues.Targets, osName); ts != nil && ts.Entrypoint != "" {
+		tp.binaryPath = ts.Entrypoint
 		tp.symlinkPath = ""
-		if base := canonicalBase(lt.Entrypoint); base != "" {
+		if base := canonicalBase(ts.Entrypoint); base != "" {
 			tp.binaryName = base
 		}
 	}
