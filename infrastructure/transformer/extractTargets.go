@@ -60,14 +60,15 @@ func extractTargetsSection(defaultSpec *contents.DefaultSpec,  nonDeterministicV
 			continue
 		}
 		seen[osName] = true
-		tp := resolveTestPaths(osName, defaultSpec, nonDeterministicValues)
-		targets[osName] = buildTargetEntry(osName, tp, defaultSpec, nonDeterministicValues, intermediateDeps, finalLinuxBase)
+		isContainer := buildTarget.IsContainer()
+		tp := resolveTestPaths(osName, isContainer, defaultSpec, nonDeterministicValues)
+		targets[osName] = buildTargetEntry(osName, isContainer, tp, defaultSpec, nonDeterministicValues, intermediateDeps, finalLinuxBase)
 	}
 	return targets
 }
 
 // buildTargetEntry assembles the full target map for one OS.
-func buildTargetEntry(osName string, tp testPaths, defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues, intermediateDeps []parser.IntermediateRuntimeDeps, finalLinuxBase string) map[string]interface{} {
+func buildTargetEntry(osName string, isContainer bool, tp testPaths, defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues, intermediateDeps []parser.IntermediateRuntimeDeps, finalLinuxBase string) map[string]interface{} {
 	target := make(map[string]interface{})
 
 	if osName == "windowscross" {
@@ -76,11 +77,15 @@ func buildTargetEntry(osName string, tp testPaths, defaultSpec *contents.Default
 		target["image"] = windowsImageConfig(tp.binaryName, defaultSpec, nonDeterministicValues)
 	} else {
 		target["dependencies"] = linuxDeps(osName, defaultSpec, nonDeterministicValues, intermediateDeps)
-		target["image"] = linuxImageConfig(osName, tp.binaryName, nonDeterministicValues, finalLinuxBase)
+		if isContainer {
+			target["image"] = linuxImageConfig(osName, tp.binaryName, nonDeterministicValues, finalLinuxBase)
+		}
 	}
 
-	target["tests"] = []interface{}{
-		test.TestCheckFiles(osName, tp.binaryName, tp.binaryPath, tp.symlinkPath, 0755),
+	if isContainer {
+		target["tests"] = []interface{}{
+			test.TestCheckFiles(osName, tp.binaryName, tp.binaryPath, tp.symlinkPath, 0755),
+		}
 	}
 	return target
 }
@@ -98,17 +103,15 @@ type testPaths struct {
 // for a specific target OS. Uses findTargetSpecByOS to match the LLM's per-target
 // config so that tests stay aligned with the image config for that OS.
 //
-// Dalec's image.post.symlinks format: key = real installed binary path (e.g. /usr/bin/dropgz),
-// path value = where the symlink is created (e.g. /dropgz). This means:
-//   - lt.Symlink (map key) = real binary → tested with permissions 0755
-//   - lt.Entrypoint (map path value) = the symlink location → tested for existence only
-//
-// The canonical binary name is derived from lt.Symlink's base (e.g. "dropgz" from "/usr/bin/dropgz").
-func resolveTestPaths(osName string, defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) testPaths {
+// For container targets: binaryPath = /usr/bin/<name>, symlinkPath = /usr/local/bin/<name>
+// For package targets (deb/rpm): binaryPath = /usr/bin/<name>, symlinkPath = "" (no symlink)
+func resolveTestPaths(osName string, isContainer bool, defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) testPaths {
 	tp := testPaths{
-		binaryName:  defaultSpec.SpecImageName,
-		binaryPath:  "/usr/bin/" + defaultSpec.SpecImageName,
-		symlinkPath: "/usr/local/bin/" + defaultSpec.SpecImageName,
+		binaryName: defaultSpec.SpecImageName,
+		binaryPath: "/usr/bin/" + defaultSpec.SpecImageName,
+	}
+	if isContainer {
+		tp.symlinkPath = "/usr/local/bin/" + defaultSpec.SpecImageName
 	}
 	if nonDeterministicValues == nil {
 		return tp
@@ -116,7 +119,13 @@ func resolveTestPaths(osName string, defaultSpec *contents.DefaultSpec, nonDeter
 	if len(nonDeterministicValues.Binaries) > 0 && nonDeterministicValues.Binaries[0].Name != "" {
 		tp.binaryName = nonDeterministicValues.Binaries[0].Name
 		tp.binaryPath = "/usr/bin/" + tp.binaryName
-		tp.symlinkPath = "/usr/local/bin/" + tp.binaryName
+		if isContainer {
+			tp.symlinkPath = "/usr/local/bin/" + tp.binaryName
+		}
+	}
+	if !isContainer {
+		// Package targets: no image config, no symlinks — just binary path.
+		return tp
 	}
 	if ts := findTargetSpecByOS(nonDeterministicValues.Targets, osName); ts != nil && ts.Symlink != "" {
 		tp.binaryPath = ts.Symlink

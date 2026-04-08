@@ -49,12 +49,14 @@ func (bt BuildTarget) OS() string {
 	return string(bt)
 }
 
-// Output returns the output type (e.g. "container", "rpm", "deb").
-func (bt BuildTarget) Output() string {
+// IsContainer returns true when the output type is "container".
+func (bt BuildTarget) IsContainer() bool {
 	if parts := strings.SplitN(string(bt), "/", 2); len(parts) == 2 {
-		return parts[1]
-	}
-	return ""
+		if parts[1] == "container" {
+			return true
+			}
+		}
+	return false
 }
 
 // IsWindows returns true for windowscross targets.
