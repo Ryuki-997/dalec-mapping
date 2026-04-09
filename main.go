@@ -88,7 +88,7 @@ func processTag(onboard *onboarding.OnboardingInfo, fullTag string, isFirstOnboa
 	case actionBumpCommit:
 		return bumpCommit(onboard, fullTag, tag, templateTag)
 	case actionGenerate:
-		remotePath, resolvedTargets, err := generateSpec(onboard, fullTag)
+		remotePath, resolvedTargets, err := generateWork(onboard, fullTag)
 		if err != nil {
 			log.Printf("\u26a0\ufe0f  Skipping %s @ %s: %v\n", onboard.SpecImageName, fullTag, err)
 			return ""
@@ -140,7 +140,7 @@ func bumpCommit(onboard *onboarding.OnboardingInfo, fullTag, tag, templateTag st
 	return remotePath
 }
 
-func generateSpec(onboard *onboarding.OnboardingInfo, fullTag string) (string, []string, error) {
+func generateWork(onboard *onboarding.OnboardingInfo, fullTag string) (string, []string, error) {
 	log.Println("Dalec Spec Generator - Scheduled Job")
 	log.Printf("Started at: %s", time.Now().Format(time.RFC3339))
 

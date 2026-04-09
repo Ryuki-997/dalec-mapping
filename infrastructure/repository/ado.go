@@ -1,114 +1,237 @@
 package repository
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ado.go — Azure DevOps tag fetching via the ADO REST API.
+//
+//   FetchAllADOTags(repoURL) → []TagInfo
+//     Fetches all semver git tags from an ADO repository and returns each
+//     tag name paired with its commit SHA.
+//
+//   Authentication: ADO_TOKEN environment variable (PAT or Bearer token).
+//   ADO API version: 7.1
+// ═══════════════════════════════════════════════════════════════════════════════
+
 import (
-	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
-	"os/exec"
 	"strings"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
-	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+	domainRepo "dalec-mapping/domain/repository"
 )
 
-// TagInfo holds a tag name and its associated commit SHA.
-type TagInfo struct {
-	Name   string
-	Commit string
+// parseADORepoURL extracts org, project, and repo from an ADO git URL.
+// Supports: https://dev.azure.com/{org}/{project}/_git/{repo}
+func parseADORepoURL(repoURL string) (org, project, repo string, err error) {
+	repoURL = strings.TrimSuffix(repoURL, ".git")
+	u, parseErr := url.Parse(repoURL)
+	if parseErr != nil {
+		return "", "", "", fmt.Errorf("invalid ADO URL %q: %w", repoURL, parseErr)
+	}
+	// Path: /{org}/{project}/_git/{repo}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) < 4 || parts[2] != "_git" {
+		return "", "", "", fmt.Errorf("unexpected ADO URL path %q: expected /{org}/{project}/_git/{repo}", u.Path)
+	}
+	return parts[0], parts[1], parts[3], nil
 }
 
-// fetchUAMIToken acquires an Azure DevOps OAuth token using the given UAMI
-// client ID via azidentity. Works on VMs (IMDS), App Service, Container Apps,
-// and AKS with Workload Identity.
-func fetchUAMIToken(clientID string) (string, error) {
-	cred, err := azidentity.NewManagedIdentityCredential(&azidentity.ManagedIdentityCredentialOptions{
-		ID: azidentity.ClientID(clientID),
-	})
-
+// makeADORequest performs an authenticated GET to the ADO REST API.
+func makeADORequest(apiURL string, accept string) ([]byte, error) {
+	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
-		return "", fmt.Errorf("creating managed identity credential: %w", err)
+		return nil, fmt.Errorf("failed to create ADO request: %w", err)
 	}
+	if token := os.Getenv("ADO_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	req.Header.Set("Accept", accept)
 
-	token, err := cred.GetToken(context.Background(), policy.TokenRequestOptions{
-		Scopes: []string{"499b84ac-1321-427f-aa17-267ca6975798/.default"},
-	})
-
-	fmt.Println("Acquired token for client ID", token)
-
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("acquiring token: %w", err)
+		return nil, fmt.Errorf("ADO request failed: %w", err)
 	}
+	defer resp.Body.Close()
 
-
-	return token.Token, nil
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read ADO response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("ADO API returned status %d: %s", resp.StatusCode, string(body))
+	}
+	return body, nil
 }
 
-// FetchAllADOTags queries a remote ADO repository for all tags using git ls-remote.
-// If UAMI_CLIENT_ID is set in the environment, it acquires an OAuth token via
-// Azure IMDS and passes it to git. Otherwise it falls back to ambient credentials.
-// For annotated tags the dereferenced commit (^{}) is used as the commit SHA.
+// FetchAllADOTags fetches all semver git tags from an ADO repository.
+// repoURL must be an ADO git URL: https://dev.azure.com/{org}/{project}/_git/{repo}
+// Returns each semver tag paired with its commit SHA, paginating until all refs are fetched.
 func FetchAllADOTags(repoURL string) ([]TagInfo, error) {
-	clientID := os.Getenv("UAMI_CLIENT_ID")
-	if clientID == "" {
-		return nil, fmt.Errorf("UAMI_CLIENT_ID is not set")
+	org, project, repo, err := parseADORepoURL(repoURL)
+	if err != nil {
+		return nil, err
 	}
 
-	token, err := fetchUAMIToken(clientID)
-	if err != nil {
-		return nil, fmt.Errorf("UAMI token acquisition failed: %w", err)
-	}
-	cmd := exec.Command("git", "ls-remote", "--tags", repoURL)
-	cmd.Env = append(os.Environ(),
-		"GIT_ASKPASS=true",
-		"GCM_INTERACTIVE=Never",
-		"GIT_TERMINAL_PROMPT=0",
-		"AZURE_DEVOPS_EXT_PAT="+token,
+	// ADO refs/tags list API: GET {org}/{project}/_apis/git/repositories/{repo}/refs?filter=tags/
+	baseURL := fmt.Sprintf(
+		"https://dev.azure.com/%s/%s/_apis/git/repositories/%s/refs?filter=tags/&api-version=7.1",
+		url.PathEscape(org), url.PathEscape(project), url.PathEscape(repo),
 	)
 
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("git ls-remote --tags failed for %s: %w", repoURL, err)
-	}
+	var tags []TagInfo
+	continuationToken := ""
 
-	raw := strings.TrimSpace(string(out))
-	if raw == "" {
-		return nil, nil
-	}
-
-	// ls-remote output:
-	//   <sha>\trefs/tags/v1.0.0           ← lightweight or annotated tag object
-	//   <sha>\trefs/tags/v1.0.0^{}        ← dereferenced commit of annotated tag
-	// For annotated tags we prefer the ^{} line (actual commit).
-	tagCommits := make(map[string]string) // tag name → commit SHA
-	var order []string                    // preserve insertion order
-
-	for _, line := range strings.Split(raw, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
+	for {
+		apiURL := baseURL
+		if continuationToken != "" {
+			apiURL += "&continuationToken=" + url.QueryEscape(continuationToken)
 		}
-		parts := strings.Fields(line)
-		if len(parts) < 2 {
-			continue
-		}
-		sha, ref := parts[0], parts[1]
 
-		if strings.HasSuffix(ref, "^{}") {
-			// Dereferenced annotated tag — overwrite with the real commit SHA
-			name := strings.TrimPrefix(strings.TrimSuffix(ref, "^{}"), "refs/tags/")
-			tagCommits[name] = sha
-		} else {
-			name := strings.TrimPrefix(ref, "refs/tags/")
-			if _, exists := tagCommits[name]; !exists {
-				tagCommits[name] = sha
-				order = append(order, name)
+		body, err := makeADORequest(apiURL, "application/json")
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch ADO tags for %s/%s/%s: %w", org, project, repo, err)
+		}
+
+		var result struct {
+			Value []struct {
+				Name     string `json:"name"`
+				ObjectID string `json:"objectId"`
+			} `json:"value"`
+			Count int `json:"count"`
+		}
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, fmt.Errorf("failed to parse ADO tags response: %w", err)
+		}
+
+		for _, ref := range result.Value {
+			// ref.Name is e.g. "refs/tags/v1.2.3" or "refs/tags/azure-cns/v1.2.3"
+			name := strings.TrimPrefix(ref.Name, "refs/tags/")
+			if !semverTagRe.MatchString(name) {
+				continue
 			}
+			tags = append(tags, TagInfo{Name: name, Commit: ref.ObjectID})
+		}
+
+		// ADO paginates at 100 refs per page when $top is not set.
+		if result.Count < 100 {
+			break
+		}
+		if len(result.Value) > 0 {
+			continuationToken = result.Value[len(result.Value)-1].ObjectID
+		} else {
+			break
 		}
 	}
 
-	tags := make([]TagInfo, 0, len(order))
-	for _, name := range order {
-		tags = append(tags, TagInfo{Name: name, Commit: tagCommits[name]})
-	}
 	return tags, nil
+}
+
+// FetchADOTagCommit resolves a git tag to its commit SHA for the given ADO repository URL.
+func FetchADOTagCommit(repoURL, tag string) (string, error) {
+	org, project, repo, err := parseADORepoURL(repoURL)
+	if err != nil {
+		return "", err
+	}
+
+	apiURL := fmt.Sprintf(
+		"https://dev.azure.com/%s/%s/_apis/git/repositories/%s/commits?searchCriteria.itemVersion.version=%s&searchCriteria.itemVersion.versionType=tag&$top=1&api-version=7.1",
+		url.PathEscape(org), url.PathEscape(project), url.PathEscape(repo), url.QueryEscape(tag),
+	)
+
+	body, err := makeADORequest(apiURL, "application/json")
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch commit for ADO tag %q: %w", tag, err)
+	}
+
+	var result struct {
+		Value []struct {
+			CommitID string `json:"commitId"`
+		} `json:"value"`
+		Count int `json:"count"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("failed to parse ADO commits response: %w", err)
+	}
+	if len(result.Value) == 0 {
+		return "", fmt.Errorf("no commit found for ADO tag %q", tag)
+	}
+	return result.Value[0].CommitID, nil
+}
+
+// FetchADOFileContent fetches the raw content of a file from an ADO repository at the given tag.
+func FetchADOFileContent(repoURL, filePath, tag string) ([]byte, error) {
+	org, project, repo, err := parseADORepoURL(repoURL)
+	if err != nil {
+		return nil, err
+	}
+
+	apiURL := fmt.Sprintf(
+		"https://dev.azure.com/%s/%s/_apis/git/repositories/%s/items?path=%s&versionDescriptor.version=%s&versionDescriptor.versionType=tag&api-version=7.1",
+		url.PathEscape(org), url.PathEscape(project), url.PathEscape(repo),
+		url.QueryEscape(filePath), url.QueryEscape(tag),
+	)
+	return makeADORequest(apiURL, "application/octet-stream")
+}
+
+// FetchADORepoInfo fetches repository metadata from ADO and returns a populated RepoInfo.
+func FetchADORepoInfo(repoURL, subdir, tag string) (*domainRepo.RepoInfo, error) {
+	org, project, repoName, err := parseADORepoURL(repoURL)
+	if err != nil {
+		return nil, err
+	}
+
+	apiURL := fmt.Sprintf(
+		"https://dev.azure.com/%s/%s/_apis/git/repositories/%s?api-version=7.1",
+		url.PathEscape(org), url.PathEscape(project), url.PathEscape(repoName),
+	)
+
+	body, err := makeADORequest(apiURL, "application/json")
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch ADO repo info: %w", err)
+	}
+
+	var repoData struct {
+		Name          string `json:"name"`
+		RemoteURL     string `json:"remoteUrl"`
+		DefaultBranch string `json:"defaultBranch"`
+	}
+	if err := json.Unmarshal(body, &repoData); err != nil {
+		return nil, fmt.Errorf("failed to parse ADO repo info: %w", err)
+	}
+
+	branch := strings.TrimPrefix(repoData.DefaultBranch, "refs/heads/")
+	if branch == "" {
+		branch = "main"
+	}
+	gitURL := repoData.RemoteURL
+	if gitURL == "" {
+		gitURL = repoURL
+	}
+
+	info := &domainRepo.RepoInfo{
+		Owner:       org,
+		Repo:        repoName,
+		Branch:      branch,
+		Subdir:      subdir,
+		GitURL:      gitURL,
+		Description: fmt.Sprintf("This is the %s project.", repoName),
+	}
+
+	if tag != "" {
+		commit, err := FetchADOTagCommit(repoURL, tag)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve commit for tag %s: %w", tag, err)
+		}
+		info.LatestCommit = commit
+		if m := semverTagRe.FindString(tag); m != "" {
+			info.Version = strings.TrimPrefix(m, "v")
+		} else {
+			info.Version = strings.TrimPrefix(tag, "v")
+		}
+	}
+
+	return info, nil
 }

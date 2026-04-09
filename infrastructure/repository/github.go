@@ -25,14 +25,10 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"regexp"
 	"strings"
 
 	"dalec-mapping/domain/repository"
 )
-
-// semverInTag extracts a clean vX.Y.Z from tags that may have suffixes (e.g. v1.2.3-main-date-hash).
-var semverInTag = regexp.MustCompile(`v(\d+)\.(\d+)\.(\d+)`)
 
 const githubAPIBase = "https://api.github.com"
 
@@ -275,7 +271,7 @@ func fetchReleaseMetadata(info *repository.RepoInfo) error {
 	if !ok {
 		return fmt.Errorf("tag_name not found in response")
 	}
-	if m := semverInTag.FindString(tag); m != "" {
+	if m := semverTagRe.FindString(tag); m != "" {
 		info.Version = m
 	} else {
 		info.Version = tag
@@ -405,7 +401,7 @@ func fetchTagInfo(info *repository.RepoInfo, tag string) error {
 			return fmt.Errorf("tag %q not found and could not fetch tag list: %w", tag, fetchErr)
 		}
 		for _, t := range allGitTags {
-			if semverInTag.FindString(t.Name) == tag {
+			if semverTagRe.FindString(t.Name) == tag {
 				fullTag = t.Name
 				break
 			}
@@ -421,7 +417,7 @@ func fetchTagInfo(info *repository.RepoInfo, tag string) error {
 	}
 
 	// Extract version from the tag
-	if m := semverInTag.FindString(tag); m != "" {
+	if m := semverTagRe.FindString(tag); m != "" {
 		info.Version = strings.TrimPrefix(m, "v")
 	} else {
 		info.Version = strings.TrimPrefix(tag, "v")

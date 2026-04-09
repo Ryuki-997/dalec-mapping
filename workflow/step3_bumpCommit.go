@@ -61,8 +61,13 @@ func BumpCommit(onboard *onboarding.OnboardingInfo, fullTag string, templateTag 
 	}
 
 	// Resolve the new commit SHA for this tag
-	owner, repoName, _ := repository.FetchRepositorySegments(onboard.Repository)
-	newCommit, err := repository.FetchTagCommit(owner, repoName, fullTag)
+	var newCommit string
+	if repository.IsADORepo(onboard.Repository) {
+		newCommit, err = repository.FetchADOTagCommit(onboard.Repository, fullTag)
+	} else {
+		owner, repoName, _ := repository.FetchRepositorySegments(onboard.Repository)
+		newCommit, err = repository.FetchTagCommit(owner, repoName, fullTag)
+	}
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve commit for tag %s: %w", fullTag, err)
 	}

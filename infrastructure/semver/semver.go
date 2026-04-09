@@ -20,7 +20,6 @@ import (
 	"log"
 	"regexp"
 	"strconv"
-	"strings"
 
 	"dalec-mapping/infrastructure/repository"
 )
@@ -33,7 +32,7 @@ var semverRegex = regexp.MustCompile(`v(\d+)\.(\d+)\.(\d+)`)
 // ResolveRepoTags fetches tags (with commit SHAs) from the appropriate source
 // and resolves regexTag patterns against them.
 func ResolveRepoTags(repoURL string, regexTags []string) ([]repository.TagInfo, error) {
-	if IsADORepo(repoURL) {
+	if repository.IsADORepo(repoURL) {
 		return resolveADOTags(repoURL, regexTags)
 	}
 	return resolveGithubTags(repoURL, regexTags)
@@ -74,14 +73,6 @@ func resolveGithubTags(repoURL string, regexTags []string) ([]repository.TagInfo
 	}
 
 	return matched, nil
-}
-
-// IsADORepo returns true when the repository URL points to Azure DevOps.
-func IsADORepo(repoURL string) bool {
-	normalized := strings.TrimPrefix(strings.TrimPrefix(repoURL, "https://"), "http://")
-	return strings.HasPrefix(normalized, "dev.azure.com/") ||
-		strings.HasPrefix(normalized, "ssh.dev.azure.com/") ||
-		strings.Contains(normalized, ".visualstudio.com/")
 }
 
 // ─── Chunk 2 · TAG FILTERING ────────────────────────────────────────────────

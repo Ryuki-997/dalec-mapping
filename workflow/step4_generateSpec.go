@@ -15,6 +15,7 @@ import (
 	"path"
 
 	"dalec-mapping/domain/onboarding"
+	domainRepo "dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/parser"
 	"dalec-mapping/infrastructure/repository"
 	"dalec-mapping/infrastructure/transformer"
@@ -29,7 +30,15 @@ import (
 func GenerateSpec(onboard *onboarding.OnboardingInfo, tag string) ([]string, error) {
 	// Fetch repository metadata
 	subdir := path.Dir(onboard.DockerfileDir)
-	repoInfo, err := repository.FetchRepoInfo(onboard.Repository, subdir, tag)
+	var (
+		repoInfo *domainRepo.RepoInfo
+		err      error
+	)
+	if repository.IsADORepo(onboard.Repository) {
+		repoInfo, err = repository.FetchADORepoInfo(onboard.Repository, subdir, tag)
+	} else {
+		repoInfo, err = repository.FetchRepoInfo(onboard.Repository, subdir, tag)
+	}
 	if err != nil {
 		fmt.Printf("❌ Error fetching repository info: %v\n", err)
 		os.Exit(1)
