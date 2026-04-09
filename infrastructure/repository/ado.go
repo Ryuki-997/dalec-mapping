@@ -15,10 +15,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	domainRepo "dalec-mapping/domain/repository"
 )
@@ -59,30 +62,50 @@ func parseADORepoURL(repoURL string) (org, project, repo string, err error) {
 }
 
 // makeADORequest performs an authenticated GET to the ADO REST API.
+// Retries up to 3 times on 429 responses, honouring the Retry-After header when present.
 func makeADORequest(apiURL string, accept string) ([]byte, error) {
-	req, err := http.NewRequest("GET", apiURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create ADO request: %w", err)
-	}
-	if token := os.Getenv("ADO_TOKEN"); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	req.Header.Set("Accept", accept)
+	const maxRetries = 3
+	backoff := 2 * time.Second
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("ADO request failed: %w", err)
-	}
-	defer resp.Body.Close()
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		req, err := http.NewRequest("GET", apiURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create ADO request: %w", err)
+		}
+		if token := os.Getenv("ADO_TOKEN"); token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		req.Header.Set("Accept", accept)
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read ADO response: %w", err)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("ADO request failed: %w", err)
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read ADO response: %w", err)
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxRetries {
+			wait := backoff * (1 << attempt) // 2s, 4s, 8s
+			if ra := resp.Header.Get("Retry-After"); ra != "" {
+				if secs, err := strconv.Atoi(ra); err == nil {
+					wait = time.Duration(secs) * time.Second
+				}
+			}
+			log.Printf("⏳ ADO rate-limited (429); retrying in %s (attempt %d/%d)\n", wait, attempt+1, maxRetries)
+			time.Sleep(wait)
+			continue
+		}
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("ADO API returned status %d: %s", resp.StatusCode, string(body))
+		}
+		return body, nil
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("ADO API returned status %d: %s", resp.StatusCode, string(body))
-	}
-	return body, nil
+	return nil, fmt.Errorf("ADO API rate limit exceeded after %d retries", maxRetries)
 }
 
 // adoRepoAPIBase returns the base URL for ADO git-repository API calls.
