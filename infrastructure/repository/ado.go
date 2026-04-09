@@ -24,7 +24,10 @@ import (
 )
 
 // parseADORepoURL extracts org, project, and repo from an ADO git URL.
-// Supports: https://dev.azure.com/{org}/{project}/_git/{repo}
+// Supports:
+//   https://dev.azure.com/{org}/{project}/_git/{repo}
+//   https://{org}.visualstudio.com/{project}/_git/{repo}
+//   https://{org}.visualstudio.com/_git/{repo}[/...]
 func parseADORepoURL(repoURL string) (org, project, repo string, err error) {
 	repoURL = strings.TrimSuffix(repoURL, ".git")
 	u, parseErr := url.Parse(repoURL)
@@ -33,18 +36,26 @@ func parseADORepoURL(repoURL string) (org, project, repo string, err error) {
 	}
 	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
 
-	// dev.azure.com/{org}/{project}/_git/{repo}  → 4 parts, org in path
+	// dev.azure.com/{org}/{project}/_git/{repo}  → ≥4 parts, org in path
 	if len(parts) >= 4 && parts[2] == "_git" {
 		return parts[0], parts[1], parts[3], nil
 	}
 
-	// {org}.visualstudio.com/{project}/_git/{repo}  → 3 parts, org in subdomain
+	// {org}.visualstudio.com/{project}/_git/{repo}  → ≥3 parts, org in subdomain
 	if len(parts) >= 3 && parts[1] == "_git" {
 		org := strings.TrimSuffix(u.Hostname(), ".visualstudio.com")
 		return org, parts[0], parts[2], nil
 	}
 
-	return "", "", "", fmt.Errorf("unexpected ADO URL path %q: expected /{org}/{project}/_git/{repo} or {org}.visualstudio.com/{project}/_git/{repo}", u.Path)
+	// {org}.visualstudio.com/_git/{repo}[/...]  → no project segment; project defaults to repo name.
+	// Any trailing path components (e.g. "/tags") are UI browse paths and are ignored.
+	if len(parts) >= 2 && parts[0] == "_git" {
+		org := strings.TrimSuffix(u.Hostname(), ".visualstudio.com")
+		repo := parts[1]
+		return org, repo, repo, nil
+	}
+
+	return "", "", "", fmt.Errorf("unexpected ADO URL path %q: expected /{org}/{project}/_git/{repo}, {org}.visualstudio.com/{project}/_git/{repo}, or {org}.visualstudio.com/_git/{repo}", u.Path)
 }
 
 // makeADORequest performs an authenticated GET to the ADO REST API.
