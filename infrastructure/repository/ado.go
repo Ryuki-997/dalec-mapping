@@ -85,6 +85,16 @@ func makeADORequest(apiURL string, accept string) ([]byte, error) {
 	return body, nil
 }
 
+// adoRepoAPIBase returns the base URL for ADO git-repository API calls.
+// All ADO organisations are reachable via dev.azure.com regardless of whether
+// the original clone URL used dev.azure.com or {org}.visualstudio.com.
+func adoRepoAPIBase(org, project, repo string) string {
+	return fmt.Sprintf(
+		"https://dev.azure.com/%s/%s/_apis/git/repositories/%s",
+		url.PathEscape(org), url.PathEscape(project), url.PathEscape(repo),
+	)
+}
+
 // FetchAllADOTags fetches all semver git tags from an ADO repository.
 // repoURL must be an ADO git URL: https://dev.azure.com/{org}/{project}/_git/{repo}
 // Returns each semver tag paired with its commit SHA, paginating until all refs are fetched.
@@ -94,11 +104,8 @@ func FetchAllADOTags(repoURL string) ([]TagInfo, error) {
 		return nil, err
 	}
 
-	// ADO refs/tags list API: GET {org}/{project}/_apis/git/repositories/{repo}/refs?filter=tags/
-	baseURL := fmt.Sprintf(
-		"https://dev.azure.com/%s/%s/_apis/git/repositories/%s/refs?filter=tags/&api-version=7.1",
-		url.PathEscape(org), url.PathEscape(project), url.PathEscape(repo),
-	)
+	// GET {base}/refs?filter=tags/&api-version=7.1
+	baseURL := adoRepoAPIBase(org, project, repo) + "/refs?filter=tags/&api-version=7.1"
 
 	var tags []TagInfo
 	continuationToken := ""
@@ -116,8 +123,9 @@ func FetchAllADOTags(repoURL string) ([]TagInfo, error) {
 
 		var result struct {
 			Value []struct {
-				Name     string `json:"name"`
-				ObjectID string `json:"objectId"`
+				Name           string `json:"name"`
+				ObjectID       string `json:"objectId"`
+				PeeledObjectID string `json:"peeledObjectId"`
 			} `json:"value"`
 			Count int `json:"count"`
 		}
@@ -131,7 +139,12 @@ func FetchAllADOTags(repoURL string) ([]TagInfo, error) {
 			if !semverTagRe.MatchString(name) {
 				continue
 			}
-			tags = append(tags, TagInfo{Name: name, Commit: ref.ObjectID})
+			// peeledObjectId is the actual commit for annotated tags; objectId for lightweight tags.
+			commit := ref.PeeledObjectID
+			if commit == "" {
+				commit = ref.ObjectID
+			}
+			tags = append(tags, TagInfo{Name: name, Commit: commit})
 		}
 
 		// ADO paginates at 100 refs per page when $top is not set.
@@ -155,10 +168,10 @@ func FetchADOTagCommit(repoURL, tag string) (string, error) {
 		return "", err
 	}
 
-	apiURL := fmt.Sprintf(
-		"https://dev.azure.com/%s/%s/_apis/git/repositories/%s/commits?searchCriteria.itemVersion.version=%s&searchCriteria.itemVersion.versionType=tag&$top=1&api-version=7.1",
-		url.PathEscape(org), url.PathEscape(project), url.PathEscape(repo), url.QueryEscape(tag),
-	)
+	apiURL := adoRepoAPIBase(org, project, repo) +
+		fmt.Sprintf("/commits?searchCriteria.itemVersion.version=%s&searchCriteria.itemVersion.versionType=tag&$top=1&api-version=7.1",
+			url.QueryEscape(tag),
+		)
 
 	body, err := makeADORequest(apiURL, "application/json")
 	if err != nil {
@@ -187,11 +200,10 @@ func FetchADOFileContent(repoURL, filePath, tag string) ([]byte, error) {
 		return nil, err
 	}
 
-	apiURL := fmt.Sprintf(
-		"https://dev.azure.com/%s/%s/_apis/git/repositories/%s/items?path=%s&versionDescriptor.version=%s&versionDescriptor.versionType=tag&api-version=7.1",
-		url.PathEscape(org), url.PathEscape(project), url.PathEscape(repo),
-		url.QueryEscape(filePath), url.QueryEscape(tag),
-	)
+	apiURL := adoRepoAPIBase(org, project, repo) +
+		fmt.Sprintf("/items?path=%s&versionDescriptor.version=%s&versionDescriptor.versionType=tag&api-version=7.1",
+			url.QueryEscape(filePath), url.QueryEscape(tag),
+		)
 	return makeADORequest(apiURL, "application/octet-stream")
 }
 
@@ -202,10 +214,7 @@ func FetchADORepoInfo(repoURL, subdir, tag string) (*domainRepo.RepoInfo, error)
 		return nil, err
 	}
 
-	apiURL := fmt.Sprintf(
-		"https://dev.azure.com/%s/%s/_apis/git/repositories/%s?api-version=7.1",
-		url.PathEscape(org), url.PathEscape(project), url.PathEscape(repoName),
-	)
+	apiURL := adoRepoAPIBase(org, project, repoName) + "?api-version=7.1"
 
 	body, err := makeADORequest(apiURL, "application/json")
 	if err != nil {
