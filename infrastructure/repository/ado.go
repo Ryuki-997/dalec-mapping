@@ -31,12 +31,20 @@ func parseADORepoURL(repoURL string) (org, project, repo string, err error) {
 	if parseErr != nil {
 		return "", "", "", fmt.Errorf("invalid ADO URL %q: %w", repoURL, parseErr)
 	}
-	// Path: /{org}/{project}/_git/{repo}
 	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-	if len(parts) < 4 || parts[2] != "_git" {
-		return "", "", "", fmt.Errorf("unexpected ADO URL path %q: expected /{org}/{project}/_git/{repo}", u.Path)
+
+	// dev.azure.com/{org}/{project}/_git/{repo}  → 4 parts, org in path
+	if len(parts) >= 4 && parts[2] == "_git" {
+		return parts[0], parts[1], parts[3], nil
 	}
-	return parts[0], parts[1], parts[3], nil
+
+	// {org}.visualstudio.com/{project}/_git/{repo}  → 3 parts, org in subdomain
+	if len(parts) >= 3 && parts[1] == "_git" {
+		org := strings.TrimSuffix(u.Hostname(), ".visualstudio.com")
+		return org, parts[0], parts[2], nil
+	}
+
+	return "", "", "", fmt.Errorf("unexpected ADO URL path %q: expected /{org}/{project}/_git/{repo} or {org}.visualstudio.com/{project}/_git/{repo}", u.Path)
 }
 
 // makeADORequest performs an authenticated GET to the ADO REST API.

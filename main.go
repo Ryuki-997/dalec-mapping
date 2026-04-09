@@ -10,8 +10,6 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	"github.com/joho/godotenv"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -48,8 +46,11 @@ func main() {
 func loadEnv() {
 	wd, _ := os.Getwd()
 	log.Printf("Working directory: %s", wd)
-	if err := godotenv.Load(); err != nil {
-		log.Printf("⚠️  .env file not found at %s/.env: %v", wd, err)
+
+	if tok := os.Getenv("GH_TOKEN"); tok != "" {
+		log.Printf("🔑 GH_TOKEN is set (prefix: %s...)", tok[:min(10, len(tok))])
+	} else {
+		log.Printf("⚠️  GH_TOKEN is not set — GitHub API calls will be unauthenticated")
 	}
 }
 

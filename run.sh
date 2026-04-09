@@ -34,8 +34,9 @@ run_and_stream() {
 # run_and_stream "Run 3: -path=autospecs/aks-container-networking/azure-ipam" -path=autospecs/aks-container-networking/azure-ipam
 # run_and_stream "Run 4: -path=autospecs/aks-secure-tls-bootstrap" -path=autospecs/aks-secure-tls-bootstrap
 # run_and_stream "Run 5: -path=autospecs/aks-node-controller" -path=autospecs/aks-node-controller
-run_and_stream "Run Test: -path=autospecs/test/1sttest-pr" -path=autospecs/test/1sttest-pr
-run_and_stream "Run Test: -path=autospecs/test/2ndtest-pr" -path=autospecs/test/2ndtest-pr
-run_and_stream "Run Test: -path=autospecs/test/3rdtest-pr" -path=autospecs/test/3rdtest-pr
+run_and_stream "Run 6: -path=autospecs/aks-vm-extension" -path=autospecs/aks-vm-extension
+# run_and_stream "Run Test: -path=autospecs/test/1sttest-pr" -path=autospecs/test/1sttest-pr
+# run_and_stream "Run Test: -path=autospecs/test/2ndtest-pr" -path=autospecs/test/2ndtest-pr
+# run_and_stream "Run Test: -path=autospecs/test/3rdtest-pr" -path=autospecs/test/3rdtest-pr
 # run_and_stream "Run ?: -path=" -path=
 exit $overall_exit
