@@ -92,7 +92,7 @@ func buildEnv() map[string]interface{} {
 
 // ─── Chunk 3 · COMMAND ASSEMBLY ──────────────────────────────────────────────
 
-// buildSteps converts NonDeterministicValues binaries into a single Dalec `steps` entry.
+// buildSteps converts extracted binaries into a single Dalec `steps` entry.
 // All binaries are merged into one command block so BIN_SUFFIX is set once.
 // Also returns the combined command text for var scanning.
 // The first step after the preamble is always `cd <baseDir>` where baseDir is
@@ -151,8 +151,8 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 			continue
 		}
 		subdir, rest := extractCdDir(raw)
-		// Normalize: strip leading '/' — the LLM may emit absolute paths from
-		// the Dockerfile's WORKDIR but Dalec's sandbox uses relative paths.
+		// Normalize: strip leading '/' — Dockerfile WORKDIRs are absolute but
+		// Dalec's sandbox uses relative paths.
 		subdir = strings.TrimPrefix(subdir, "/")
 
 		// Binaries whose cd path points into go/pkg/mod/ are built from a
@@ -312,7 +312,7 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 
 // rawBuildCommands cleans each binary's fields and returns one command string per binary.
 // Output is always /go/bin/<canonicalName>${BIN_SUFFIX} — the canonical name is derived
-// from the primary linux entrypoint when it differs from the LLM binary name (e.g.
+// from the primary linux entrypoint when it differs from the parsed binary name (e.g.
 // "dropgz" when binaries[0].Name is "azure-ipam"). BIN_SUFFIX is injected so the same
 // step works for both Linux (BIN_SUFFIX="") and windowscross (BIN_SUFFIX=".exe").
 func rawBuildCommands(goModDownloads []GoModDownloadInfo) []string {
@@ -374,16 +374,6 @@ if [ "${GOOS}" = "windows" ]; then
 fi`
 }
 
-// injectBinSuffixVar rewrites the FIRST `-o /go/bin/<name>` → `-o /go/bin/<name>${BIN_SUFFIX}`
-// in a build command. Does NOT add the preamble — that is emitted once by buildSteps.
-func injectBinSuffixVar(cmd string) string {
-	loc := binOutRe.FindStringSubmatchIndex(cmd)
-	if loc == nil {
-		return cmd
-	}
-	return cmd[:loc[3]] + "${BIN_SUFFIX}" + cmd[loc[3]:]
-}
-
 // injectLastBinSuffix rewrites only the LAST `-o /go/bin/<name>` occurrence
 // in a multi-line command block, appending `${BIN_SUFFIX}` to the output path.
 // This ensures the suffix targets the final deliverable binary regardless of
@@ -395,17 +385,6 @@ func injectLastBinSuffix(text string) string {
 	}
 	last := allLocs[len(allLocs)-1]
 	return text[:last[3]] + "${BIN_SUFFIX}" + text[last[3]:]
-}
-
-// injectAllBinSuffixVars rewrites ALL `-o /go/bin/<name>` occurrences in a
-// (possibly multi-line) string. Used for pipeline steps that may contain
-// multiple go build commands.
-func injectAllBinSuffixVars(text string) string {
-	lines := strings.Split(text, "\n")
-	for i, line := range lines {
-		lines[i] = injectBinSuffixVar(line)
-	}
-	return strings.Join(lines, "\n")
 }
 
 // scanVarReferences finds all ${VAR}/$(VAR) references in the merged command text.
@@ -515,7 +494,7 @@ func isSubmoduleName(name string, downloads []GoModDownloadInfo) bool {
 }
 
 // dalecHandledEnvs lists env vars that Dalec sets natively and must be stripped
-// from LLM-emitted build commands.
+// from parsed build commands.
 var dalecHandledEnvs = map[string]bool{
 	"CGO_ENABLED": true, "GOOS": true, "GOARCH": true,
 	"GOARM": true, "GOARM64": true, "OS": true, "ARCH": true,
@@ -677,8 +656,8 @@ func intermediateStageCopies(stages []contents.Stage, baseDir string) map[string
 }
 
 // stageWorkdirs collects non-standard WORKDIR paths from Dockerfile stages that
-// need to be created before pipeline steps run. It deduplicates against dirs the
-// LLM already `mkdir -p`'d in pipelineSteps and excludes standard build paths.
+// need to be created before pipeline steps run. It deduplicates against dirs
+// already `mkdir -p`'d in pipelineSteps and excludes standard build paths.
 func stageWorkdirs(stages []contents.Stage, pipelineSteps []string, baseDir string) []string {
 	// Collect all WORKDIRs from stages.
 	candidates := map[string]bool{}
@@ -710,7 +689,7 @@ func stageWorkdirs(stages []contents.Stage, pipelineSteps []string, baseDir stri
 		return nil
 	}
 
-	// Exclude dirs the LLM already handles via mkdir -p in pipeline steps.
+		// Exclude dirs already handled via mkdir -p in pipeline steps.
 	for _, step := range pipelineSteps {
 		step = strings.TrimSpace(step)
 		if strings.HasPrefix(step, "mkdir") {
@@ -723,7 +702,7 @@ func stageWorkdirs(stages []contents.Stage, pipelineSteps []string, baseDir stri
 				if strings.HasPrefix(f, "/") {
 					delete(candidates, f)
 				} else {
-					// LLM may use relative paths; match against absolute candidates.
+					// Pipeline steps may use relative paths; match against absolute candidates.
 					delete(candidates, "/"+f)
 				}
 			}

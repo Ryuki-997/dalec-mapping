@@ -115,9 +115,3 @@ func (w *DalecSpecWriter) WriteYAML(spec DalecSpec, outputPath string) (string, 
 
 	return result, nil
 }
-
-// MarshalYAML provides custom YAML marshaling for DalecSpec
-func (spec DalecSpec) MarshalYAML() (interface{}, error) {
-	// Return the map directly for standard marshaling
-	return map[string]interface{}(spec), nil
-}

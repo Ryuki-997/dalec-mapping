@@ -312,16 +312,9 @@ func PrintDockerfileInfo(defaultSpec *contents.DefaultSpec) {
 	fmt.Println("")
 }
 
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen-3] + "..."
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // DOCKERFILE ANALYSIS — Analyses multi-stage Dockerfiles for patterns
-// that map to Dalec spec fields but are NOT handled by the LLM.
+// that map to Dalec spec fields.
 //
 //   Chunk 1 · GO TOOLCHAIN PIN         DetectGoToolchainPin()
 //     Detects FROM stages that reference a Go SDK image and extracts the
@@ -682,7 +675,7 @@ func isStageSelfReference(ref string, stages []contents.Stage, currentIdx int) b
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // STATIC BUILD VALUE EXTRACTION — Deterministic extraction of build values
-// from parsed Dockerfile stages, replacing LLM-based NonDeterministicValues.
+// from parsed Dockerfile stages.
 //
 //   Chunk 5 · MAIN              ExtractStaticBuildValues()
 //   Chunk 6 · BINARY EXTRACTION extractGoBinaries(), parseGoBuildCommand(),

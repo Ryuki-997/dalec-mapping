@@ -1,8 +1,8 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // Step 5 — Generate
 //
-//   Parses the Dockerfile, Makefile, and LLM-extracted values, then transforms
-//   them into a DALEC spec YAML file written to the result directory.
+//   Parses the Dockerfile and Makefile, then transforms them into a DALEC spec
+//   YAML file written to the result directory.
 //
 //   Chunk 1 · MAIN  GenerateSpec()
 // ═══════════════════════════════════════════════════════════════════════════════

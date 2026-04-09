@@ -109,13 +109,13 @@ type pipelineAction int
 
 const (
 	actionBumpCommit pipelineAction = iota // Copy template spec with new commit hash
-	actionGenerate                         // Full LLM generate → test → PR
+	actionGenerate                         // Generate spec → test → PR
 )
 
 // decideAction maps the decision matrix to a pipeline action.
 //
-//	First time onboard                → generate (full LLM pipeline)
-//	Re-onboard + content changed      → generate (full LLM pipeline)
+//	First time onboard                → generate (full pipeline)
+//	Re-onboard + content changed      → generate (full pipeline)
 //	Re-onboard + content unchanged    → bump commit (update tag/hash, direct push)
 //
 // ReviewMode determines delivery: ManualReview → PR, AutoReview → direct push.

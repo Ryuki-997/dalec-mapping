@@ -37,7 +37,7 @@ var cdLiteralRe = regexp.MustCompile(`(?s)^cd\s+([^\s${}]+)\s*(?:&&|\n)`)
 var goModDownloadRe = regexp.MustCompile(`go\s+mod\s+download\s+(\S+)@(\S+)`)
 
 // goModCdRe matches `cd /go/pkg/mod/<module>@<version>` — used as a fallback
-// to detect submodules when the LLM omits `go mod download` (handled as a DALEC source).
+// to detect submodules when `go mod download` is absent (handled as a DALEC source).
 // Captures: (1) full module path, (2) version.
 var goModCdRe = regexp.MustCompile(`cd\s+/go/pkg/mod/(\S+)@(\S+)`)
 

@@ -46,8 +46,3 @@ func parseVariable(line string, info *contents.MakefileInfo) {
 		info.Variables[key] = value
 	}
 }
-
-func GetVariable(info *contents.MakefileInfo, key string) (string, bool) {
-	value, exists := info.Variables[key]
-	return value, exists
-}
