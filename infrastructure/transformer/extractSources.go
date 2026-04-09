@@ -21,7 +21,6 @@ package transformer
 
 import (
 	"dalec-mapping/domain/contents"
-	"dalec-mapping/domain/llm"
 	"fmt"
 	"regexp"
 	"strings"
@@ -60,10 +59,10 @@ type GoModDownloadInfo struct {
 
 // extractSourcesSection assembles all source entries for the Dalec spec.
 // Pre-computed goModDownloads are emitted as separate prefetched sources.
-func extractSourcesSection(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues, goModDownloads []GoModDownloadInfo) map[string]interface{} {
+func extractSourcesSection(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloadInfo) map[string]interface{} {
 	sources := make(map[string]interface{})
 
-	buildPrimarySource(sources, defaultSpec, nonDeterministicValues)
+	buildPrimarySource(sources, defaultSpec)
 	buildSubmoduleSources(sources, defaultSpec, goModDownloads)
 
 	return sources
@@ -75,16 +74,25 @@ func extractSourcesSection(defaultSpec *contents.DefaultSpec, nonDeterministicVa
 // for the root module and any subdirectories discovered in build commands.
 // When the go.mod is in a subdirectory (detected via MakefileDir), the primary
 // generate entry uses that subpath instead of the repo root.
-func buildPrimarySource(sources map[string]interface{}, defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) {
-	subpaths := collectGoModSubpaths(defaultSpec, nonDeterministicValues)
+func buildPrimarySource(sources map[string]interface{}, defaultSpec *contents.DefaultSpec) {
+	subpaths := collectGoModSubpaths(defaultSpec, contents.Spec)
 
-	// Determine where the primary go.mod lives. If the Makefile is in a
-	// subdirectory (e.g. "client/Makefile"), the go.mod is likely alongside it.
+	// Determine where the primary go.mod lives.
+	// Priority: MakefileDir > gomod subpath > DockerfileDir
 	rootGoModSubpath := ""
 	if defaultSpec.MakefileDir != "" {
 		dir := strings.TrimSuffix(defaultSpec.MakefileDir, "/")
 		if idx := strings.LastIndex(dir, "/"); idx >= 0 {
 			rootGoModSubpath = dir[:idx]
+		}
+	}
+	if rootGoModSubpath == "" && len(subpaths) > 0 {
+		rootGoModSubpath = subpaths[0]
+	}
+	if rootGoModSubpath == "" && defaultSpec.DockerfileDir != "" {
+		d := strings.TrimSuffix(defaultSpec.DockerfileDir, "/")
+		if idx := strings.LastIndex(d, "/"); idx >= 0 {
+			rootGoModSubpath = d[:idx]
 		}
 	}
 
@@ -144,8 +152,8 @@ func buildSubmoduleSources(sources map[string]interface{}, defaultSpec *contents
 
 // collectGoModSubpaths returns ordered unique subdirectory paths found via
 // literal `cd <subdir> &&` in binary build commands and pipeline steps.
-func collectGoModSubpaths(defaultSpec *contents.DefaultSpec, ndv *llm.NonDeterministicValues) []string {
-	if ndv == nil {
+func collectGoModSubpaths(defaultSpec *contents.DefaultSpec, spec *contents.DockerfileSpec) []string {
+	if spec == nil {
 		return nil
 	}
 	seen := map[string]bool{}
@@ -159,12 +167,12 @@ func collectGoModSubpaths(defaultSpec *contents.DefaultSpec, ndv *llm.NonDetermi
 		}
 	}
 
-	for _, bin := range ndv.Binaries {
+	for _, bin := range spec.Binaries {
 		if m := cdLiteralRe.FindStringSubmatch(strings.TrimSpace(bin.BuildCommand)); m != nil {
 			add(m[1])
 		}
 	}
-	for _, step := range ndv.PipelineSteps {
+	for _, step := range spec.PipelineSteps {
 		for _, line := range strings.Split(step, "\n") {
 			if m := cdLiteralRe.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
 				if !strings.HasPrefix(m[1], "/") {
@@ -180,14 +188,14 @@ func collectGoModSubpaths(defaultSpec *contents.DefaultSpec, ndv *llm.NonDetermi
 // submodule references. Detects both `go mod download <module>@<version>`
 // (legacy) and `cd /go/pkg/mod/<module>@<version>` patterns and returns
 // parsed info for each.
-func DetectGoModDownloads(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) []GoModDownloadInfo {
-	if nonDeterministicValues == nil {
+func DetectGoModDownloads(defaultSpec *contents.DefaultSpec) []GoModDownloadInfo {
+	if contents.Spec == nil {
 		return nil
 	}
 
 	var stepsToScan []string
-	stepsToScan = append(stepsToScan, nonDeterministicValues.PipelineSteps...)
-	for _, bin := range nonDeterministicValues.Binaries {
+	stepsToScan = append(stepsToScan, contents.Spec.PipelineSteps...)
+	for _, bin := range contents.Spec.Binaries {
 		if bin.BuildCommand != "" {
 			stepsToScan = append(stepsToScan, bin.BuildCommand)
 		}

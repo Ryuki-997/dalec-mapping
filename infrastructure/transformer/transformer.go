@@ -2,7 +2,6 @@ package transformer
 
 import (
 	"dalec-mapping/domain/contents"
-	"dalec-mapping/domain/llm"
 	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/parser"
@@ -11,16 +10,14 @@ import (
 	"strings"
 )
 
-func InitDefaultSpec(onboardInfo *onboarding.OnboardingInfo, repoInfo *repository.RepoInfo, dockerfileInfo *contents.DockerfileInfo, previousDalecSpecInfo parser.PreviousDalecSpec) (*contents.DefaultSpec, error) {
+func InitDefaultSpec(onboardInfo *onboarding.OnboardingInfo, repoInfo *repository.RepoInfo, previousDalecSpecInfo parser.PreviousDalecSpec) (*contents.DefaultSpec, error) {
 	// Initialize & Populate Source of Truth Attributes from onboarding and repository info
 	defaultSpec := &contents.DefaultSpec{}
 	defaultSpec.RepoInfo = *repoInfo
 
 	defaultSpec.OnboardingInfo = *onboardInfo
 
-	if dockerfileInfo != nil {
-		defaultSpec.DockerfileInfo = *dockerfileInfo
-	}
+	defaultSpec.DockerfileInfo = contents.Dockerfile
 
 	defaultSpec.Revision = 1
 
@@ -49,7 +46,7 @@ func resolveOnboardTargets(targets []string) []contents.BuildTarget {
 }
 
 // TransformToDalec converts parsed Dockerfile info to Dalec spec format
-func TransformToDalec(defaultSpec *contents.DefaultSpec, makefileInfo *contents.MakefileInfo, nonDeterministicValues *llm.NonDeterministicValues) parser.DalecSpec {
+func TransformToDalec(defaultSpec *contents.DefaultSpec) parser.DalecSpec {
 	spec := make(parser.DalecSpec)
 
 	// Add syntax header (special comment format)
@@ -62,25 +59,25 @@ func TransformToDalec(defaultSpec *contents.DefaultSpec, makefileInfo *contents.
 	}
 
 	// Detect go mod download patterns once — shared across build, sources, and args.
-	goModDownloads := DetectGoModDownloads(defaultSpec, nonDeterministicValues)
+	goModDownloads := DetectGoModDownloads(defaultSpec)
 
 	// Compute build section first to discover which variables are referenced
-	buildSection, referencedVars := extractBuildSection(defaultSpec, makefileInfo, nonDeterministicValues, goModDownloads)
+	buildSection, referencedVars := extractBuildSection(defaultSpec, goModDownloads)
 	spec["build"] = buildSection
 
 	// Initialize args + metadata — only include Makefile vars that are actually used
-	args := extractDefaultsSection(defaultSpec, makefileInfo, referencedVars, goModDownloads, spec)
+	args := extractDefaultsSection(defaultSpec, referencedVars, goModDownloads, spec)
 	spec["args"] = args
 
 	// Build extensions section
 	spec["x-build-extensions"] = extractBuildExtensions(defaultSpec)
 
 	// Transform Dockerfile content to Dalec sections
-	spec["sources"] = extractSourcesSection(defaultSpec, nonDeterministicValues, goModDownloads)
+	spec["sources"] = extractSourcesSection(defaultSpec, goModDownloads)
 
 	spec["dependencies"] = extractDependencies()
-	spec["artifacts"] = extractArtifactsSection(defaultSpec, nonDeterministicValues)
-	spec["targets"] = extractTargetsSection(defaultSpec, nonDeterministicValues)
+	spec["artifacts"] = extractArtifactsSection(defaultSpec)
+	spec["targets"] = extractTargetsSection(defaultSpec)
 	spec["tests"] = extractTests()
 
 	return spec

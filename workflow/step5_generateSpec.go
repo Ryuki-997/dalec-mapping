@@ -23,12 +23,10 @@ import (
 
 // ─── Chunk 1 · MAIN ─────────────────────────────────────────────────────────
 
-// GenerateSpec creates the DALEC spec from parsed build files.
-// Uses static Dockerfile analysis as the primary extraction method.
-// The agentResponse (LLM output) is used as a fallback when static extraction
-// yields no results.
-// Returns the resolved build target strings for downstream use (e.g. image test).
-func GenerateSpec(onboard *onboarding.OnboardingInfo, agentResponse []byte, tag string) ([]string, error) {
+// GenerateSpec creates the DALEC spec from parsed build files using static
+// Dockerfile analysis. Returns the resolved build target strings for downstream
+// use (e.g. image test).
+func GenerateSpec(onboard *onboarding.OnboardingInfo, tag string) ([]string, error) {
 	// Fetch repository metadata
 	subdir := path.Dir(onboard.DockerfileDir)
 	repoInfo, err := repository.FetchRepoInfo(onboard.Repository, subdir, tag)
@@ -37,24 +35,23 @@ func GenerateSpec(onboard *onboarding.OnboardingInfo, agentResponse []byte, tag 
 		os.Exit(1)
 	}
 
-	// Parse Dockerfile, Makefile, and extract build values
+	// Parse Dockerfile and Makefile — sets contents.Dockerfile and contents.Makefile globals.
 	specFilePath := "" // TODO: later
-	dockerfileInfo, makefileInfo, nonDeterministicInfo, previousDalecSpecInfo, err := parser.ParseOptionalFileInfo(onboard.DockerfileContent, onboard.MakefileContent, specFilePath, agentResponse)
+	previousDalecSpecInfo, err := parser.ParseOptionalFileInfo(onboard.DockerfileContent, onboard.MakefileContent, specFilePath)
 	if err != nil {
 		fmt.Printf("❌ Error parsing optional files: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Prefer static extraction over LLM output.
-	if staticNDV := parser.ExtractStaticBuildValues(dockerfileInfo.Stages, dockerfileInfo.Args); staticNDV != nil {
-		fmt.Println("✅ Using static Dockerfile extraction (LLM bypassed)")
-		nonDeterministicInfo = staticNDV
-	} else if nonDeterministicInfo != nil {
-		fmt.Println("⚠️  Static extraction yielded no results, falling back to LLM output")
+	// Static extraction from Dockerfile AST — sets contents.Spec global.
+	if parser.ExtractStaticBuildValues() != nil {
+		fmt.Println("✅ Using static Dockerfile extraction")
+	} else {
+		fmt.Println("⚠️  Static extraction yielded no results, proceeding with defaults")
 	}
 
-	// Build the default spec from repo metadata + Dockerfile info
-	defaultSpec, err := transformer.InitDefaultSpec(onboard, repoInfo, &dockerfileInfo, previousDalecSpecInfo)
+	// Build the default spec from repo metadata + global Dockerfile info.
+	defaultSpec, err := transformer.InitDefaultSpec(onboard, repoInfo, previousDalecSpecInfo)
 	if err != nil {
 		return nil, err
 	}
@@ -68,7 +65,7 @@ func GenerateSpec(onboard *onboarding.OnboardingInfo, agentResponse []byte, tag 
 	parser.PrintDockerfileInfo(defaultSpec)
 
 	// Transform to final DALEC spec and write output
-	dalecSpec := transformer.TransformToDalec(defaultSpec, &makefileInfo, nonDeterministicInfo)
+	dalecSpec := transformer.TransformToDalec(defaultSpec)
 
 	if err := parser.WriteOutput(dalecSpec); err != nil {
 		fmt.Printf("❌ Error writing output YAML file: %v\n", err)

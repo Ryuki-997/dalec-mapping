@@ -38,9 +38,9 @@ func PushToRemote(onboard *onboarding.OnboardingInfo, tag string, specOnly bool)
 	// Build the directory prefix for all files
 	var dir string
 	if specRepository != "" {
-		dir = fmt.Sprintf("specs/auto/%s/%s", specRepository, specImageName)
+		dir = fmt.Sprintf("autospecs/%s/%s", specRepository, specImageName)
 	} else {
-		dir = fmt.Sprintf("specs/auto/%s", specImageName)
+		dir = fmt.Sprintf("autospecs/%s", specImageName)
 	}
 
 	specFile := fmt.Sprintf("%s-%s-specfile.yml", specImageName, tag)

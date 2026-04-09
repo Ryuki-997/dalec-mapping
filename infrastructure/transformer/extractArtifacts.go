@@ -22,7 +22,6 @@ package transformer
 
 import (
 	"dalec-mapping/domain/contents"
-	"dalec-mapping/domain/llm"
 
 	"fmt"
 	"path/filepath"
@@ -36,9 +35,9 @@ var goBuildOutputRe = regexp.MustCompile(`-o\s+(/go/bin/[^\s]+)`)
 // ─── Chunk 1 · ORCHESTRATION ─────────────────────────────────────────────────
 
 // extractArtifactsSection returns the global artifacts section (Linux binaries + license).
-func extractArtifactsSection(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
+func extractArtifactsSection(defaultSpec *contents.DefaultSpec) map[string]interface{} {
 	binaries := make(map[string]interface{})
-	for path := range computeArtifactPaths(defaultSpec, nonDeterministicValues) {
+	for path := range computeArtifactPaths(defaultSpec) {
 		binaries[path] = map[string]interface{}{}
 	}
 	return map[string]interface{}{
@@ -52,12 +51,12 @@ func extractArtifactsSection(defaultSpec *contents.DefaultSpec, nonDeterministic
 // ─── Chunk 2 · PATH RESOLUTION ──────────────────────────────────────────────
 
 // computeArtifactPaths returns the Linux binary artifact paths (no .exe).
-func computeArtifactPaths(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
+func computeArtifactPaths(defaultSpec *contents.DefaultSpec) map[string]interface{} {
 	paths := make(map[string]interface{})
 
 	// Wrapper pipeline: the LAST go build output from pipeline steps is the final artifact.
-	if nonDeterministicValues != nil && len(nonDeterministicValues.PipelineSteps) > 0 {
-		if wrapperPath := lastGoBuildOutputInPipeline(nonDeterministicValues.PipelineSteps); wrapperPath != "" {
+	if contents.Spec != nil && len(contents.Spec.PipelineSteps) > 0 {
+		if wrapperPath := lastGoBuildOutputInPipeline(contents.Spec.PipelineSteps); wrapperPath != "" {
 			paths[filepath.ToSlash(wrapperPath)] = struct{}{}
 			fmt.Printf("ARTIFACTS: %v\n", wrapperPath)
 			return paths
@@ -65,12 +64,12 @@ func computeArtifactPaths(defaultSpec *contents.DefaultSpec, nonDeterministicVal
 	}
 
 	// Standard case: derive from binaries.
-	if nonDeterministicValues != nil && len(nonDeterministicValues.Binaries) > 0 {
-		epBase := entrypointBinaryName(nonDeterministicValues)
-		for _, bin := range nonDeterministicValues.Binaries {
+	if contents.Spec != nil && len(contents.Spec.Binaries) > 0 {
+		epBase := entrypointBinaryName(contents.Spec)
+		for _, bin := range contents.Spec.Binaries {
 			p := resolveOutputPath(bin)
 			// Single-binary rename when entrypoint differs.
-			if epBase != "" && canonicalBase(p) != epBase && len(nonDeterministicValues.Binaries) == 1 {
+			if epBase != "" && canonicalBase(p) != epBase && len(contents.Spec.Binaries) == 1 {
 				p = "/go/bin/" + epBase
 			}
 			artifact := filepath.ToSlash(p)
@@ -91,9 +90,9 @@ func computeArtifactPaths(defaultSpec *contents.DefaultSpec, nonDeterministicVal
 // computeWindowsArtifactBinaries returns the windowscross artifact binaries map.
 // Appends ".exe" to each Linux artifact key — matches the file written by the
 // BIN_SUFFIX build step when GOOS=windows.
-func computeWindowsArtifactBinaries(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
+func computeWindowsArtifactBinaries(defaultSpec *contents.DefaultSpec) map[string]interface{} {
 	binaries := make(map[string]interface{})
-	for linuxPath := range computeArtifactPaths(defaultSpec, nonDeterministicValues) {
+	for linuxPath := range computeArtifactPaths(defaultSpec) {
 		binaries[linuxPath+".exe"] = map[string]interface{}{}
 	}
 	return binaries
@@ -102,7 +101,7 @@ func computeWindowsArtifactBinaries(defaultSpec *contents.DefaultSpec, nonDeterm
 // ─── Chunk 4 · UTILITIES ────────────────────────────────────────────────────
 
 // resolveOutputPath derives the artifact output path from a binary's fields.
-func resolveOutputPath(bin llm.Binary) string {
+func resolveOutputPath(bin contents.SpecBinary) string {
 	if bin.OutputPath != "" {
 		return bin.OutputPath
 	}

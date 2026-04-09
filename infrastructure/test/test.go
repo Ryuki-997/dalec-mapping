@@ -38,11 +38,6 @@ func TestCheckFiles(targetOS string, binaryName string, binaryPath string, symli
 		files[binaryPath] = map[string]interface{}{
 			"permissions": Permission(permission),
 		}
-		if symlinkPath != "" {
-			// symlinkPath is a symlink in the container; lstat always returns 0777 for symlinks.
-			// Only verify it exists — do not assert permissions.
-			files[symlinkPath] = map[string]interface{}{}
-		}
 	}
 
 	return map[string]interface{}{

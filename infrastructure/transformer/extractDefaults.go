@@ -57,9 +57,9 @@ var makeFunctions = []string{
 // ─── Chunk 1 · ORCHESTRATION ─────────────────────────────────────────────────
 
 // extractDefaultsSection writes metadata into the spec and returns the resolved args map.
-func extractDefaultsSection(defaultSpec *contents.DefaultSpec, makefileInfo *contents.MakefileInfo, referencedVars map[string]bool, goModDownloads []GoModDownloadInfo, spec map[string]interface{}) map[string]interface{} {
+func extractDefaultsSection(defaultSpec *contents.DefaultSpec, referencedVars map[string]bool, goModDownloads []GoModDownloadInfo, spec map[string]interface{}) map[string]interface{} {
 	extractMetadata(defaultSpec, spec)
-	args := extractArgs(defaultSpec, makefileInfo, referencedVars, goModDownloads)
+	args := extractArgs(defaultSpec, referencedVars, goModDownloads)
 	return args
 }
 
@@ -82,7 +82,7 @@ func extractMetadata(defaultSpec *contents.DefaultSpec, spec map[string]interfac
 // extractArgs builds the top-level args map.
 // referencedVars is the set of variable names actually used in build commands/ldflags;
 // only Makefile variables in this set are promoted to args with their resolved values.
-func extractArgs(defaultSpec *contents.DefaultSpec, makefileInfo *contents.MakefileInfo, referencedVars map[string]bool, goModDownloads []GoModDownloadInfo) map[string]interface{} {
+func extractArgs(defaultSpec *contents.DefaultSpec, referencedVars map[string]bool, goModDownloads []GoModDownloadInfo) map[string]interface{} {
 	args := map[string]interface{}{
 		"REVISION":   defaultSpec.Revision,
 		"VERSION":    defaultSpec.Version,
@@ -92,25 +92,26 @@ func extractArgs(defaultSpec *contents.DefaultSpec, makefileInfo *contents.Makef
 		"TARGETARCH": "",
 	}
 
-	makefileInfo = initializeMakefileInfo(makefileInfo)
-	args = mergeDockerfileArgs(args, defaultSpec, makefileInfo)
-	args = mergeMakefileVars(args, makefileInfo, referencedVars, defaultSpec)
-	args = mergeSubmoduleVars(args, defaultSpec, makefileInfo, goModDownloads)
+	mi := initializeMakefile()
+	args = mergeDockerfileArgs(args, defaultSpec, mi)
+	args = mergeMakefileVars(args, mi, referencedVars, defaultSpec)
+	args = mergeSubmoduleVars(args, defaultSpec, mi, goModDownloads)
 
 	return args
 }
 
-// initializeMakefileInfo returns a non-nil MakefileInfo, seeding platform
-// variables to empty so callers never see unresolved ${ARCH}/${OS} references.
-func initializeMakefileInfo(makefileInfo *contents.MakefileInfo) *contents.MakefileInfo {
-	if makefileInfo == nil {
-		makefileInfo = &contents.MakefileInfo{Variables: make(map[string]string)}
+// initializeMakefile returns a copy of contents.Makefile seeded with platform
+// variables set to empty so callers never see unresolved ${ARCH}/${OS} references.
+func initializeMakefile() *contents.MakefileInfo {
+	mi := &contents.MakefileInfo{Variables: make(map[string]string)}
+	for k, v := range contents.Makefile.Variables {
+		mi.Variables[k] = v
 	}
-	makefileInfo.Variables["ARCH"] = ""
-	makefileInfo.Variables["OS"] = ""
-	makefileInfo.Variables["TARGETARCH"] = ""
-	makefileInfo.Variables["TARGETOS"] = ""
-	return makefileInfo
+	mi.Variables["ARCH"] = ""
+	mi.Variables["OS"] = ""
+	mi.Variables["TARGETARCH"] = ""
+	mi.Variables["TARGETOS"] = ""
+	return mi
 }
 
 // mergeDockerfileArgs folds Dockerfile ARG values into args, resolving any

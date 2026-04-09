@@ -115,9 +115,9 @@ func FilterExistingTags(tags []repository.TagInfo, specRepo, specImage string, e
 // SpecFilePath returns the remote path for a spec file.
 func SpecFilePath(specRepo, specImage, tag string) string {
 	if specRepo != "" {
-		return fmt.Sprintf("specs/auto/%s/%s/%s-%s-specfile.yml", specRepo, specImage, specImage, tag)
+		return fmt.Sprintf("autospecs/%s/%s/%s-%s-specfile.yml", specRepo, specImage, specImage, tag)
 	}
-	return fmt.Sprintf("specs/auto/%s/%s-%s-specfile.yml", specImage, specImage, tag)
+	return fmt.Sprintf("autospecs/%s/%s-%s-specfile.yml", specImage, specImage, tag)
 }
 
 // TagNames extracts the Name field from a slice of TagInfo.

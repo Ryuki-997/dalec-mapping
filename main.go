@@ -1,13 +1,11 @@
 package main
 
 import (
-	"context"
 	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/semver"
 	"dalec-mapping/workflow"
 	"flag"
-	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -27,7 +25,7 @@ import (
 // ─── Chunk 1 · ENTRY ────────────────────────────────────────────────────────
 
 func main() {
-	inputPath := flag.String("path", "", "Input path to search for onboarding files (e.g. containernetworking and containernetworking/azure-cns both work). Omit to fetch all under specs/auto/")
+	inputPath := flag.String("path", "", "Input path to search for onboarding files (e.g. containernetworking and containernetworking/azure-cns both work). Omit to fetch all under autospecs/")
 	flag.Parse()
 
 	loadEnv()
@@ -146,15 +144,7 @@ func generateSpec(onboard *onboarding.OnboardingInfo, fullTag string) (string, [
 	log.Println("Dalec Spec Generator - Scheduled Job")
 	log.Printf("Started at: %s", time.Now().Format(time.RFC3339))
 
-	ctx := context.Background()
-
-	agentResponse, err := workflow.ExtractBuildValues(ctx, onboard)
-	if err != nil {
-		return "", nil, fmt.Errorf("ExtractBuildValues failed: %w", err)
-	}
-	log.Printf("✅ Non-deterministic values populated and saved to result directory")
-
-	resolvedTargets, err := workflow.GenerateSpec(onboard, agentResponse, fullTag)
+	resolvedTargets, err := workflow.GenerateSpec(onboard, fullTag)
 	if err != nil {
 		return "", nil, err
 	}

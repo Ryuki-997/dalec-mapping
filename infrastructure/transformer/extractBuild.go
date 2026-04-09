@@ -31,7 +31,6 @@ import (
 	"strings"
 
 	"dalec-mapping/domain/contents"
-	"dalec-mapping/domain/llm"
 	"dalec-mapping/infrastructure/parser"
 )
 
@@ -46,13 +45,13 @@ var binOutRe = regexp.MustCompile(`-o (/go/bin/[^${}\s]+)`)
 // extractBuildSection assembles the top-level `build:` map for a Dalec spec.
 // Returns the build map and the set of ${VAR} names referenced inside it,
 // so the caller can forward them as top-level args.
-func extractBuildSection(defaultSpec *contents.DefaultSpec, makefileInfo *contents.MakefileInfo, nonDeterministicValues *llm.NonDeterministicValues, goModDownloads []GoModDownloadInfo) (map[string]interface{}, map[string]bool) {
+func extractBuildSection(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloadInfo) (map[string]interface{}, map[string]bool) {
 	build := make(map[string]interface{})
 
 	env := buildEnv()
 	build["env"] = env
 
-	steps, scanText := buildSteps(defaultSpec, nonDeterministicValues, goModDownloads)
+	steps, scanText := buildSteps(defaultSpec, goModDownloads)
 	build["steps"] = steps
 
 	referencedVars := scanVarReferences(scanText)
@@ -67,10 +66,8 @@ func extractBuildSection(defaultSpec *contents.DefaultSpec, makefileInfo *conten
 		if dalecHandledEnvs[varName] {
 			continue
 		}
-		if makefileInfo != nil {
-			if _, exists := makefileInfo.Variables[varName]; exists {
-				env[varName] = fmt.Sprintf("${%s}", varName)
-			}
+		if _, exists := contents.Makefile.Variables[varName]; exists {
+			env[varName] = fmt.Sprintf("${%s}", varName)
 		}
 	}
 
@@ -98,34 +95,45 @@ func buildEnv() map[string]interface{} {
 // buildSteps converts NonDeterministicValues binaries into a single Dalec `steps` entry.
 // All binaries are merged into one command block so BIN_SUFFIX is set once.
 // Also returns the combined command text for var scanning.
-// baseDir is always the repo source name (the root of the cloned source). The LLM-provided
-// build command's `cd` paths are always relative to the repo root, not the Dockerfile subdir.
-func buildSteps(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues, goModDownloads []GoModDownloadInfo) ([]map[string]interface{}, string) {
+// The first step after the preamble is always `cd <baseDir>` where baseDir is
+// repo/subdir (subdir derived from MakefileDir, DockerfileDir, or gomod subpath).
+func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloadInfo) ([]map[string]interface{}, string) {
 	baseDir := defaultSpec.Repo
 
-	// For monorepos where go.mod is in a subdirectory (detected via MakefileDir,
-	// e.g. "client/Makefile" → subdir "client"), extend baseDir so the build
-	// cd's into the correct module root.
-	if defaultSpec.MakefileDir != "" {
+	rawCmds := rawBuildCommands(goModDownloads)
+
+	// Detect the go.mod subdirectory within the repo.
+	// Priority: gomod subpath → repository + makefile location → repository + dockerfile location.
+	// When non-empty, each per-binary go build is wrapped in `cd goModSubdir && cmd && cd ..`
+	// so the go toolchain can find go.mod, while the main cd stays at the repo root for correct
+	// cp file paths (e.g. cni/azure-$OS.conflist relative to azure-container-networking/).
+	goModSubdir := ""
+	if subpaths := collectGoModSubpaths(defaultSpec, contents.Spec); len(subpaths) > 0 {
+		goModSubdir = subpaths[0]
+	}
+	if goModSubdir == "" && defaultSpec.MakefileDir != "" {
 		dir := strings.TrimSuffix(defaultSpec.MakefileDir, "/")
 		if idx := strings.LastIndex(dir, "/"); idx >= 0 {
-			baseDir = baseDir + "/" + dir[:idx]
+			goModSubdir = dir[:idx]
 		}
 	}
-
-	// When the primary source has a subpath (go.mod lives in a subdirectory,
-	// e.g. "aks-node-controller"), extend baseDir so builds cd into the
-	// correct module root.
-	if subpaths := collectGoModSubpaths(defaultSpec, nonDeterministicValues); len(subpaths) > 0 {
-		// Use the first discovered subpath as the module root.
-		baseDir = defaultSpec.Repo + "/" + subpaths[0]
+	if goModSubdir == "" && defaultSpec.DockerfileDir != "" {
+		d := strings.TrimSuffix(defaultSpec.DockerfileDir, "/")
+		if idx := strings.LastIndex(d, "/"); idx >= 0 {
+			goModSubdir = d[:idx]
+		}
 	}
-
-	rawCmds := rawBuildCommands(nonDeterministicValues, goModDownloads)
-
-	// Fallback: no commands extracted — emit a minimal go build step.
+	// Source file paths in rawCmds are relative to the repo root (e.g. cni/network/plugin/main.go).
 	if len(rawCmds) == 0 {
-		fallback := fmt.Sprintf("cd %s\ngo build -o /go/bin/%s .", baseDir, defaultSpec.Repo)
+		fallbackName := defaultSpec.Repo
+		if contents.Spec != nil && len(contents.Spec.Binaries) > 0 && contents.Spec.Binaries[0].Name != "" {
+			fallbackName = contents.Spec.Binaries[0].Name
+		}
+		cdTarget := baseDir
+		if goModSubdir != "" {
+			cdTarget = baseDir + "/" + goModSubdir
+		}
+		fallback := fmt.Sprintf("%s\ncd %s\ngo build -o /go/bin/%s .", binSuffixPreamble(), cdTarget, fallbackName)
 		return []map[string]interface{}{{"command": fallback}}, fallback
 	}
 
@@ -160,21 +168,29 @@ func buildSteps(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.N
 
 		cdPath := baseDir
 		if subdir != "" && subdir != baseDir {
-			// Keep the subdirectory cd as part of the command itself so the
-			// working directory stays at baseDir for subsequent pipeline steps.
+			// Raw command had an explicit inner cd to a non-baseDir path — keep it.
 			rest = fmt.Sprintf("cd %s && %s && cd ..", subdir, rest)
+		} else if subdir == "" && goModSubdir != "" && strings.HasSuffix(rest, " .") {
+			// Build command targets "." — Go files live in <goModSubdir>, not the repo root.
+			// Wrap as cd-in/cd-out so the outer cd stays at baseDir for correct cp paths.
+			rest = fmt.Sprintf("cd %s && %s && cd ..", goModSubdir, rest)
 		}
 		buildLines = append(buildLines, buildLine{cdPath: cdPath, cmd: rest})
 	}
 
 	if len(buildLines) == 0 {
-		fallback := fmt.Sprintf("cd %s\ngo build -o /go/bin/%s .", baseDir, defaultSpec.Repo)
+		fallbackName := defaultSpec.Repo
+		if contents.Spec != nil && len(contents.Spec.Binaries) > 0 && contents.Spec.Binaries[0].Name != "" {
+			fallbackName = contents.Spec.Binaries[0].Name
+		}
+		fallback := fmt.Sprintf("%s\ncd %s\ngo build -o /go/bin/%s .", binSuffixPreamble(), baseDir, fallbackName)
 		return []map[string]interface{}{{"command": fallback}}, fallback
 	}
 
-	// Build the merged command block: preamble once, then cd + build lines.
+	// Build the merged command block: preamble, cd into baseDir, then build lines.
 	var parts []string
 	parts = append(parts, binSuffixPreamble())
+	parts = append(parts, "cd "+baseDir)
 
 	// Split buildLines into normal binaries and deferred sub-module builds.
 	// Sub-module builds (e.g. dropgz) depend on pipeline steps that prepare
@@ -188,11 +204,8 @@ func buildSteps(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.N
 		}
 	}
 
-	// Emit normal binary builds. Only emit cd when the path changes.
-	// ${BIN_SUFFIX} is NOT injected here — a single final-pass injection
-	// targets the very last `-o /go/bin/<name>` in the entire assembled
-	// command block (which may come from pipeline steps or deferred lines).
-	lastCd := ""
+	// Emit normal binary builds. Only emit cd when the path changes from baseDir.
+	lastCd := baseDir
 	for _, bl := range normalLines {
 		if bl.cdPath != lastCd {
 			parts = append(parts, "cd "+bl.cdPath)
@@ -204,27 +217,19 @@ func buildSteps(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.N
 	// Append pipeline steps (intermediate + wrapper stages) after the primary builds.
 	// Pipeline steps handle their own directory navigation, so no automatic cd-back
 	// is inserted here.
-	if nonDeterministicValues != nil && len(nonDeterministicValues.PipelineSteps) > 0 {
-		// Ensure directories from intermediate-stage WORKDIRs exist. The Dockerfile
-		// creates these implicitly via WORKDIR, but Dalec's single-command sandbox
-		// does not. Only emit mkdir for dirs the LLM hasn't already handled.
-		if mkdirs := stageWorkdirs(defaultSpec.Stages, nonDeterministicValues.PipelineSteps, baseDir); len(mkdirs) > 0 {
+	if contents.Spec != nil && len(contents.Spec.PipelineSteps) > 0 {
+		if mkdirs := stageWorkdirs(defaultSpec.Stages, contents.Spec.PipelineSteps, baseDir); len(mkdirs) > 0 {
 			parts = append(parts, "mkdir -p "+strings.Join(mkdirs, " "))
 		}
 
-		// Collect COPY --from instructions from intermediate stages so we can
-		// inject them as cp commands after the matching cd <workdir>.
-		// Skip injection when the LLM's pipelineSteps already contain cp
-		// commands whose destination targets the same directory.
 		workdirCopies := intermediateStageCopies(defaultSpec.Stages, baseDir)
+		submodCopies := submoduleStageCopies(defaultSpec.Stages)
 		for dir := range workdirCopies {
-			for _, raw := range nonDeterministicValues.PipelineSteps {
+			for _, raw := range contents.Spec.PipelineSteps {
 				raw = strings.TrimSpace(raw)
 				if !strings.HasPrefix(raw, "cp ") {
 					continue
 				}
-				// The destination is the last token; only match if it
-				// targets this workdir (not merely reads from it).
 				fields := strings.Fields(raw)
 				if len(fields) < 3 {
 					continue
@@ -237,7 +242,7 @@ func buildSteps(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.N
 			}
 		}
 
-		for _, step := range nonDeterministicValues.PipelineSteps {
+		for _, step := range contents.Spec.PipelineSteps {
 			step = strings.TrimSpace(step)
 			if step == "" {
 				continue
@@ -246,21 +251,44 @@ func buildSteps(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.N
 			if goModDownloadRe.MatchString(step) {
 				continue
 			}
+			// Strip leading env assignments for vars Dalec manages (GOOS, CGO_ENABLED, etc.)
+			// so pipeline steps never override Dalec's cross-compilation environment.
+			step = stripDalecHandledEnvs(step)
 			// Rewrite `cd /go/pkg/mod/<module>@<version>` to `cd "$BUILD_ROOT"/<sourceKey>`.
 			step = rewriteGoModCdPaths(step, goModDownloads)
 			// Rewrite bare `cd <sourceKey>` to `cd "$BUILD_ROOT"/<sourceKey>` so
 			// the path resolves correctly after an absolute cd (e.g. cd /payload).
 			step = rewriteRelativeSourceCd(step, goModDownloads)
-			parts = append(parts, step)
+			// Inject `cd "$BUILD_ROOT"/<sourceKey> &&` before bare `go build` steps
+			// whose output matches a submodule source — they need the source's go.mod.
+			step = rewriteSubmoduleBuildCd(step, goModDownloads)
 
-			// After a cd that matches an intermediate stage's WORKDIR, inject
-			// the COPY --from instructions (as cp commands) for that stage.
-			if strings.HasPrefix(step, "cd ") {
-				dir := strings.TrimSpace(strings.TrimPrefix(step, "cd "))
-				if cpCmds, ok := workdirCopies[dir]; ok {
+			// Split "cd X && cmd" into separate parts for readability and to allow
+			// COPY injection between the cd and the build command.
+			cDir, restStep := extractCdDir(step)
+			if cDir != "" && restStep != "" {
+				// Inject workdir copies before cd.
+				if cpCmds, ok := workdirCopies[cDir]; ok {
 					parts = append(parts, cpCmds...)
-					delete(workdirCopies, dir)
+					delete(workdirCopies, cDir)
 				}
+				parts = append(parts, "cd "+cDir)
+				// Inject cross-stage copies for Go builder submodule stages (e.g. dropgz).
+				bare := strings.TrimPrefix(cDir, `"$BUILD_ROOT"/`)
+				if cpCmds, ok := submodCopies[bare]; ok {
+					parts = append(parts, cpCmds...)
+				}
+				parts = append(parts, restStep)
+			} else {
+				// Bare "cd X" or non-cd step — inject workdir copies if applicable.
+				if strings.HasPrefix(step, "cd ") {
+					dirToken := strings.Fields(strings.TrimPrefix(step, "cd "))[0]
+					if cpCmds, ok := workdirCopies[dirToken]; ok {
+						parts = append(parts, cpCmds...)
+						delete(workdirCopies, dirToken)
+					}
+				}
+				parts = append(parts, step)
 			}
 		}
 	}
@@ -287,17 +315,17 @@ func buildSteps(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.N
 // from the primary linux entrypoint when it differs from the LLM binary name (e.g.
 // "dropgz" when binaries[0].Name is "azure-ipam"). BIN_SUFFIX is injected so the same
 // step works for both Linux (BIN_SUFFIX="") and windowscross (BIN_SUFFIX=".exe").
-func rawBuildCommands(nonDeterministicValues *llm.NonDeterministicValues, goModDownloads []GoModDownloadInfo) []string {
-	if nonDeterministicValues == nil {
+func rawBuildCommands(goModDownloads []GoModDownloadInfo) []string {
+	if contents.Spec == nil {
 		return nil
 	}
 
-	epBase := entrypointBinaryName(nonDeterministicValues)
+	epBase := entrypointBinaryName(contents.Spec)
 
 	var cmds []string
 
-	for i := range nonDeterministicValues.Binaries {
-		aux := &nonDeterministicValues.Binaries[i]
+	for i := range contents.Spec.Binaries {
+		aux := &contents.Spec.Binaries[i]
 		if aux.Name == "" {
 			continue
 		}
@@ -314,16 +342,7 @@ func rawBuildCommands(nonDeterministicValues *llm.NonDeterministicValues, goModD
 			cmd = fmt.Sprintf("go build -ldflags \"%s\" -o %s", aux.LdFlags, out)
 		}
 
-		// When there is exactly ONE binary and the entrypoint reveals a different canonical
-		// name (e.g. the build should produce "dropgz" but the LLM recorded "azure-ipam"),
-		// rename the -o output path so it matches the declared artifacts.binaries entry.
-		// For multi-binary specs each binary keeps its own name.
-		// Skip the rename when the canonical name matches a sub-module source (e.g. "dropgz")
-		// — in that case the sub-module is built separately via pipeline steps, and the
-		// binary listed here is the real intermediate build that should keep its original name.
-		if cmd != "" && epBase != "" && epBase != aux.Name && len(nonDeterministicValues.Binaries) == 1 && !isSubmoduleName(epBase, goModDownloads) {
-			// Replace both with and without ${BIN_SUFFIX} since suffix injection
-			// may or may not have occurred at this point.
+		if cmd != "" && epBase != "" && epBase != aux.Name && len(contents.Spec.Binaries) == 1 && !isSubmoduleName(epBase, goModDownloads) {
 			cmd = strings.ReplaceAll(cmd,
 				"/go/bin/"+aux.Name+"${BIN_SUFFIX}",
 				"/go/bin/"+epBase+"${BIN_SUFFIX}",
@@ -433,6 +452,25 @@ func stripGoModDownloadPrefix(cmd string) string {
 	return cmd
 }
 
+// rewriteSubmoduleBuildCd injects `cd "$BUILD_ROOT"/<sourceKey> && ` before a `go build`
+// pipeline step whose output binary matches a known go-mod-download source. These builds
+// need the source's own go.mod to be reachable, so we cd to "$BUILD_ROOT"/<sourceKey>
+// before running them.
+func rewriteSubmoduleBuildCd(step string, downloads []GoModDownloadInfo) string {
+	if strings.HasPrefix(step, "cd ") {
+		return step // already has a cd prefix
+	}
+	if !strings.HasPrefix(step, "go build") {
+		return step
+	}
+	for _, dl := range downloads {
+		if strings.Contains(step, "/go/bin/"+dl.SourceKey) {
+			return `cd "$BUILD_ROOT"/` + dl.SourceKey + ` && ` + step
+		}
+	}
+	return step
+}
+
 // rewriteGoModCdPaths replaces `cd /go/pkg/mod/<module>@<version>` with
 // `cd "$BUILD_ROOT"/<sourceKey>`. BUILD_ROOT is set in the preamble to the
 // initial working directory (where DALEC extracts sources).
@@ -483,6 +521,29 @@ var dalecHandledEnvs = map[string]bool{
 	"GOARM": true, "GOARM64": true, "OS": true, "ARCH": true,
 }
 
+// stripDalecHandledEnvs removes leading KEY=VALUE shell env assignments for
+// variables that Dalec sets via the build env (GOOS, CGO_ENABLED, etc.).
+// Only strips tokens at the very start of the command, before the first
+// non-assignment word (e.g. "go", "make").
+func stripDalecHandledEnvs(cmd string) string {
+	for {
+		spaceIdx := strings.IndexByte(cmd, ' ')
+		if spaceIdx < 0 {
+			break
+		}
+		token := cmd[:spaceIdx]
+		eqIdx := strings.IndexByte(token, '=')
+		if eqIdx <= 0 {
+			break
+		}
+		if !dalecHandledEnvs[token[:eqIdx]] {
+			break
+		}
+		cmd = strings.TrimSpace(cmd[spaceIdx:])
+	}
+	return cmd
+}
+
 // standardWorkdirs lists working directories that are always available in the
 // build sandbox and never need an explicit mkdir.
 var standardWorkdirs = map[string]bool{
@@ -492,12 +553,46 @@ var standardWorkdirs = map[string]bool{
 	"/go/bin": true,
 }
 
+// submoduleStageCopies collects COPY --from instructions from Go builder stages
+// (which intermediateStageCopies skips). Returns a map from stage name → cp commands
+// to inject after cd-ing into that stage's source directory during the build.
+func submoduleStageCopies(stages []contents.Stage) map[string][]string {
+	stageRefs := make(map[string]bool)
+	for _, s := range stages {
+		if s.Name != "" {
+			stageRefs[s.Name] = true
+		}
+	}
+	result := make(map[string][]string)
+	for _, stage := range stages {
+		if !parser.IsGoImage(stage.From) {
+			continue // only process Go builder stages (the ones intermediateStageCopies skips)
+		}
+		if stage.Name == "" {
+			continue
+		}
+		for _, cp := range stage.Copies {
+			if cp.From == "" || !stageRefs[cp.From] {
+				continue
+			}
+			srcs := strings.Join(cp.Source, " ")
+			result[stage.Name] = append(result[stage.Name],
+				fmt.Sprintf("cp %s %s", srcs, cp.Dest))
+		}
+	}
+	return result
+}
+
 // intermediateStageCopies extracts COPY --from instructions from non-Go,
 // non-final intermediate stages and returns them as cp shell commands keyed
 // by the stage's WORKDIR. Only COPY --from references that target another
 // parsed stage (i.e. cross-stage copies) are included.
-// Source paths that reference the repo tree (/<baseDir>/...) are rewritten to
-// "$BUILD_ROOT"/<baseDir>/... for the Dalec sandbox.
+//
+// Source path rewriting for Dalec sandbox layout:
+//   - Paths under /<baseDir>/... (the builder's cwd) → relative path (strip prefix).
+//     e.g. /repo/cni/foo → foo   (since cwd = "$BUILD_ROOT"/repo/cni)
+//   - Paths under the repo root but outside baseDir → "$BUILD_ROOT"/repo/...
+//   - All other absolute paths → kept as-is.
 func intermediateStageCopies(stages []contents.Stage, baseDir string) map[string][]string {
 	if len(stages) == 0 {
 		return nil
@@ -512,8 +607,19 @@ func intermediateStageCopies(stages []contents.Stage, baseDir string) map[string
 		stageRefs[fmt.Sprintf("%d", i)] = true
 	}
 
-	// Prefix to detect and rewrite source-tree absolute paths.
-	srcPrefix := "/" + baseDir + "/"
+	// baseDirPrefix: absolute path of the builder's working directory inside the
+	// Dockerfile stage filesystem.  Sources under this prefix are addressable by
+	// relative path because the build script has already `cd`'d there.
+	baseDirPrefix := "/" + baseDir + "/"
+
+	// repoPrefix: top-level repo directory inside the Dockerfile stage filesystem.
+	// Sources under this prefix (but outside baseDirPrefix) need "$BUILD_ROOT"/...
+	// so the shell can resolve them regardless of the current working directory.
+	repoRoot := baseDir
+	if idx := strings.IndexByte(baseDir, '/'); idx > 0 {
+		repoRoot = baseDir[:idx]
+	}
+	repoPrefix := "/" + repoRoot + "/"
 
 	result := make(map[string][]string)
 
@@ -541,11 +647,21 @@ func intermediateStageCopies(stages []contents.Stage, baseDir string) map[string
 				continue
 			}
 			// Rewrite source paths from the Docker stage filesystem to
-			// the Dalec sandbox layout: /<baseDir>/... → "$BUILD_ROOT"/<baseDir>/...
+			// the Dalec sandbox layout.
 			var rewritten []string
 			for _, src := range cp.Source {
-				if strings.HasPrefix(src, srcPrefix) {
-					src = `"$BUILD_ROOT"/` + baseDir + "/" + strings.TrimPrefix(src, srcPrefix)
+				switch {
+				case strings.HasPrefix(src, baseDirPrefix):
+					// Already in cwd — use relative path.
+					src = strings.TrimPrefix(src, baseDirPrefix)
+				case strings.HasPrefix(src, repoPrefix):
+					// Elsewhere in the repo — anchor with $BUILD_ROOT.
+					src = `"$BUILD_ROOT"/` + strings.TrimPrefix(src, "/")
+				case strings.HasPrefix(src, "/"+cp.From+"/") || src == "/"+cp.From:
+					// Path lives in the source stage's own workdir (e.g. /azure-ipam/*.conflist
+					// from a stage named azure-ipam). Strip the leading "/" to make it
+					// relative to the Dalec source root.
+					src = src[1:]
 				}
 				rewritten = append(rewritten, src)
 			}
@@ -578,9 +694,13 @@ func stageWorkdirs(stages []contents.Stage, pipelineSteps []string, baseDir stri
 		if strings.HasPrefix(wd, "/go/pkg/mod/") {
 			continue
 		}
-		// The repo source dir (and any subdirectory within it) is already
-		// present in the mounted source — no mkdir needed.
-		if wd == "/"+baseDir || strings.HasPrefix(wd, "/"+baseDir+"/") {
+		// The entire repo source tree is already present in the mounted source —
+		// no mkdir needed for the repo root or any subdirectory within it.
+		repoRoot := baseDir
+		if idx := strings.IndexByte(baseDir, '/'); idx > 0 {
+			repoRoot = baseDir[:idx]
+		}
+		if wd == "/"+repoRoot || strings.HasPrefix(wd, "/"+repoRoot+"/") {
 			continue
 		}
 		candidates[wd] = true

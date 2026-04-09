@@ -40,9 +40,9 @@ func CreateSpecPR(onboard *onboarding.OnboardingInfo, tag string, specOnly bool)
 	// Build directory prefix
 	var dir string
 	if specRepository != "" {
-		dir = fmt.Sprintf("specs/auto/%s/%s", specRepository, specImageName)
+		dir = fmt.Sprintf("autospecs/%s/%s", specRepository, specImageName)
 	} else {
-		dir = fmt.Sprintf("specs/auto/%s", specImageName)
+		dir = fmt.Sprintf("autospecs/%s", specImageName)
 	}
 
 	// 0. Create a feature branch from OnboardBranch

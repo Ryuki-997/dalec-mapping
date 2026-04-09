@@ -223,7 +223,7 @@ func resolveAndAppend(
 // ─── Chunk 4 · UTILITIES ────────────────────────────────────────────────────
 
 // getOnboardFilepath extracts specRepository and specImageName from an
-// onboard.yml path like "specs/auto/<repo>/<image>/onboard.yml".
+// onboard.yml path like "autospecs/<repo>/<image>/onboard.yml".
 func getOnboardFilepath(path string) (string, string, error) {
 	parts := strings.Split(path, "/")
 	n := len(parts)
@@ -231,10 +231,10 @@ func getOnboardFilepath(path string) (string, string, error) {
 		return "", "", fmt.Errorf("not an onboard file: %s", path)
 	}
 	switch n {
-	case 5:
-		return parts[2], parts[3], nil
 	case 4:
-		return "", parts[2], nil
+		return parts[1], parts[2], nil
+	case 3:
+		return "", parts[1], nil
 	default:
 		return "", "", fmt.Errorf("unexpected file path format: %s", path)
 	}

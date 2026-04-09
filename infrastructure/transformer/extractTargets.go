@@ -11,9 +11,9 @@ package transformer
 //   Chunk 2 · TEST PATHS               testPaths, resolveTestPaths()
 //     Determines the binary name, install path, and symlink path used in
 //     per-target file-existence tests.
-//     Calls → findPrimaryLinuxTarget(), canonicalBase()
+//     Calls → canonicalBase()
 //
-//   Chunk 3 · LINUX TARGETS            linuxDeps(), mergeTargetDeps(), linuxImageConfig()
+//   Chunk 3 · LINUX TARGETS            linuxDeps(), linuxImageConfig()
 //     Dependencies, image config, and extra repos for AZLinux / Debian / Ubuntu.
 //     Calls → msftLinuxExtraRepo(), extractLinuxSymlinks()
 //
@@ -25,15 +25,13 @@ package transformer
 //                                       msftWindowsExtraRepo()
 //     Microsoft package repository definitions for apt sources.
 //
-//   Chunk 6 · UTILITIES                findTargetSpecByOS(),
-//                                       findPrimaryLinuxTarget(),
+//   Chunk 6 · UTILITIES                findPrimaryLinuxTarget(),
 //                                       entrypointBinaryName(), canonicalBase()
 //     Target lookup helpers and shared functions used by other extract* files.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import (
 	"dalec-mapping/domain/contents"
-	"dalec-mapping/domain/llm"
 	"dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/parser"
 	"dalec-mapping/infrastructure/test"
@@ -46,7 +44,7 @@ import (
 
 // extractTargetsSection builds the `targets:` map for every build target in the spec.
 // Each unique OS (azlinux3, windowscross, jammy, …) gets exactly one entry.
-func extractTargetsSection(defaultSpec *contents.DefaultSpec,  nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
+func extractTargetsSection(defaultSpec *contents.DefaultSpec) map[string]interface{} {
 	// Analyse Dockerfile stages for intermediate runtime deps and final Linux base.
 	intermediateDeps := parser.ExtractIntermediateRuntimeDeps(defaultSpec.Stages)
 	finalLinuxBase := parser.DetectFinalLinuxBase(defaultSpec.Stages)
@@ -61,24 +59,24 @@ func extractTargetsSection(defaultSpec *contents.DefaultSpec,  nonDeterministicV
 		}
 		seen[osName] = true
 		isContainer := buildTarget.IsContainer()
-		tp := resolveTestPaths(osName, isContainer, defaultSpec, nonDeterministicValues)
-		targets[osName] = buildTargetEntry(osName, isContainer, tp, defaultSpec, nonDeterministicValues, intermediateDeps, finalLinuxBase)
+		tp := resolveTestPaths(osName, isContainer, defaultSpec)
+		targets[osName] = buildTargetEntry(osName, isContainer, tp, defaultSpec, intermediateDeps, finalLinuxBase)
 	}
 	return targets
 }
 
 // buildTargetEntry assembles the full target map for one OS.
-func buildTargetEntry(osName string, isContainer bool, tp testPaths, defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues, intermediateDeps []parser.IntermediateRuntimeDeps, finalLinuxBase string) map[string]interface{} {
+func buildTargetEntry(osName string, isContainer bool, tp testPaths, defaultSpec *contents.DefaultSpec, intermediateDeps []parser.IntermediateRuntimeDeps, finalLinuxBase string) map[string]interface{} {
 	target := make(map[string]interface{})
 
 	if osName == "windowscross" {
-		target["dependencies"] = windowsDeps(defaultSpec, nonDeterministicValues)
-		target["artifacts"] = windowsArtifacts(defaultSpec, nonDeterministicValues)
-		target["image"] = windowsImageConfig(tp.binaryName, defaultSpec, nonDeterministicValues)
+		target["dependencies"] = windowsDeps(defaultSpec)
+		target["artifacts"] = windowsArtifacts(defaultSpec)
+		target["image"] = windowsImageConfig(tp.binaryName, defaultSpec)
 	} else {
-		target["dependencies"] = linuxDeps(osName, defaultSpec, nonDeterministicValues, intermediateDeps)
+		target["dependencies"] = linuxDeps(osName, defaultSpec, intermediateDeps)
 		if isContainer {
-			target["image"] = linuxImageConfig(osName, tp.binaryName, nonDeterministicValues, finalLinuxBase)
+			target["image"] = linuxImageConfig(tp.binaryName, finalLinuxBase)
 		}
 	}
 
@@ -95,17 +93,16 @@ func buildTargetEntry(osName string, isContainer bool, tp testPaths, defaultSpec
 // testPaths holds the resolved binary paths used for per-target file tests.
 type testPaths struct {
 	binaryName  string
-	binaryPath  string // real installed file (has permissions)
-	symlinkPath string // symlink (existence-only test)
+	binaryPath  string // real installed binary (has permissions check)
+	symlinkPath string // symlink pointing to binaryPath (existence-only check)
 }
 
-// resolveTestPaths determines the binary name and install paths used in file tests
-// for a specific target OS. Uses findTargetSpecByOS to match the LLM's per-target
-// config so that tests stay aligned with the image config for that OS.
+// resolveTestPaths determines the binary name and install paths used in file tests.
 //
-// For container targets: binaryPath = /usr/bin/<name>, symlinkPath = /usr/local/bin/<name>
+// For container targets: binaryPath = /usr/bin/<name> (real binary, permissions check),
+//                        symlinkPath = /usr/local/bin/<name> (symlink, existence-only)
 // For package targets (deb/rpm): binaryPath = /usr/bin/<name>, symlinkPath = "" (no symlink)
-func resolveTestPaths(osName string, isContainer bool, defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) testPaths {
+func resolveTestPaths(osName string, isContainer bool, defaultSpec *contents.DefaultSpec) testPaths {
 	tp := testPaths{
 		binaryName: defaultSpec.SpecImageName,
 		binaryPath: "/usr/bin/" + defaultSpec.SpecImageName,
@@ -113,32 +110,24 @@ func resolveTestPaths(osName string, isContainer bool, defaultSpec *contents.Def
 	if isContainer {
 		tp.symlinkPath = "/usr/local/bin/" + defaultSpec.SpecImageName
 	}
-	if nonDeterministicValues == nil {
-		return tp
-	}
-	if len(nonDeterministicValues.Binaries) > 0 && nonDeterministicValues.Binaries[0].Name != "" {
-		tp.binaryName = nonDeterministicValues.Binaries[0].Name
-		tp.binaryPath = "/usr/bin/" + tp.binaryName
-		if isContainer {
-			tp.symlinkPath = "/usr/local/bin/" + tp.binaryName
-		}
-	}
-	if !isContainer {
-		// Package targets: no image config, no symlinks — just binary path.
-		return tp
-	}
-	if ts := findTargetSpecByOS(nonDeterministicValues.Targets, osName); ts != nil && ts.Symlink != "" {
-		tp.binaryPath = ts.Symlink
-		tp.symlinkPath = ts.Entrypoint
-		if base := canonicalBase(ts.Symlink); base != "" {
+
+	// Derive the binary name from the parsed artifact paths (same source used
+	// by extractArtifacts). computeArtifactPaths reads contents.Spec which is
+	// populated by the Dockerfile AST parser.
+	for artifactPath := range computeArtifactPaths(defaultSpec) {
+		if base := canonicalBase(artifactPath); base != "" {
 			tp.binaryName = base
+			if osName == "windowscross" {
+				tp.binaryPath = "/Windows/System32/" + base + ".exe"
+				tp.symlinkPath = ""
+			} else {
+				tp.binaryPath = "/usr/bin/" + base
+				if isContainer {
+					tp.symlinkPath = "/usr/local/bin/" + base
+				}
+			}
 		}
-	} else if ts := findTargetSpecByOS(nonDeterministicValues.Targets, osName); ts != nil && ts.Entrypoint != "" {
-		tp.binaryPath = ts.Entrypoint
-		tp.symlinkPath = ""
-		if base := canonicalBase(ts.Entrypoint); base != "" {
-			tp.binaryName = base
-		}
+		break
 	}
 	return tp
 }
@@ -146,7 +135,7 @@ func resolveTestPaths(osName string, isContainer bool, defaultSpec *contents.Def
 // ─── Chunk 3 · LINUX TARGETS ────────────────────────────────────────────────
 
 // linuxDeps builds the dependencies map for a Linux target.
-func linuxDeps(osName string, defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues, intermediateDeps []parser.IntermediateRuntimeDeps) map[string]interface{} {
+func linuxDeps(osName string, defaultSpec *contents.DefaultSpec, intermediateDeps []parser.IntermediateRuntimeDeps) map[string]interface{} {
 	buildDeps := map[string]interface{}{}
 	runtimeDeps := map[string]interface{}{}
 
@@ -159,14 +148,12 @@ func linuxDeps(osName string, defaultSpec *contents.DefaultSpec, nonDeterministi
 			buildDeps[pkg] = map[string]interface{}{}
 			runtimeDeps[pkg] = map[string]interface{}{}
 		}
-		mergeTargetDeps(buildDeps, runtimeDeps, osName, nonDeterministicValues)
 
 	case "bookworm", "bullseye", "noble", "jammy", "focal", "bionic":
 		if defaultSpec.Generator == repository.GoModGenerator {
 			buildDeps["msft-golang"] = goToolchainDep(defaultSpec.GoVersion)
 			buildDeps["gcc"] = map[string]interface{}{}
 		}
-		mergeTargetDeps(buildDeps, runtimeDeps, osName, nonDeterministicValues)
 	}
 
 	// Merge runtime deps extracted from Dockerfile intermediate stages.
@@ -195,42 +182,11 @@ func linuxDeps(osName string, defaultSpec *contents.DefaultSpec, nonDeterministi
 	return deps
 }
 
-// mergeTargetDeps copies LLM-provided build/runtime deps for osName into the maps.
-func mergeTargetDeps(buildDeps, runtimeDeps map[string]interface{}, osName string, nonDeterministicValues *llm.NonDeterministicValues) {
-	if nonDeterministicValues == nil {
-		return
-	}
-	ts := findTargetSpecByOS(nonDeterministicValues.Targets, osName)
-	if ts == nil {
-		return
-	}
-	for _, dep := range ts.Build {
-		buildDeps[dep] = map[string]interface{}{}
-	}
-	for _, dep := range ts.Runtime {
-		runtimeDeps[dep] = map[string]interface{}{}
-	}
-}
-
 // linuxImageConfig builds the image map (entrypoint + symlinks + optional base) for a Linux target.
-// Entrypoint and symlink values from the LLM are only used when they reference the
-// actual binary name being built. Paths to unrelated packaging wrappers (e.g. a
-// Dockerfile-level bundler binary) are ignored in favour of the binaryName defaults.
 // When finalLinuxBase is provided, it is emitted as a single image.bases entry.
-func linuxImageConfig(osName, binaryName string, nonDeterministicValues *llm.NonDeterministicValues, finalLinuxBase string) map[string]interface{} {
+func linuxImageConfig(binaryName, finalLinuxBase string) map[string]interface{} {
 	entrypoint := "/usr/local/bin/" + binaryName
 	symlink := "/usr/bin/" + binaryName
-
-	if nonDeterministicValues != nil {
-		if ts := findTargetSpecByOS(nonDeterministicValues.Targets, osName); ts != nil {
-			if ts.Entrypoint != "" {
-				entrypoint = ts.Entrypoint
-			}
-			if ts.Symlink != "" {
-				symlink = ts.Symlink
-			}
-		}
-	}
 
 	image := map[string]interface{}{"entrypoint": entrypoint}
 
@@ -259,18 +215,10 @@ func linuxImageConfig(osName, binaryName string, nonDeterministicValues *llm.Non
 
 // windowsDeps builds the dependencies map for the windowscross target.
 // Runtime deps are never allowed on windowscross — Dalec rejects them.
-func windowsDeps(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
+func windowsDeps(defaultSpec *contents.DefaultSpec) map[string]interface{} {
 	buildDeps := map[string]interface{}{}
 	if defaultSpec.Generator == repository.GoModGenerator {
 		buildDeps["msft-golang"] = goToolchainDep(defaultSpec.GoVersion)
-	}
-	if nonDeterministicValues != nil {
-		if ts := findTargetSpecByOS(nonDeterministicValues.Targets, "windowscross"); ts != nil {
-			for _, dep := range ts.Build {
-				buildDeps[dep] = map[string]interface{}{}
-			}
-			// ts.Runtime intentionally ignored — not allowed on windowscross
-		}
 	}
 	return map[string]interface{}{
 		"build":       buildDeps,
@@ -279,9 +227,9 @@ func windowsDeps(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.
 }
 
 // windowsArtifacts returns the per-target artifacts for windowscross (.exe binaries + license).
-func windowsArtifacts(defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
+func windowsArtifacts(defaultSpec *contents.DefaultSpec) map[string]interface{} {
 	return map[string]interface{}{
-		"binaries": computeWindowsArtifactBinaries(defaultSpec, nonDeterministicValues),
+		"binaries": computeWindowsArtifactBinaries(defaultSpec),
 		"licenses": map[string]interface{}{
 			defaultSpec.Repo + "/LICENSE": map[string]interface{}{},
 		},
@@ -290,17 +238,10 @@ func windowsArtifacts(defaultSpec *contents.DefaultSpec, nonDeterministicValues 
 
 // windowsImageConfig builds the image map (entrypoint + symlink + optional bases) for the windowscross target.
 // Base images are extracted from the parsed Dockerfile stages (not from the LLM).
-func windowsImageConfig(binaryName string, defaultSpec *contents.DefaultSpec, nonDeterministicValues *llm.NonDeterministicValues) map[string]interface{} {
+func windowsImageConfig(binaryName string, defaultSpec *contents.DefaultSpec) map[string]interface{} {
+	// binaryName is already resolved to the final Windows artifact (e.g. dropgz)
+	// by resolveTestPaths via computeArtifactPaths.
 	entrypoint := "/Windows/System32/" + binaryName + ".exe"
-	if nonDeterministicValues != nil {
-		if ts := findTargetSpecByOS(nonDeterministicValues.Targets, "windowscross"); ts != nil && ts.Entrypoint != "" {
-			if strings.ContainsAny(ts.Entrypoint, "/\\") {
-				entrypoint = ts.Entrypoint
-			} else {
-				entrypoint = "/Windows/System32/" + ts.Entrypoint + ".exe"
-			}
-		}
-	}
 
 	image := map[string]interface{}{"entrypoint": entrypoint}
 
@@ -409,20 +350,10 @@ func msftWindowsExtraRepo() map[string]interface{} {
 
 // ─── Chunk 6 · UTILITIES ────────────────────────────────────────────────────
 
-// findTargetSpecByOS returns the TargetSpec whose TargetOS prefix matches osName.
-func findTargetSpecByOS(targets []llm.TargetSpec, osName string) *llm.TargetSpec {
+// findPrimaryLinuxTarget returns the first non-windowscross SpecTarget.
+func findPrimaryLinuxTarget(targets []contents.SpecTarget) *contents.SpecTarget {
 	for i, ts := range targets {
-		if contents.BuildTarget(ts.TargetOS).OS() == osName {
-			return &targets[i]
-		}
-	}
-	return nil
-}
-
-// findPrimaryLinuxTarget returns the first non-windowscross TargetSpec.
-func findPrimaryLinuxTarget(targets []llm.TargetSpec) *llm.TargetSpec {
-	for i, ts := range targets {
-		if !contents.BuildTarget(ts.TargetOS).IsWindows() {
+		if ts.OS != "windowscross" {
 			return &targets[i]
 		}
 	}
@@ -432,11 +363,11 @@ func findPrimaryLinuxTarget(targets []llm.TargetSpec) *llm.TargetSpec {
 // entrypointBinaryName derives the canonical binary name from the primary
 // linux target's symlink path (the Dalec symlinks map key = real installed binary).
 // Returns "" when no linux target or symlink is set.
-func entrypointBinaryName(ndv *llm.NonDeterministicValues) string {
-	if ndv == nil {
+func entrypointBinaryName(spec *contents.DockerfileSpec) string {
+	if spec == nil {
 		return ""
 	}
-	if lt := findPrimaryLinuxTarget(ndv.Targets); lt != nil {
+	if lt := findPrimaryLinuxTarget(spec.Targets); lt != nil {
 		return canonicalBase(lt.Symlink)
 	}
 	return ""

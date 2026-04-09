@@ -29,11 +29,13 @@ run_and_stream() {
   return 0
 }
 
-# run_and_stream "Run 1: -path=specs/auto/aks-container-networking/azure-cns" -path=specs/auto/aks-container-networking/azure-cns
-# run_and_stream "Run 2: -path=specs/auto/aks-container-networking/azure-cni" -path=specs/auto/aks-container-networking/azure-cni
-# run_and_stream "Run 3: -path=specs/auto/aks-container-networking/azure-ipam" -path=specs/auto/aks-container-networking/azure-ipam
-run_and_stream "Run 4: -path=specs/auto/aks-secure-tls-bootstrap" -path=specs/auto/aks-secure-tls-bootstrap
-# run_and_stream "Run 5: -path=specs/auto/aks-node-controller" -path=specs/auto/aks-node-controller
-# run_and_stream "Run Test: -path=specs/auto/test" -path=specs/auto/test
+# run_and_stream "Run 1: -path=autospecs/aks-container-networking/azure-cns" -path=autospecs/aks-container-networking/azure-cns
+# run_and_stream "Run 2: -path=autospecs/aks-container-networking/azure-cni" -path=autospecs/aks-container-networking/azure-cni
+# run_and_stream "Run 3: -path=autospecs/aks-container-networking/azure-ipam" -path=autospecs/aks-container-networking/azure-ipam
+# run_and_stream "Run 4: -path=autospecs/aks-secure-tls-bootstrap" -path=autospecs/aks-secure-tls-bootstrap
+# run_and_stream "Run 5: -path=autospecs/aks-node-controller" -path=autospecs/aks-node-controller
+run_and_stream "Run Test: -path=autospecs/test/1sttest-pr" -path=autospecs/test/1sttest-pr
+run_and_stream "Run Test: -path=autospecs/test/2ndtest-pr" -path=autospecs/test/2ndtest-pr
+run_and_stream "Run Test: -path=autospecs/test/3rdtest-pr" -path=autospecs/test/3rdtest-pr
 # run_and_stream "Run ?: -path=" -path=
 exit $overall_exit
