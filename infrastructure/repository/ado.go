@@ -24,6 +24,23 @@ import (
 	domainRepo "dalec-mapping/domain/repository"
 )
 
+// adoAuthURL injects the ADO_TOKEN into the URL as HTTP Basic auth so that
+// git subprocesses can authenticate without a credential helper or terminal
+// prompt.  If ADO_TOKEN is not set the URL is returned unchanged.
+func adoAuthURL(rawURL string) string {
+	token := os.Getenv("ADO_TOKEN")
+	if token == "" {
+		return rawURL
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	// Basic auth for PATs: empty username, token as password.
+	u.User = url.UserPassword("", token)
+	return u.String()
+}
+
 // gitOut runs git with the given args, optionally inside dir (empty = inherit
 // cwd), and returns trimmed stdout.
 func gitOut(dir string, args ...string) (string, error) {
@@ -104,7 +121,7 @@ func lastSegment(s string) string {
 // FetchAllADOTags lists all semver tags and their commit SHAs from the remote
 // ADO repository using git ls-remote.
 func FetchAllADOTags(repoURL string) ([]TagInfo, error) {
-	out, err := gitOut("", "ls-remote", "--tags", repoURL)
+	out, err := gitOut("", "ls-remote", "--tags", adoAuthURL(repoURL))
 	if err != nil {
 		return nil, fmt.Errorf("failed to list tags for %s: %w", repoURL, err)
 	}
@@ -155,7 +172,7 @@ func FetchAllADOTags(repoURL string) ([]TagInfo, error) {
 // FetchADOTagCommit resolves a git tag to its commit SHA via git ls-remote.
 // Peeled (annotated tag) SHA is preferred over the raw tag object SHA.
 func FetchADOTagCommit(repoURL, tag string) (string, error) {
-	out, err := gitOut("", "ls-remote", repoURL,
+	out, err := gitOut("", "ls-remote", adoAuthURL(repoURL),
 		"refs/tags/"+tag+"^{}",
 		"refs/tags/"+tag,
 	)
@@ -197,7 +214,7 @@ func FetchADOFileContent(repoURL, filePath, tag string) ([]byte, error) {
 		"--no-checkout",
 		"--depth=1",
 		"--branch="+tag,
-		repoURL,
+		adoAuthURL(repoURL),
 		tmpDir,
 	); err != nil {
 		return nil, fmt.Errorf("failed to clone %s at %s: %w", repoURL, tag, err)
@@ -211,7 +228,7 @@ func FetchADOFileContent(repoURL, filePath, tag string) ([]byte, error) {
 func FetchADORepoInfo(repoURL, subdir, tag string) (*domainRepo.RepoInfo, error) {
 	// Resolve default branch from the symbolic ref of HEAD.
 	branch := "main"
-	if out, err := gitOut("", "ls-remote", "--symref", repoURL, "HEAD"); err == nil {
+	if out, err := gitOut("", "ls-remote", "--symref", adoAuthURL(repoURL), "HEAD"); err == nil {
 		for _, line := range strings.Split(out, "\n") {
 			if strings.HasPrefix(line, "ref: refs/heads/") {
 				fields := strings.Fields(line)
