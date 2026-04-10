@@ -145,9 +145,6 @@ func FetchAllADOTags(repoURL string) ([]TagInfo, error) {
 		name := strings.TrimPrefix(parts[1], "refs/tags/")
 		peeled := strings.HasSuffix(name, "^{}")
 		name = strings.TrimSuffix(name, "^{}")
-		if !semverTagRe.MatchString(name) {
-			continue
-		}
 		if byName[name] == nil {
 			byName[name] = &entry{}
 		}
