@@ -1,29 +1,16 @@
 package repository
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ado.go — Azure DevOps repository access via the local git checkout.
+// ado.go — Azure DevOps repository access via git remote commands.
 //
-// The ADO pipeline checks out partner repositories via resource declarations:
+// All operations run git against the ADO repository URL directly; no local
+// checkout is required.  The pipeline agent's credential helper handles
+// authentication to msazure.visualstudio.com automatically.
 //
-//   resources:
-//     repositories:
-//       - repository: aks-vm-extension          # alias → checkout dir name
-//         type: git
-//         name: CloudNativeCompute/aks-vm-extension
-//         fetchDepth: 0
-//         fetchTags: true
-//
-// Each repo is checked out to $(Pipeline.Workspace)/<alias>, which is
-// available as the environment variable PIPELINE_WORKSPACE.  The alias
-// matches the repo name in the resource "name:" field, so the local path is
-// derived directly from the ADO repository URL — no PAT or ADO_TOKEN needed.
-//
-// Public surface (same signatures as the old API-based version):
-//
-//   FetchAllADOTags(repoURL)                   → []TagInfo
-//   FetchADOTagCommit(repoURL, tag)             → string
-//   FetchADOFileContent(repoURL, filePath, tag) → []byte
-//   FetchADORepoInfo(repoURL, subdir, tag)      → *RepoInfo
+//   FetchAllADOTags(repoURL)                   → []TagInfo   (git ls-remote)
+//   FetchADOTagCommit(repoURL, tag)             → string      (git ls-remote)
+//   FetchADOFileContent(repoURL, filePath, tag) → []byte      (sparse clone)
+//   FetchADORepoInfo(repoURL, subdir, tag)      → *RepoInfo   (git ls-remote)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import (
@@ -32,19 +19,51 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
 	domainRepo "dalec-mapping/domain/repository"
 )
 
-// repoNameFromURL extracts the repository name (last path segment after _git/)
-// from an ADO URL.  Falls back to the last non-empty path component.
-func repoNameFromURL(repoURL string) string {
+// gitOut runs git with the given args, optionally inside dir (empty = inherit
+// cwd), and returns trimmed stdout.
+func gitOut(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git %s: %w — %s",
+			strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return strings.TrimRight(string(out), "\n"), nil
+}
+
+// gitOutBytes is like gitOut but returns raw bytes.
+func gitOutBytes(dir string, args ...string) ([]byte, error) {
+	cmd := exec.Command("git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git %s: %w — %s",
+			strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return out, nil
+}
+
+// adoRepoName extracts the repository name from an ADO git URL
+// (the path segment after "_git/").
+func adoRepoName(repoURL string) string {
 	repoURL = strings.TrimSuffix(repoURL, ".git")
 	u, err := url.Parse(repoURL)
 	if err != nil {
-		return filepath.Base(repoURL)
+		return lastSegment(repoURL)
 	}
 	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
 	for i, p := range parts {
@@ -52,152 +71,163 @@ func repoNameFromURL(repoURL string) string {
 			return parts[i+1]
 		}
 	}
-	// Fallback: last non-empty segment
-	for i := len(parts) - 1; i >= 0; i-- {
-		if parts[i] != "" {
-			return parts[i]
-		}
-	}
-	return filepath.Base(repoURL)
+	return lastSegment(repoURL)
 }
 
-// localCheckoutDir returns the absolute path to the local git checkout for the
-// given ADO repository URL: $PIPELINE_WORKSPACE/<repoName>.
-func localCheckoutDir(repoURL string) (string, error) {
-	ws := os.Getenv("PIPELINE_WORKSPACE")
-	if ws == "" {
-		return "", fmt.Errorf("PIPELINE_WORKSPACE is not set")
-	}
-	return filepath.Join(ws, repoNameFromURL(repoURL)), nil
-}
-
-// gitText runs a git command in dir and returns trimmed stdout as a string.
-func gitText(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+// adoOrg extracts the org name from an ADO URL (best-effort).
+func adoOrg(repoURL string) string {
+	repoURL = strings.TrimSuffix(repoURL, ".git")
+	u, err := url.Parse(repoURL)
 	if err != nil {
-		return "", fmt.Errorf("git %s: %w — %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		return ""
 	}
-	return strings.TrimRight(string(out), "\n"), nil
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	// dev.azure.com/{org}/{project}/_git/{repo}
+	if len(parts) >= 4 && parts[2] == "_git" {
+		return parts[0]
+	}
+	// {org}.visualstudio.com/...
+	if strings.Contains(u.Hostname(), ".visualstudio.com") {
+		return strings.TrimSuffix(u.Hostname(), ".visualstudio.com")
+	}
+	return ""
 }
 
-// gitBytes runs a git command in dir and returns raw stdout bytes.
-func gitBytes(dir string, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("git %s: %w — %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+func lastSegment(s string) string {
+	s = strings.TrimRight(s, "/")
+	if i := strings.LastIndex(s, "/"); i >= 0 {
+		return s[i+1:]
 	}
-	return out, nil
+	return s
 }
 
-// FetchAllADOTags returns all semver tags and their commit SHAs from the local
-// checkout of the repository at repoURL.
+// FetchAllADOTags lists all semver tags and their commit SHAs from the remote
+// ADO repository using git ls-remote.
 func FetchAllADOTags(repoURL string) ([]TagInfo, error) {
-	dir, err := localCheckoutDir(repoURL)
+	out, err := gitOut("", "ls-remote", "--tags", repoURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to list tags for %s: %w", repoURL, err)
 	}
 
-	// for-each-ref with conditional: use peeled objectname (commit) for annotated
-	// tags, otherwise use objectname (already a commit for lightweight tags).
-	out, err := gitText(dir,
-		"for-each-ref",
-		"--format=%(if)%(*objectname)%(then)%(*objectname)%(else)%(objectname)%(end) %(refname:short)",
-		"refs/tags",
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list git tags in %s: %w", dir, err)
-	}
+	// ls-remote output:
+	//   <sha>\trefs/tags/<name>       — lightweight tag or tag object
+	//   <sha>\trefs/tags/<name>^{}    — peeled commit (annotated tags only)
+	type entry struct{ plain, peeled string }
+	byName := map[string]*entry{}
 
-	var tags []TagInfo
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		sp := strings.SplitN(line, " ", 2)
-		if len(sp) != 2 {
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 || !strings.HasPrefix(parts[1], "refs/tags/") {
 			continue
 		}
-		sha, name := sp[0], sp[1]
+		sha := parts[0]
+		name := strings.TrimPrefix(parts[1], "refs/tags/")
+		peeled := strings.HasSuffix(name, "^{}")
+		name = strings.TrimSuffix(name, "^{}")
 		if !semverTagRe.MatchString(name) {
 			continue
 		}
-		tags = append(tags, TagInfo{Name: name, Commit: sha})
+		if byName[name] == nil {
+			byName[name] = &entry{}
+		}
+		if peeled {
+			byName[name].peeled = sha
+		} else {
+			byName[name].plain = sha
+		}
+	}
+
+	var tags []TagInfo
+	for name, e := range byName {
+		commit := e.peeled
+		if commit == "" {
+			commit = e.plain
+		}
+		tags = append(tags, TagInfo{Name: name, Commit: commit})
 	}
 	return tags, nil
 }
 
-// FetchADOTagCommit resolves a git tag to its commit SHA in the local checkout.
-// The ^{} suffix dereferences annotated tag objects to the underlying commit.
+// FetchADOTagCommit resolves a git tag to its commit SHA via git ls-remote.
+// Peeled (annotated tag) SHA is preferred over the raw tag object SHA.
 func FetchADOTagCommit(repoURL, tag string) (string, error) {
-	dir, err := localCheckoutDir(repoURL)
+	out, err := gitOut("", "ls-remote", repoURL,
+		"refs/tags/"+tag+"^{}",
+		"refs/tags/"+tag,
+	)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to resolve commit for tag %q in %s: %w", tag, repoURL, err)
 	}
-	return gitText(dir, "rev-parse", tag+"^{}")
-}
-
-// FetchADOFileContent returns the raw bytes of a file at the given tag from the
-// local checkout.  filePath should be repo-relative (e.g. "Dockerfile").
-func FetchADOFileContent(repoURL, filePath, tag string) ([]byte, error) {
-	dir, err := localCheckoutDir(repoURL)
-	if err != nil {
-		return nil, err
-	}
-	filePath = strings.TrimPrefix(filePath, "/")
-	return gitBytes(dir, "show", tag+":"+filePath)
-}
-
-// FetchADORepoInfo builds a RepoInfo from the local git checkout metadata.
-func FetchADORepoInfo(repoURL, subdir, tag string) (*domainRepo.RepoInfo, error) {
-	dir, err := localCheckoutDir(repoURL)
-	if err != nil {
-		return nil, err
-	}
-
-	repoName := filepath.Base(dir)
-
-	// Default branch: try symbolic-ref on origin/HEAD (works even in detached HEAD).
-	branch := "main"
-	if b, err := gitText(dir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil {
-		branch = strings.TrimPrefix(b, "origin/")
-	} else if b, err := gitText(dir, "rev-parse", "--abbrev-ref", "HEAD"); err == nil && b != "HEAD" {
-		branch = b
-	}
-
-	// Remote URL for the GitURL field.
-	gitURL := repoURL
-	if u, err := gitText(dir, "remote", "get-url", "origin"); err == nil {
-		gitURL = u
-	}
-
-	// Extract org/project from the remote URL for the Owner field (best-effort).
-	org := ""
-	if parts := strings.Split(strings.Trim(func() string {
-		u, _ := url.Parse(strings.TrimSuffix(gitURL, ".git"))
-		if u != nil {
-			return u.Path
+	// Prefer peeled ref.
+	for _, line := range strings.Split(out, "\n") {
+		parts := strings.SplitN(strings.TrimSpace(line), "\t", 2)
+		if len(parts) == 2 && parts[1] == "refs/tags/"+tag+"^{}" {
+			return parts[0], nil
 		}
-		return ""
-	}(), "/"), "/"); len(parts) >= 4 && parts[2] == "_git" {
-		org = parts[0] // dev.azure.com/{org}/...
+	}
+	// Fall back to plain tag ref.
+	for _, line := range strings.Split(out, "\n") {
+		parts := strings.SplitN(strings.TrimSpace(line), "\t", 2)
+		if len(parts) == 2 && parts[1] == "refs/tags/"+tag {
+			return parts[0], nil
+		}
+	}
+	return "", fmt.Errorf("tag %q not found in %s", tag, repoURL)
+}
+
+// FetchADOFileContent fetches a single file at the given tag from the ADO
+// repository using a temporary partial clone (--filter=blob:none).
+// The clone fetches only the tree objects; git show lazily fetches the one
+// blob needed.
+func FetchADOFileContent(repoURL, filePath, tag string) ([]byte, error) {
+	filePath = strings.TrimPrefix(filePath, "/")
+
+	tmpDir, err := os.MkdirTemp("", "ado-clone-*")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if _, err := gitOut("", "clone",
+		"--filter=blob:none",
+		"--no-checkout",
+		"--depth=1",
+		"--branch="+tag,
+		repoURL,
+		tmpDir,
+	); err != nil {
+		return nil, fmt.Errorf("failed to clone %s at %s: %w", repoURL, tag, err)
+	}
+
+	return gitOutBytes(tmpDir, "show", "HEAD:"+filePath)
+}
+
+// FetchADORepoInfo assembles a RepoInfo by querying the ADO repository
+// remotely via git ls-remote.
+func FetchADORepoInfo(repoURL, subdir, tag string) (*domainRepo.RepoInfo, error) {
+	// Resolve default branch from the symbolic ref of HEAD.
+	branch := "main"
+	if out, err := gitOut("", "ls-remote", "--symref", repoURL, "HEAD"); err == nil {
+		for _, line := range strings.Split(out, "\n") {
+			if strings.HasPrefix(line, "ref: refs/heads/") {
+				fields := strings.Fields(line)
+				branch = strings.TrimPrefix(fields[0], "ref: refs/heads/")
+				break
+			}
+		}
 	}
 
 	info := &domainRepo.RepoInfo{
-		Owner:       org,
-		Repo:        repoName,
+		Owner:       adoOrg(repoURL),
+		Repo:        adoRepoName(repoURL),
 		Branch:      branch,
 		Subdir:      subdir,
-		GitURL:      gitURL,
-		Description: fmt.Sprintf("This is the %s project.", repoName),
+		GitURL:      repoURL,
+		Description: fmt.Sprintf("This is the %s project.", adoRepoName(repoURL)),
 	}
 
 	if tag != "" {
