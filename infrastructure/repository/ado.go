@@ -1,275 +1,194 @@
 package repository
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ado.go — Azure DevOps tag fetching via the ADO REST API.
+// ado.go — Azure DevOps repository access via the local git checkout.
 //
-//   FetchAllADOTags(repoURL) → []TagInfo
-//     Fetches all semver git tags from an ADO repository and returns each
-//     tag name paired with its commit SHA.
+// The ADO pipeline checks out partner repositories via resource declarations:
 //
-//   Authentication: ADO_TOKEN environment variable (PAT or Bearer token).
-//   ADO API version: 7.1
+//   resources:
+//     repositories:
+//       - repository: aks-vm-extension          # alias → checkout dir name
+//         type: git
+//         name: CloudNativeCompute/aks-vm-extension
+//         fetchDepth: 0
+//         fetchTags: true
+//
+// Each repo is checked out to $(Pipeline.Workspace)/<alias>, which is
+// available as the environment variable PIPELINE_WORKSPACE.  The alias
+// matches the repo name in the resource "name:" field, so the local path is
+// derived directly from the ADO repository URL — no PAT or ADO_TOKEN needed.
+//
+// Public surface (same signatures as the old API-based version):
+//
+//   FetchAllADOTags(repoURL)                   → []TagInfo
+//   FetchADOTagCommit(repoURL, tag)             → string
+//   FetchADOFileContent(repoURL, filePath, tag) → []byte
+//   FetchADORepoInfo(repoURL, subdir, tag)      → *RepoInfo
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import (
-	"encoding/base64"
-	"encoding/json"
+	"bytes"
 	"fmt"
-	"io"
-	"log"
-	"net/http"
 	"net/url"
 	"os"
-	"strconv"
+	"os/exec"
+	"path/filepath"
 	"strings"
-	"time"
 
 	domainRepo "dalec-mapping/domain/repository"
 )
 
-// parseADORepoURL extracts org, project, and repo from an ADO git URL.
-// Supports:
-//   https://dev.azure.com/{org}/{project}/_git/{repo}
-//   https://{org}.visualstudio.com/{project}/_git/{repo}
-//   https://{org}.visualstudio.com/_git/{repo}[/...]
-func parseADORepoURL(repoURL string) (org, project, repo string, err error) {
+// repoNameFromURL extracts the repository name (last path segment after _git/)
+// from an ADO URL.  Falls back to the last non-empty path component.
+func repoNameFromURL(repoURL string) string {
 	repoURL = strings.TrimSuffix(repoURL, ".git")
-	u, parseErr := url.Parse(repoURL)
-	if parseErr != nil {
-		return "", "", "", fmt.Errorf("invalid ADO URL %q: %w", repoURL, parseErr)
+	u, err := url.Parse(repoURL)
+	if err != nil {
+		return filepath.Base(repoURL)
 	}
 	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-
-	// dev.azure.com/{org}/{project}/_git/{repo}  → ≥4 parts, org in path
-	if len(parts) >= 4 && parts[2] == "_git" {
-		return parts[0], parts[1], parts[3], nil
+	for i, p := range parts {
+		if p == "_git" && i+1 < len(parts) {
+			return parts[i+1]
+		}
 	}
-
-	// {org}.visualstudio.com/{project}/_git/{repo}  → ≥3 parts, org in subdomain
-	if len(parts) >= 3 && parts[1] == "_git" {
-		org := strings.TrimSuffix(u.Hostname(), ".visualstudio.com")
-		return org, parts[0], parts[2], nil
+	// Fallback: last non-empty segment
+	for i := len(parts) - 1; i >= 0; i-- {
+		if parts[i] != "" {
+			return parts[i]
+		}
 	}
-
-	// {org}.visualstudio.com/_git/{repo}[/...]  → no project segment; project defaults to repo name.
-	// Any trailing path components (e.g. "/tags") are UI browse paths and are ignored.
-	if len(parts) >= 2 && parts[0] == "_git" {
-		org := strings.TrimSuffix(u.Hostname(), ".visualstudio.com")
-		repo := parts[1]
-		return org, repo, repo, nil
-	}
-
-	return "", "", "", fmt.Errorf("unexpected ADO URL path %q: expected /{org}/{project}/_git/{repo}, {org}.visualstudio.com/{project}/_git/{repo}, or {org}.visualstudio.com/_git/{repo}", u.Path)
+	return filepath.Base(repoURL)
 }
 
-// makeADORequest performs an authenticated GET to the ADO REST API.
-// Retries up to 3 times on 429 responses, honouring the Retry-After header when present.
-func makeADORequest(apiURL string, accept string) ([]byte, error) {
-	const maxRetries = 3
-	backoff := 2 * time.Second
-
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		req, err := http.NewRequest("GET", apiURL, nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create ADO request: %w", err)
-		}
-		if token := os.Getenv("ADO_TOKEN"); token != "" {
-			// ADO supports two auth schemes:
-			//   Bearer — AAD access tokens (start with "eyJ")
-			//   Basic  — PATs, encoded as base64(":PAT") with an empty username
-			// Internal orgs (e.g. msazure.visualstudio.com) require PAT/Basic auth.
-			if strings.HasPrefix(token, "eyJ") {
-				req.Header.Set("Authorization", "Bearer "+token)
-			} else {
-				encoded := base64.StdEncoding.EncodeToString([]byte(":"+token))
-				req.Header.Set("Authorization", "Basic "+encoded)
-			}
-		}
-		req.Header.Set("Accept", accept)
-
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("ADO request failed: %w", err)
-		}
-
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			return nil, fmt.Errorf("failed to read ADO response: %w", err)
-		}
-
-		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxRetries {
-			wait := backoff * (1 << attempt) // 2s, 4s, 8s
-			if ra := resp.Header.Get("Retry-After"); ra != "" {
-				if secs, err := strconv.Atoi(ra); err == nil {
-					wait = time.Duration(secs) * time.Second
-				}
-			}
-			log.Printf("⏳ ADO rate-limited (429); retrying in %s (attempt %d/%d)\n", wait, attempt+1, maxRetries)
-			time.Sleep(wait)
-			continue
-		}
-
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return nil, fmt.Errorf("ADO API returned status %d: %s", resp.StatusCode, string(body))
-		}
-		return body, nil
+// localCheckoutDir returns the absolute path to the local git checkout for the
+// given ADO repository URL: $PIPELINE_WORKSPACE/<repoName>.
+func localCheckoutDir(repoURL string) (string, error) {
+	ws := os.Getenv("PIPELINE_WORKSPACE")
+	if ws == "" {
+		return "", fmt.Errorf("PIPELINE_WORKSPACE is not set")
 	}
-	return nil, fmt.Errorf("ADO API rate limit exceeded after %d retries", maxRetries)
+	return filepath.Join(ws, repoNameFromURL(repoURL)), nil
 }
 
-// adoRepoAPIBase returns the base URL for ADO git-repository API calls.
-// All ADO organisations are reachable via dev.azure.com regardless of whether
-// the original clone URL used dev.azure.com or {org}.visualstudio.com.
-func adoRepoAPIBase(org, project, repo string) string {
-	return fmt.Sprintf(
-		"https://dev.azure.com/%s/%s/_apis/git/repositories/%s",
-		url.PathEscape(org), url.PathEscape(project), url.PathEscape(repo),
-	)
+// gitText runs a git command in dir and returns trimmed stdout as a string.
+func gitText(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git %s: %w — %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return strings.TrimRight(string(out), "\n"), nil
 }
 
-// FetchAllADOTags fetches all semver git tags from an ADO repository.
-// repoURL must be an ADO git URL: https://dev.azure.com/{org}/{project}/_git/{repo}
-// Returns each semver tag paired with its commit SHA, paginating until all refs are fetched.
+// gitBytes runs a git command in dir and returns raw stdout bytes.
+func gitBytes(dir string, args ...string) ([]byte, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git %s: %w — %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return out, nil
+}
+
+// FetchAllADOTags returns all semver tags and their commit SHAs from the local
+// checkout of the repository at repoURL.
 func FetchAllADOTags(repoURL string) ([]TagInfo, error) {
-	org, project, repo, err := parseADORepoURL(repoURL)
+	dir, err := localCheckoutDir(repoURL)
 	if err != nil {
 		return nil, err
 	}
 
-	// GET {base}/refs?filter=tags/&api-version=7.1
-	baseURL := adoRepoAPIBase(org, project, repo) + "/refs?filter=tags/&api-version=7.1"
-
-	var tags []TagInfo
-	continuationToken := ""
-
-	for {
-		apiURL := baseURL
-		if continuationToken != "" {
-			apiURL += "&continuationToken=" + url.QueryEscape(continuationToken)
-		}
-
-		body, err := makeADORequest(apiURL, "application/json")
-		if err != nil {
-			return nil, fmt.Errorf("failed to fetch ADO tags for %s/%s/%s: %w", org, project, repo, err)
-		}
-
-		var result struct {
-			Value []struct {
-				Name           string `json:"name"`
-				ObjectID       string `json:"objectId"`
-				PeeledObjectID string `json:"peeledObjectId"`
-			} `json:"value"`
-			Count int `json:"count"`
-		}
-		if err := json.Unmarshal(body, &result); err != nil {
-			return nil, fmt.Errorf("failed to parse ADO tags response: %w", err)
-		}
-
-		for _, ref := range result.Value {
-			// ref.Name is e.g. "refs/tags/v1.2.3" or "refs/tags/azure-cns/v1.2.3"
-			name := strings.TrimPrefix(ref.Name, "refs/tags/")
-			if !semverTagRe.MatchString(name) {
-				continue
-			}
-			// peeledObjectId is the actual commit for annotated tags; objectId for lightweight tags.
-			commit := ref.PeeledObjectID
-			if commit == "" {
-				commit = ref.ObjectID
-			}
-			tags = append(tags, TagInfo{Name: name, Commit: commit})
-		}
-
-		// ADO paginates at 100 refs per page when $top is not set.
-		if result.Count < 100 {
-			break
-		}
-		if len(result.Value) > 0 {
-			continuationToken = result.Value[len(result.Value)-1].ObjectID
-		} else {
-			break
-		}
+	// for-each-ref with conditional: use peeled objectname (commit) for annotated
+	// tags, otherwise use objectname (already a commit for lightweight tags).
+	out, err := gitText(dir,
+		"for-each-ref",
+		"--format=%(if)%(*objectname)%(then)%(*objectname)%(else)%(objectname)%(end) %(refname:short)",
+		"refs/tags",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list git tags in %s: %w", dir, err)
 	}
 
+	var tags []TagInfo
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		sp := strings.SplitN(line, " ", 2)
+		if len(sp) != 2 {
+			continue
+		}
+		sha, name := sp[0], sp[1]
+		if !semverTagRe.MatchString(name) {
+			continue
+		}
+		tags = append(tags, TagInfo{Name: name, Commit: sha})
+	}
 	return tags, nil
 }
 
-// FetchADOTagCommit resolves a git tag to its commit SHA for the given ADO repository URL.
+// FetchADOTagCommit resolves a git tag to its commit SHA in the local checkout.
+// The ^{} suffix dereferences annotated tag objects to the underlying commit.
 func FetchADOTagCommit(repoURL, tag string) (string, error) {
-	org, project, repo, err := parseADORepoURL(repoURL)
+	dir, err := localCheckoutDir(repoURL)
 	if err != nil {
 		return "", err
 	}
-
-	apiURL := adoRepoAPIBase(org, project, repo) +
-		fmt.Sprintf("/commits?searchCriteria.itemVersion.version=%s&searchCriteria.itemVersion.versionType=tag&$top=1&api-version=7.1",
-			url.QueryEscape(tag),
-		)
-
-	body, err := makeADORequest(apiURL, "application/json")
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch commit for ADO tag %q: %w", tag, err)
-	}
-
-	var result struct {
-		Value []struct {
-			CommitID string `json:"commitId"`
-		} `json:"value"`
-		Count int `json:"count"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("failed to parse ADO commits response: %w", err)
-	}
-	if len(result.Value) == 0 {
-		return "", fmt.Errorf("no commit found for ADO tag %q", tag)
-	}
-	return result.Value[0].CommitID, nil
+	return gitText(dir, "rev-parse", tag+"^{}")
 }
 
-// FetchADOFileContent fetches the raw content of a file from an ADO repository at the given tag.
+// FetchADOFileContent returns the raw bytes of a file at the given tag from the
+// local checkout.  filePath should be repo-relative (e.g. "Dockerfile").
 func FetchADOFileContent(repoURL, filePath, tag string) ([]byte, error) {
-	org, project, repo, err := parseADORepoURL(repoURL)
+	dir, err := localCheckoutDir(repoURL)
 	if err != nil {
 		return nil, err
 	}
-
-	apiURL := adoRepoAPIBase(org, project, repo) +
-		fmt.Sprintf("/items?path=%s&versionDescriptor.version=%s&versionDescriptor.versionType=tag&api-version=7.1",
-			url.QueryEscape(filePath), url.QueryEscape(tag),
-		)
-	return makeADORequest(apiURL, "application/octet-stream")
+	filePath = strings.TrimPrefix(filePath, "/")
+	return gitBytes(dir, "show", tag+":"+filePath)
 }
 
-// FetchADORepoInfo fetches repository metadata from ADO and returns a populated RepoInfo.
+// FetchADORepoInfo builds a RepoInfo from the local git checkout metadata.
 func FetchADORepoInfo(repoURL, subdir, tag string) (*domainRepo.RepoInfo, error) {
-	org, project, repoName, err := parseADORepoURL(repoURL)
+	dir, err := localCheckoutDir(repoURL)
 	if err != nil {
 		return nil, err
 	}
 
-	apiURL := adoRepoAPIBase(org, project, repoName) + "?api-version=7.1"
+	repoName := filepath.Base(dir)
 
-	body, err := makeADORequest(apiURL, "application/json")
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch ADO repo info: %w", err)
-	}
-
-	var repoData struct {
-		Name          string `json:"name"`
-		RemoteURL     string `json:"remoteUrl"`
-		DefaultBranch string `json:"defaultBranch"`
-	}
-	if err := json.Unmarshal(body, &repoData); err != nil {
-		return nil, fmt.Errorf("failed to parse ADO repo info: %w", err)
+	// Default branch: try symbolic-ref on origin/HEAD (works even in detached HEAD).
+	branch := "main"
+	if b, err := gitText(dir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil {
+		branch = strings.TrimPrefix(b, "origin/")
+	} else if b, err := gitText(dir, "rev-parse", "--abbrev-ref", "HEAD"); err == nil && b != "HEAD" {
+		branch = b
 	}
 
-	branch := strings.TrimPrefix(repoData.DefaultBranch, "refs/heads/")
-	if branch == "" {
-		branch = "main"
+	// Remote URL for the GitURL field.
+	gitURL := repoURL
+	if u, err := gitText(dir, "remote", "get-url", "origin"); err == nil {
+		gitURL = u
 	}
-	gitURL := repoData.RemoteURL
-	if gitURL == "" {
-		gitURL = repoURL
+
+	// Extract org/project from the remote URL for the Owner field (best-effort).
+	org := ""
+	if parts := strings.Split(strings.Trim(func() string {
+		u, _ := url.Parse(strings.TrimSuffix(gitURL, ".git"))
+		if u != nil {
+			return u.Path
+		}
+		return ""
+	}(), "/"), "/"); len(parts) >= 4 && parts[2] == "_git" {
+		org = parts[0] // dev.azure.com/{org}/...
 	}
 
 	info := &domainRepo.RepoInfo{
