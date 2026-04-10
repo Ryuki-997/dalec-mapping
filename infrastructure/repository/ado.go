@@ -12,6 +12,7 @@ package repository
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -73,7 +74,16 @@ func makeADORequest(apiURL string, accept string) ([]byte, error) {
 			return nil, fmt.Errorf("failed to create ADO request: %w", err)
 		}
 		if token := os.Getenv("ADO_TOKEN"); token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
+			// ADO supports two auth schemes:
+			//   Bearer — AAD access tokens (start with "eyJ")
+			//   Basic  — PATs, encoded as base64(":PAT") with an empty username
+			// Internal orgs (e.g. msazure.visualstudio.com) require PAT/Basic auth.
+			if strings.HasPrefix(token, "eyJ") {
+				req.Header.Set("Authorization", "Bearer "+token)
+			} else {
+				encoded := base64.StdEncoding.EncodeToString([]byte(":"+token))
+				req.Header.Set("Authorization", "Basic "+encoded)
+			}
 		}
 		req.Header.Set("Accept", accept)
 
