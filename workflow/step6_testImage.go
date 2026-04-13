@@ -1,9 +1,14 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// Step 7 — Test Image
+// Step 7 — Test Image (GitHub repos only)
 //
 //   Builds the container from the generated DALEC spec, runs it to verify the
 //   binary is present, runs FIPS compliance checks, and optionally executes
 //   test shell scripts from the spec repo.
+//
+//   NOTE: This step only runs for GitHub-sourced repos. ADO-sourced repos skip
+//   local testing entirely because the ADO pipeline build itself serves as the
+//   test run (BuildKit needs an ADO_TOKEN secret for private ADO git sources,
+//   which is handled by test.sh / the pipeline YAML, not here).
 //
 //   Chunk 1 · MAIN    TestImage()
 //   Chunk 2 · DOCKER  clearDockerImages(), buildDockerImage(), runDockerImage()

@@ -21,6 +21,7 @@ package transformer
 
 import (
 	"dalec-mapping/domain/contents"
+	"dalec-mapping/infrastructure/repository"
 	"fmt"
 	"regexp"
 	"strings"
@@ -111,11 +112,18 @@ func buildPrimarySource(sources map[string]interface{}, defaultSpec *contents.De
 		})
 	}
 
+	gitBlock := map[string]interface{}{
+		"url":    defaultSpec.GitURL,
+		"commit": "${COMMIT}",
+	}
+	if repository.IsADORepo(defaultSpec.GitURL) {
+		gitBlock["auth"] = map[string]interface{}{
+			"header": "GIT_AUTH_HEADER",
+		}
+	}
+
 	sources[defaultSpec.Repo] = map[string]interface{}{
-		"git": map[string]interface{}{
-			"url":    defaultSpec.GitURL,
-			"commit": "${COMMIT}",
-		},
+		"git":      gitBlock,
 		"generate": generateEntries,
 	}
 }
@@ -132,11 +140,18 @@ func buildSubmoduleSources(sources map[string]interface{}, defaultSpec *contents
 		if info.SubPath != "" {
 			commitRef = info.SubPath + "/" + info.VersionVar
 		}
+		subGitBlock := map[string]interface{}{
+			"url":    info.GitURL,
+			"commit": commitRef,
+		}
+		if repository.IsADORepo(info.GitURL) {
+			subGitBlock["auth"] = map[string]interface{}{
+				"header": "GIT_AUTH_HEADER",
+			}
+		}
+
 		entry := map[string]interface{}{
-			"git": map[string]interface{}{
-				"url":    info.GitURL,
-				"commit": commitRef,
-			},
+			"git": subGitBlock,
 			"generate": []map[string]interface{}{
 				{string(defaultSpec.Generator): map[string]interface{}{}},
 			},
