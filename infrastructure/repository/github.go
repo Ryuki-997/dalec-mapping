@@ -161,17 +161,19 @@ func WriteJSON(path string, method repository.CRUDRequest, payload interface{}) 
 // ─── Chunk 2 · REPOSITORY INFO ──────────────────────────────────────────────
 
 // FetchRepoInfo fetches repository metadata from the GitHub API.
-func FetchRepoInfo(repoPath, subdir, tag string) (*repository.RepoInfo, error) {
-	owner, repo, branch := FetchRepositorySegments(repoPath)
+func FetchRepoInfo(repoPath, tag string) (*repository.RepoInfo, error) {
+	baseRef, componentPath := SplitComponent(repoPath)
+	owner, repo, branch := FetchRepositorySegments(baseRef)
 
-	fmt.Printf("Parsed - Owner: %s, Repo: %s, Branch: %s, Subdir: %s\n", owner, repo, branch, subdir)
+	fmt.Printf("Parsed - Owner: %s, Repo: %s, Branch: %s, ComponentPath: %s\n", owner, repo, branch, componentPath)
 
 	info := &repository.RepoInfo{
-		Owner:  owner,
-		Repo:   repo,
-		Branch: branch,
-		Subdir: subdir,
-		GitURL: fmt.Sprintf("https://github.com/%s/%s", owner, repo),
+		Owner:         owner,
+		Repo:          repo,
+		Branch:        branch,
+		ComponentPath: componentPath,
+		ComponentName: ComponentName(componentPath),
+		GitURL:        fmt.Sprintf("https://github.com/%s/%s", owner, repo),
 	}
 
 	if err := fetchRepoMetadata(info); err != nil {
@@ -341,15 +343,15 @@ func fetchSourceGenerator(info *repository.RepoInfo) error {
 		return "", false
 	}
 
-	if info.Subdir != "" {
-		log.Printf("Searching for source generator under subdir hint '%s'...\n", info.Subdir)
+	if info.ComponentPath != "" {
+		log.Printf("Searching for source generator under component path '%s'...\n", info.ComponentPath)
 
-		if gen, ok := scanItems(info.Subdir); ok {
+		if gen, ok := scanItems(info.ComponentPath); ok {
 			info.Generator = gen
 			return nil
 		}
 
-		subdirBase := info.Subdir[strings.LastIndex(info.Subdir, "/")+1:]
+		subdirBase := info.ComponentPath[strings.LastIndex(info.ComponentPath, "/")+1:]
 		for _, item := range treeItems {
 			itemMap, ok := item.(map[string]interface{})
 			if !ok {

@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path"
 
 	"dalec-mapping/domain/onboarding"
 	repo "dalec-mapping/domain/repository"
@@ -34,13 +33,11 @@ func DiscoverBuildFiles(onboard *onboarding.OnboardingInfo, repoInfo *repo.RepoI
 		fmt.Printf("⚠️  Warning: %v\n", err)
 	}
 
-	// Fetch repo metadata (populates repoInfo)
-	subdir := "."
-	if onboard.DockerfileDir != "" {
-		subdir = path.Dir(onboard.DockerfileDir)
-	} else if onboard.MakefileDir != "" {
-		subdir = path.Dir(onboard.MakefileDir)
-	}
+	// Split component path from the repository URL and resolve file paths
+	// relative to it (supports ../ traversal for files outside the component).
+	_, componentPath := repository.SplitComponent(onboard.Repository)
+	dockerfilePath := repository.ResolveFilePath(componentPath, onboard.DockerfileDir)
+	makefilePath := repository.ResolveFilePath(componentPath, onboard.MakefileDir)
 
 	var (
 		dockerfileContent []byte
@@ -49,37 +46,38 @@ func DiscoverBuildFiles(onboard *onboarding.OnboardingInfo, repoInfo *repo.RepoI
 	)
 
 	if repository.IsADORepo(onboard.Repository) {
-		if _, err = repository.FetchADORepoInfo(onboard.Repository, subdir, tag); err != nil {
+		if _, err = repository.FetchADORepoInfo(onboard.Repository, tag); err != nil {
 			return false, fmt.Errorf("failed to fetch repository info: %w", err)
 		}
-		if onboard.DockerfileDir != "" {
-			if dockerfileContent, err = repository.FetchADOFileContent(onboard.Repository, onboard.DockerfileDir, tag); err != nil {
+		if dockerfilePath != "" {
+			if dockerfileContent, err = repository.FetchADOFileContent(onboard.Repository, dockerfilePath, tag); err != nil {
 				fmt.Printf("⚠️  Warning: failed to fetch Dockerfile: %v\n", err)
 			}
 		}
-		if onboard.MakefileDir != "" {
-			if makefileContent, err = repository.FetchADOFileContent(onboard.Repository, onboard.MakefileDir, tag); err != nil {
+		if makefilePath != "" {
+			if makefileContent, err = repository.FetchADOFileContent(onboard.Repository, makefilePath, tag); err != nil {
 				fmt.Printf("⚠️  Warning: failed to fetch Makefile: %v\n", err)
 			}
 		}
 	} else {
-		if _, err = repository.FetchRepoInfo(onboard.Repository, subdir, tag); err != nil {
+		if _, err = repository.FetchRepoInfo(onboard.Repository, tag); err != nil {
 			return false, fmt.Errorf("failed to fetch repository info: %w", err)
 		}
-		owner, repoName, _ := repository.FetchRepositorySegments(onboard.Repository)
+		baseRef, _ := repository.SplitComponent(onboard.Repository)
+		owner, repoName, _ := repository.FetchRepositorySegments(baseRef)
 		ref := tag
 		if ref == "" {
-			_, _, ref = repository.FetchRepositorySegments(onboard.Repository)
+			_, _, ref = repository.FetchRepositorySegments(baseRef)
 		}
 		rawPath := fmt.Sprintf("%s/%s/%s", owner, repoName, ref)
-		if onboard.DockerfileDir != "" {
-			dockerfileURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s", rawPath, onboard.DockerfileDir)
+		if dockerfilePath != "" {
+			dockerfileURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s", rawPath, dockerfilePath)
 			if dockerfileContent, err = repository.FetchRawContent(dockerfileURL); err != nil {
 				fmt.Printf("⚠️  Warning: failed to fetch Dockerfile from %s: %v\n", dockerfileURL, err)
 			}
 		}
-		if onboard.MakefileDir != "" {
-			makefileURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s", rawPath, onboard.MakefileDir)
+		if makefilePath != "" {
+			makefileURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s", rawPath, makefilePath)
 			if makefileContent, err = repository.FetchRawContent(makefileURL); err != nil {
 				fmt.Printf("⚠️  Warning: failed to fetch Makefile from %s: %v\n", makefileURL, err)
 			}

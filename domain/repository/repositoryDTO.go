@@ -10,14 +10,15 @@ const (
 
 // RepoInfo contains metadata about a GitHub repository
 type RepoInfo struct {
-	Owner        string
-	Repo         string
-	Branch       string
-	Subdir       string          // subdirectory within the repo (e.g. "otelcollector")
-	GitURL       string
-	Description  string
-	Version      string
-	License      string
-	LatestCommit string
-	Generator    SourceGenerator
+	Owner         string
+	Repo          string
+	Branch        string
+	ComponentPath string          // component subdirectory within the repo (e.g. "test/node-problem-detector")
+	ComponentName string          // leaf name of the component (e.g. "node-problem-detector")
+	GitURL        string
+	Description   string
+	Version       string
+	License       string
+	LatestCommit  string
+	Generator     SourceGenerator
 }

@@ -12,7 +12,6 @@ package workflow
 import (
 	"fmt"
 	"os"
-	"path"
 
 	"dalec-mapping/domain/onboarding"
 	domainRepo "dalec-mapping/domain/repository"
@@ -28,16 +27,15 @@ import (
 // Dockerfile analysis. Returns the resolved build target strings for downstream
 // use (e.g. image test).
 func GenerateSpec(onboard *onboarding.OnboardingInfo, tag string) ([]string, error) {
-	// Fetch repository metadata
-	subdir := path.Dir(onboard.DockerfileDir)
+	// Fetch repository metadata (component path is extracted from the URL automatically)
 	var (
 		repoInfo *domainRepo.RepoInfo
 		err      error
 	)
 	if repository.IsADORepo(onboard.Repository) {
-		repoInfo, err = repository.FetchADORepoInfo(onboard.Repository, subdir, tag)
+		repoInfo, err = repository.FetchADORepoInfo(onboard.Repository, tag)
 	} else {
-		repoInfo, err = repository.FetchRepoInfo(onboard.Repository, subdir, tag)
+		repoInfo, err = repository.FetchRepoInfo(onboard.Repository, tag)
 	}
 	if err != nil {
 		fmt.Printf("❌ Error fetching repository info: %v\n", err)

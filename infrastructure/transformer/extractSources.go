@@ -73,15 +73,19 @@ func extractSourcesSection(defaultSpec *contents.DefaultSpec, goModDownloads []G
 
 // buildPrimarySource adds the main repo git source with gomod generate entries
 // for the root module and any subdirectories discovered in build commands.
-// When the go.mod is in a subdirectory (detected via MakefileDir), the primary
-// generate entry uses that subpath instead of the repo root.
+// When a ComponentPath is set on the spec, it is used as the primary subpath
+// and gomod discovery is scoped within it. Otherwise falls back to heuristics
+// from MakefileDir/DockerfileDir.
 func buildPrimarySource(sources map[string]interface{}, defaultSpec *contents.DefaultSpec) {
 	subpaths := collectGoModSubpaths(defaultSpec, contents.Spec)
 
 	// Determine where the primary go.mod lives.
-	// Priority: MakefileDir > gomod subpath > DockerfileDir
+	// Priority: ComponentPath > MakefileDir > gomod subpath > DockerfileDir
 	rootGoModSubpath := ""
-	if defaultSpec.MakefileDir != "" {
+	if defaultSpec.ComponentPath != "" {
+		rootGoModSubpath = defaultSpec.ComponentPath
+	}
+	if rootGoModSubpath == "" && defaultSpec.MakefileDir != "" {
 		dir := strings.TrimSuffix(defaultSpec.MakefileDir, "/")
 		if idx := strings.LastIndex(dir, "/"); idx >= 0 {
 			rootGoModSubpath = dir[:idx]
@@ -167,19 +171,27 @@ func buildSubmoduleSources(sources map[string]interface{}, defaultSpec *contents
 
 // collectGoModSubpaths returns ordered unique subdirectory paths found via
 // literal `cd <subdir> &&` in binary build commands and pipeline steps.
+// When a ComponentPath is set on defaultSpec, only subpaths that fall within
+// the component directory (DFS) are included.
 func collectGoModSubpaths(defaultSpec *contents.DefaultSpec, spec *contents.DockerfileSpec) []string {
 	if spec == nil {
 		return nil
 	}
 	seen := map[string]bool{}
 	var subpaths []string
+	componentPath := defaultSpec.ComponentPath
 
 	add := func(s string) {
 		s = strings.TrimPrefix(s, "/")
-		if s != "" && s != defaultSpec.Repo && !seen[s] {
-			seen[s] = true
-			subpaths = append(subpaths, s)
+		if s == "" || s == defaultSpec.Repo || seen[s] {
+			return
 		}
+		// When a component path is set, only accept subpaths within it.
+		if componentPath != "" && !strings.HasPrefix(s, componentPath+"/") && s != componentPath {
+			return
+		}
+		seen[s] = true
+		subpaths = append(subpaths, s)
 	}
 
 	for _, bin := range spec.Binaries {

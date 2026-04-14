@@ -7,10 +7,15 @@ package repository
 // checkout is required.  The pipeline agent's credential helper handles
 // authentication to msazure.visualstudio.com automatically.
 //
+// Repository URLs may include a component path appended after the repo name:
+//   https://dev.azure.com/org/project/_git/repo/component/path
+// All public functions accept the full URL and call SplitComponent() internally
+// to extract the base git URL before running git commands.
+//
 //   FetchAllADOTags(repoURL)                   → []TagInfo   (git ls-remote)
 //   FetchADOTagCommit(repoURL, tag)             → string      (git ls-remote)
 //   FetchADOFileContent(repoURL, filePath, tag) → []byte      (sparse clone)
-//   FetchADORepoInfo(repoURL, subdir, tag)      → *RepoInfo   (git ls-remote)
+//   FetchADORepoInfo(repoURL, tag)              → *RepoInfo   (git ls-remote)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import (
@@ -121,7 +126,8 @@ func lastSegment(s string) string {
 // FetchAllADOTags lists all semver tags and their commit SHAs from the remote
 // ADO repository using git ls-remote.
 func FetchAllADOTags(repoURL string) ([]TagInfo, error) {
-	out, err := gitOut("", "ls-remote", "--tags", adoAuthURL(repoURL))
+	baseURL, _ := SplitComponent(repoURL)
+	out, err := gitOut("", "ls-remote", "--tags", adoAuthURL(baseURL))
 	if err != nil {
 		return nil, fmt.Errorf("failed to list tags for %s: %w", repoURL, err)
 	}
@@ -169,7 +175,8 @@ func FetchAllADOTags(repoURL string) ([]TagInfo, error) {
 // FetchADOTagCommit resolves a git tag to its commit SHA via git ls-remote.
 // Peeled (annotated tag) SHA is preferred over the raw tag object SHA.
 func FetchADOTagCommit(repoURL, tag string) (string, error) {
-	out, err := gitOut("", "ls-remote", adoAuthURL(repoURL),
+	baseURL, _ := SplitComponent(repoURL)
+	out, err := gitOut("", "ls-remote", adoAuthURL(baseURL),
 		"refs/tags/"+tag+"^{}",
 		"refs/tags/"+tag,
 	)
@@ -198,6 +205,7 @@ func FetchADOTagCommit(repoURL, tag string) (string, error) {
 // The clone fetches only the tree objects; git show lazily fetches the one
 // blob needed.
 func FetchADOFileContent(repoURL, filePath, tag string) ([]byte, error) {
+	baseURL, _ := SplitComponent(repoURL)
 	filePath = strings.TrimPrefix(filePath, "/")
 
 	tmpDir, err := os.MkdirTemp("", "ado-clone-*")
@@ -211,21 +219,24 @@ func FetchADOFileContent(repoURL, filePath, tag string) ([]byte, error) {
 		"--no-checkout",
 		"--depth=1",
 		"--branch="+tag,
-		adoAuthURL(repoURL),
+		adoAuthURL(baseURL),
 		tmpDir,
 	); err != nil {
-		return nil, fmt.Errorf("failed to clone %s at %s: %w", repoURL, tag, err)
+		return nil, fmt.Errorf("failed to clone %s at %s: %w", baseURL, tag, err)
 	}
 
 	return gitOutBytes(tmpDir, "show", "HEAD:"+filePath)
 }
 
 // FetchADORepoInfo assembles a RepoInfo by querying the ADO repository
-// remotely via git ls-remote.
-func FetchADORepoInfo(repoURL, subdir, tag string) (*domainRepo.RepoInfo, error) {
+// remotely via git ls-remote. The repoURL may contain a component path
+// (e.g. _git/repo/comp/path) which is extracted and stored on RepoInfo.
+func FetchADORepoInfo(repoURL, tag string) (*domainRepo.RepoInfo, error) {
+	baseURL, componentPath := SplitComponent(repoURL)
+
 	// Resolve default branch from the symbolic ref of HEAD.
 	branch := "main"
-	if out, err := gitOut("", "ls-remote", "--symref", adoAuthURL(repoURL), "HEAD"); err == nil {
+	if out, err := gitOut("", "ls-remote", "--symref", adoAuthURL(baseURL), "HEAD"); err == nil {
 		for _, line := range strings.Split(out, "\n") {
 			if strings.HasPrefix(line, "ref: refs/heads/") {
 				fields := strings.Fields(line)
@@ -236,16 +247,17 @@ func FetchADORepoInfo(repoURL, subdir, tag string) (*domainRepo.RepoInfo, error)
 	}
 
 	info := &domainRepo.RepoInfo{
-		Owner:       adoOrg(repoURL),
-		Repo:        adoRepoName(repoURL),
-		Branch:      branch,
-		Subdir:      subdir,
-		GitURL:      repoURL,
-		Description: fmt.Sprintf("This is the %s project.", adoRepoName(repoURL)),
+		Owner:         adoOrg(baseURL),
+		Repo:          adoRepoName(baseURL),
+		Branch:        branch,
+		ComponentPath: componentPath,
+		ComponentName: ComponentName(componentPath),
+		GitURL:        baseURL,
+		Description:   fmt.Sprintf("This is the %s project.", adoRepoName(baseURL)),
 	}
 
 	if tag != "" {
-		commit, err := FetchADOTagCommit(repoURL, tag)
+		commit, err := FetchADOTagCommit(baseURL, tag)
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve commit for tag %s: %w", tag, err)
 		}

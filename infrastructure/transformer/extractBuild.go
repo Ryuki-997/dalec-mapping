@@ -96,31 +96,34 @@ func buildEnv() map[string]interface{} {
 // All binaries are merged into one command block so BIN_SUFFIX is set once.
 // Also returns the combined command text for var scanning.
 // The first step after the preamble is always `cd <baseDir>` where baseDir is
-// repo/subdir (subdir derived from MakefileDir, DockerfileDir, or gomod subpath).
+// repo (or repo/componentPath when a component is set).
 func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloadInfo) ([]map[string]interface{}, string) {
 	baseDir := defaultSpec.Repo
+	if defaultSpec.ComponentPath != "" {
+		baseDir = defaultSpec.Repo + "/" + defaultSpec.ComponentPath
+	}
 
 	rawCmds := rawBuildCommands(goModDownloads)
 
 	// Detect the go.mod subdirectory within the repo.
-	// Priority: gomod subpath → repository + makefile location → repository + dockerfile location.
-	// When non-empty, each per-binary go build is wrapped in `cd goModSubdir && cmd && cd ..`
-	// so the go toolchain can find go.mod, while the main cd stays at the repo root for correct
-	// cp file paths (e.g. cni/azure-$OS.conflist relative to azure-container-networking/).
+	// When ComponentPath is set, go.mod is at the component root — no extra subdir needed.
+	// Otherwise: Priority: gomod subpath → makefile location → dockerfile location.
 	goModSubdir := ""
-	if subpaths := collectGoModSubpaths(defaultSpec, contents.Spec); len(subpaths) > 0 {
-		goModSubdir = subpaths[0]
-	}
-	if goModSubdir == "" && defaultSpec.MakefileDir != "" {
-		dir := strings.TrimSuffix(defaultSpec.MakefileDir, "/")
-		if idx := strings.LastIndex(dir, "/"); idx >= 0 {
-			goModSubdir = dir[:idx]
+	if defaultSpec.ComponentPath == "" {
+		if subpaths := collectGoModSubpaths(defaultSpec, contents.Spec); len(subpaths) > 0 {
+			goModSubdir = subpaths[0]
 		}
-	}
-	if goModSubdir == "" && defaultSpec.DockerfileDir != "" {
-		d := strings.TrimSuffix(defaultSpec.DockerfileDir, "/")
-		if idx := strings.LastIndex(d, "/"); idx >= 0 {
-			goModSubdir = d[:idx]
+		if goModSubdir == "" && defaultSpec.MakefileDir != "" {
+			dir := strings.TrimSuffix(defaultSpec.MakefileDir, "/")
+			if idx := strings.LastIndex(dir, "/"); idx >= 0 {
+				goModSubdir = dir[:idx]
+			}
+		}
+		if goModSubdir == "" && defaultSpec.DockerfileDir != "" {
+			d := strings.TrimSuffix(defaultSpec.DockerfileDir, "/")
+			if idx := strings.LastIndex(d, "/"); idx >= 0 {
+				goModSubdir = d[:idx]
+			}
 		}
 	}
 	// Source file paths in rawCmds are relative to the repo root (e.g. cni/network/plugin/main.go).
