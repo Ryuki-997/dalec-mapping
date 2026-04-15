@@ -45,7 +45,8 @@ type CopyInstruction struct {
 
 // MakefileInfo holds variables extracted from a Makefile.
 type MakefileInfo struct {
-	Variables map[string]string `yaml:"variables"`
+	Variables      map[string]string `yaml:"variables"`
+	GoBuildTargets []string          `yaml:"-"` // package targets from go build commands (e.g. "./cmd/client")
 }
 
 // ─── Dockerfile spec types (result of static AST analysis) ──────────────────

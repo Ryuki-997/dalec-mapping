@@ -136,7 +136,13 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 		if goModSubdir != "" {
 			cdTarget = baseDir + "/" + goModSubdir
 		}
-		fallback := fmt.Sprintf("%s\ncd %s\ngo build -o /go/bin/%s .", binSuffixPreamble(), cdTarget, fallbackName)
+		// Use Makefile go build target when available (e.g. "./cmd/client") instead
+		// of "." which fails when the go.mod directory has no Go files at root.
+		buildTarget := "."
+		if len(contents.Makefile.GoBuildTargets) > 0 {
+			buildTarget = contents.Makefile.GoBuildTargets[0]
+		}
+		fallback := fmt.Sprintf("%s\ncd %s\ngo build -o /go/bin/%s %s", binSuffixPreamble(), cdTarget, fallbackName, buildTarget)
 		return []map[string]interface{}{{"command": fallback}}, fallback
 	}
 
