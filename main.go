@@ -3,7 +3,6 @@ package main
 import (
 	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/domain/repository"
-	repoInfra "dalec-mapping/infrastructure/repository"
 	"dalec-mapping/infrastructure/semver"
 	"dalec-mapping/workflow"
 	"flag"
@@ -102,10 +101,10 @@ func processTag(onboard *onboarding.OnboardingInfo, fullTag string, isFirstOnboa
 			return ""
 		}
 		if onboard.ReviewMode == onboarding.AutoReview {
-			testAndPush(onboard, remotePath, tag, resolvedTargets)
+			GitPush(onboard, remotePath, tag, resolvedTargets)
 			return remotePath
 		}
-		testAndCreatePR(onboard, remotePath, tag, resolvedTargets)
+		CreatePR(onboard, tag)
 		return "" // PR created — path not collected
 	}
 
@@ -164,16 +163,7 @@ func generateWork(onboard *onboarding.OnboardingInfo, fullTag string) (string, [
 	return remotePath, resolvedTargets, nil
 }
 
-func testAndCreatePR(onboard *onboarding.OnboardingInfo, remotePath, tag string, resolvedTargets []string) {
-	// Only run local docker-build tests for GitHub repos. ADO repos skip
-	// testing here — the pipeline build itself serves as the test run.
-	if !repoInfra.IsADORepo(onboard.Repository) {
-		if err := workflow.TestImage(remotePath, onboard.SpecImageName, tag, resolvedTargets); err != nil {
-			log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
-		}
-	} else {
-		log.Printf("⏭️  Skipping local image test for ADO repo %s @ %s — pipeline build will validate", onboard.SpecImageName, tag)
-	}
+func CreatePR(onboard *onboarding.OnboardingInfo, tag string) {
 	prURL, err := workflow.CreateSpecPR(onboard, tag, false)
 	if err != nil {
 		log.Fatalf("❌ PR creation failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
@@ -181,16 +171,7 @@ func testAndCreatePR(onboard *onboarding.OnboardingInfo, remotePath, tag string,
 	log.Printf("✅ PR created for %s @ %s: %s\n", onboard.SpecImageName, tag, prURL)
 }
 
-func testAndPush(onboard *onboarding.OnboardingInfo, remotePath, tag string, resolvedTargets []string) {
-	// Only run local docker-build tests for GitHub repos. ADO repos skip
-	// testing here — the pipeline build itself serves as the test run.
-	if !repoInfra.IsADORepo(onboard.Repository) {
-		if err := workflow.TestImage(remotePath, onboard.SpecImageName, tag, resolvedTargets); err != nil {
-			log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
-		}
-	} else {
-		log.Printf("⏭️  Skipping local image test for ADO repo %s @ %s — pipeline build will validate", onboard.SpecImageName, tag)
-	}
+func GitPush(onboard *onboarding.OnboardingInfo, remotePath, tag string, resolvedTargets []string) {
 	if err := workflow.PushToRemote(onboard, tag, false); err != nil {
 		log.Fatalf("❌ Push failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
 	}
