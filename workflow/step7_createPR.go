@@ -53,11 +53,21 @@ func CreateSpecPR(onboard *onboarding.OnboardingInfo, tag string, specOnly bool)
 	}
 	log.Printf("🌿 Created feature branch %s from %s\n", featureBranch, utils.OnboardBranch)
 
+	// cleanup deletes the remote feature branch on failure so it doesn't linger.
+	cleanup := func(wrapped error) (string, error) {
+		if delErr := deleteRemoteBranch(featureBranch); delErr != nil {
+			log.Printf("⚠️  Failed to clean up remote branch %s: %v\n", featureBranch, delErr)
+		} else {
+			log.Printf("🧹 Cleaned up remote branch %s after failure\n", featureBranch)
+		}
+		return "", wrapped
+	}
+
 	// 1. Commit specfile to the feature branch
 	specFile := fmt.Sprintf("%s-%s-specfile.yml", specImageName, tag)
 	specContent, err := os.ReadFile(utils.SpecPath)
 	if err != nil {
-		return "", fmt.Errorf("failed to read spec file: %w", err)
+		return cleanup(fmt.Errorf("failed to read spec file: %w", err))
 	}
 	if err := commitFileToBranch(
 		fmt.Sprintf("%s/%s", dir, specFile),
@@ -65,7 +75,7 @@ func CreateSpecPR(onboard *onboarding.OnboardingInfo, tag string, specOnly bool)
 		specContent,
 		featureBranch,
 	); err != nil {
-		return "", fmt.Errorf("failed to commit spec file: %w", err)
+		return cleanup(fmt.Errorf("failed to commit spec file: %w", err))
 	}
 
 	// 2. Commit Dockerfile (if present and not spec-only)
@@ -76,7 +86,7 @@ func CreateSpecPR(onboard *onboarding.OnboardingInfo, tag string, specOnly bool)
 			onboard.DockerfileContent,
 			featureBranch,
 		); err != nil {
-			return "", fmt.Errorf("failed to commit Dockerfile: %w", err)
+			return cleanup(fmt.Errorf("failed to commit Dockerfile: %w", err))
 		}
 	}
 
@@ -88,7 +98,7 @@ func CreateSpecPR(onboard *onboarding.OnboardingInfo, tag string, specOnly bool)
 			onboard.MakefileContent,
 			featureBranch,
 		); err != nil {
-			return "", fmt.Errorf("failed to commit Makefile: %w", err)
+			return cleanup(fmt.Errorf("failed to commit Makefile: %w", err))
 		}
 	}
 
@@ -99,7 +109,7 @@ func CreateSpecPR(onboard *onboarding.OnboardingInfo, tag string, specOnly bool)
 
 	prURL, prNumber, err := createPullRequest(prTitle, prBody, featureBranch)
 	if err != nil {
-		return "", fmt.Errorf("failed to create PR: %w", err)
+		return cleanup(fmt.Errorf("failed to create PR: %w", err))
 	}
 	log.Printf("📝 Created PR #%d: %s\n", prNumber, prURL)
 
@@ -164,8 +174,8 @@ func createFeatureBranch(branchName string) error {
 	}
 
 	// Create the new branch ref
-	createRefPath := fmt.Sprintf("repos/%s/%s/git/refs", utils.OnboardOwner, utils.OnboardRepo)
-	_, err = repository.WriteJSON(createRefPath, repo.POST, map[string]interface{}{
+	createPath := fmt.Sprintf("repos/%s/%s/git/refs", utils.OnboardOwner, utils.OnboardRepo)
+	_, err = repository.WriteJSON(createPath, repo.POST, map[string]interface{}{
 		"ref": "refs/heads/" + branchName,
 		"sha": sha,
 	})
@@ -204,6 +214,16 @@ func createPullRequest(title, body, head string) (string, int, error) {
 	}
 
 	return prURL, prNumber, nil
+}
+
+// deleteRemoteBranch deletes a branch from the onboard repo via the GitHub API.
+func deleteRemoteBranch(branchName string) error {
+	refPath := fmt.Sprintf("repos/%s/%s/git/refs/heads/%s", utils.OnboardOwner, utils.OnboardRepo, branchName)
+	_, err := repository.WriteJSON(refPath, repo.DELETE, nil)
+	if err != nil {
+		return fmt.Errorf("failed to delete remote branch %s: %w", branchName, err)
+	}
+	return nil
 }
 
 // addReviewers requests reviews from the given GitHub usernames or email addresses.
