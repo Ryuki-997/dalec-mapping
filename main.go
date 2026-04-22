@@ -1,6 +1,7 @@
 package main
 
 import (
+	patching "dalec-mapping/Patching"
 	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/semver"
@@ -26,9 +27,15 @@ import (
 
 func main() {
 	inputPath := flag.String("path", "", "Input path to search for onboarding files (e.g. containernetworking and containernetworking/azure-cns both work). Omit to fetch all under autospecs/")
+	patchMode := flag.Bool("patch", false, "Run patching workflow: fetch MCR images and scan for vulnerabilities")
 	flag.Parse()
 
 	loadEnv()
+
+	if *patchMode {
+		runPatchWorkflow()
+		return
+	}
 
 	onboardFiles, firstOnboardFlags, templateTags := fetchOnboardFiles(*inputPath)
 
@@ -164,6 +171,11 @@ func generateWork(onboard *onboarding.OnboardingInfo, fullTag string) (string, [
 }
 
 func CreatePR(onboard *onboarding.OnboardingInfo, tag string) {
+	err := workflow.TestImage(onboard.SpecRepository, onboard.SpecImageName, tag, onboard.Targets)
+	if err != nil {
+		log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
+	}
+
 	prURL, err := workflow.CreateSpecPR(onboard, tag, false)
 	if err != nil {
 		log.Fatalf("❌ PR creation failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
@@ -176,4 +188,36 @@ func GitPush(onboard *onboarding.OnboardingInfo, remotePath, tag string, resolve
 		log.Fatalf("❌ Push failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
 	}
 	log.Printf("✅ Spec pushed for %s @ %s\n", onboard.SpecImageName, tag)
+}
+
+// ─── Chunk 4 · PATCHING ─────────────────────────────────────────────────────
+
+func runPatchWorkflow() {
+	log.Println("🩹 Running patching workflow — scanning ACR images for vulnerabilities")
+
+	scanResults, err := patching.FetchAndScanACRImages()
+	if err != nil {
+		log.Fatalf("❌ Patching workflow failed: %v", err)
+	}
+
+	if len(scanResults) == 0 {
+		log.Println("  ⏭️  No ACR images found to scan")
+		return
+	}
+
+	// Summarize results
+	for _, resultPath := range scanResults {
+		total, high, critical, err := patching.ParseScanResults(resultPath)
+		if err != nil {
+			log.Printf("⚠️  Failed to parse %s: %v\n", resultPath, err)
+			continue
+		}
+		if total == 0 {
+			log.Printf("  ✅ %s: no vulnerabilities\n", resultPath)
+		} else {
+			log.Printf("  ⚠️  %s: %d total (%d high, %d critical)\n", resultPath, total, high, critical)
+		}
+	}
+
+	log.Println("🩹 Patching workflow complete")
 }
