@@ -41,44 +41,16 @@ type OrasReference struct {
 // pipeline (AZURE_FEDERATED_TOKEN_FILE) to log in as the service principal,
 // obtain a short-lived ACR access token, and store it in ACR_ACCESS_TOKEN.
 //
-// Required env vars (set in pipeline / .env):
-//   AZURE_CLIENT_ID           — app registration client ID
-//   AZURE_TENANT_ID           — Entra tenant ID
-//   AZURE_FEDERATED_TOKEN_FILE — path to OIDC token file (set by pipeline runtime)
+// Expects the Azure CLI to already be authenticated (e.g. by the
+// azure/login@v2 GitHub Action with OIDC). This function only exchanges
+// the existing session for an ACR-scoped token.
 //
 // The function shells out to `az` CLI which must be available in the runner.
 func authenticateACR() error {
-	clientID := strings.TrimSpace(os.Getenv("AZURE_CLIENT_ID"))
-	tenantID := strings.TrimSpace(os.Getenv("AZURE_TENANT_ID"))
-	tokenFile := strings.TrimSpace(os.Getenv("AZURE_FEDERATED_TOKEN_FILE"))
+	log.Printf("🔐 Exchanging Azure CLI session for ACR token (%s)\n", ACRBaseURL)
 
-	if clientID == "" || tenantID == "" {
-		return fmt.Errorf("missing AZURE_CLIENT_ID or AZURE_TENANT_ID")
-	}
-	if tokenFile == "" {
-		return fmt.Errorf("AZURE_FEDERATED_TOKEN_FILE is not set — this workflow must run in a pipeline with workload identity federation")
-	}
-
-	oidcToken, err := os.ReadFile(tokenFile)
-	if err != nil {
-		return fmt.Errorf("failed to read federated token file %s: %w", tokenFile, err)
-	}
-
-	log.Printf("🔐 Logging in as SP %s via federated credential\n", clientID)
-
-	loginCmd := exec.Command("az", "login", "--service-principal",
-		"--username", clientID,
-		"--tenant", tenantID,
-		"--federated-token", strings.TrimSpace(string(oidcToken)),
-		"--output", "none",
-	)
-	loginCmd.Stdout = os.Stdout
-	loginCmd.Stderr = os.Stderr
-	if err := loginCmd.Run(); err != nil {
-		return fmt.Errorf("az login failed: %w", err)
-	}
-
-	// Exchange Azure session for a short-lived ACR access token
+	// The caller (GitHub Action) already did az login via OIDC.
+	// Just exchange that session for a short-lived ACR access token.
 	tokenOut, err := exec.Command("az", "acr", "login",
 		"--name", ACRBaseURL,
 		"--expose-token",
@@ -86,7 +58,7 @@ func authenticateACR() error {
 		"-o", "tsv",
 	).Output()
 	if err != nil {
-		return fmt.Errorf("az acr login failed: %w", err)
+		return fmt.Errorf("az acr login --expose-token failed (is az already logged in?): %w", err)
 	}
 
 	acrToken := strings.TrimSpace(string(tokenOut))
@@ -97,9 +69,6 @@ func authenticateACR() error {
 	os.Setenv("ACR_ACCESS_TOKEN", acrToken)
 	os.Setenv("ACR_USERNAME", "00000000-0000-0000-0000-000000000000")
 	log.Printf("✅ ACR token obtained for %s\n", ACRBaseURL)
-
-	// Log out immediately — token is now in env
-	_ = exec.Command("az", "logout", "--output", "none").Run()
 
 	return nil
 }

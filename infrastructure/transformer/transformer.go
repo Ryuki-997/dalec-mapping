@@ -50,7 +50,7 @@ func TransformToDalec(defaultSpec *contents.DefaultSpec) parser.DalecSpec {
 	spec := make(parser.DalecSpec)
 
 	// Add syntax header (special comment format)
-	spec["# syntax"] = "ghcr.io/azure/dalec/frontend:latest"
+	spec["# syntax"] = "ghcr.io/project-dalec/dalec/frontend:0.20"
 
 	// Detect pinned Go toolchain image from Dockerfile stages and store version.
 	if pin := parser.DetectGoToolchainPin(defaultSpec.Stages); pin != nil {

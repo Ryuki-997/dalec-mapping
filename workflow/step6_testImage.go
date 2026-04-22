@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// Step 7 — Test Image (GitHub repos only)
+// Step 6 — Test Image (GitHub repos only)
 //
 //   Builds the container from the generated DALEC spec, runs it to verify the
 //   binary is present, runs FIPS compliance checks, and optionally executes
