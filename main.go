@@ -1,10 +1,10 @@
 package main
 
 import (
-	patching "dalec-mapping/Patching"
 	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/semver"
+	"dalec-mapping/patching"
 	"dalec-mapping/workflow"
 	"flag"
 	"log"
