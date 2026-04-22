@@ -36,16 +36,11 @@ type OrasReference struct {
 	Ctx context.Context
 }
 
-// authenticateACR is the first step of the patching workflow.
-// It uses the federated OIDC token written by the GitHub Actions / Azure DevOps
-// pipeline (AZURE_FEDERATED_TOKEN_FILE) to log in as the service principal,
-// obtain a short-lived ACR access token, and store it in ACR_ACCESS_TOKEN.
+// authenticateACR exchanges the existing Azure CLI session for a short-lived
+// ACR access token and stores it in ACR_ACCESS_TOKEN.
 //
-// Expects the Azure CLI to already be authenticated (e.g. by the
-// azure/login@v2 GitHub Action with OIDC). This function only exchanges
-// the existing session for an ACR-scoped token.
-//
-// The function shells out to `az` CLI which must be available in the runner.
+// Expects `az` to already be logged in (e.g. by the azure/login@v2 GitHub
+// Action with OIDC). No additional env vars are required.
 func authenticateACR() error {
 	log.Printf("🔐 Exchanging Azure CLI session for ACR token (%s)\n", ACRBaseURL)
 
