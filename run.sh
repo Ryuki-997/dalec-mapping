@@ -35,8 +35,10 @@ run_and_stream() {
 # run_and_stream "Run 6: -path=autospecs/aks-vm-extension" -path=autospecs/aks-vm-extension
 
 ## Test Runs
-run_and_stream "Run AKS-Container-Networking: -path=autospecs/test/azure-cns" -path=autospecs/test/azure-cns
-run_and_stream "Run AKS-Secure-TLS-Bootstrap: -path=autospecs/test/aks-secure-tls-bootstrap" -path=autospecs/test/aks-secure-tls-bootstrap
+run_and_stream "Run AKS-Container-Networking: -path=autospecs/test/azure-cns" -path=autospecs/test/azure-cns > output_azure-cns.log
+run_and_stream "Run AKS-Container-Networking: -path=autospecs/test/azure-cni" -path=autospecs/test/azure-cni > output_azure-cni.log
+run_and_stream "Run AKS-Container-Networking: -path=autospecs/test/azure-ipam" -path=autospecs/test/azure-ipam > output_azure-ipam.log
+# run_and_stream "Run AKS-Secure-TLS-Bootstrap: -path=autospecs/test/aks-secure-tls-bootstrap" -path=autospecs/test/aks-secure-tls-bootstrap
 # run_and_stream "Run AKS-Node-Controller: -path=autospecs/test/aks-node-controller" -path=autospecs/test/aks-node-controller
 # run_and_stream "Run AKS-VM-Extension: -path=autospecs/test/node-problem-detector" -path=autospecs/test/node-problem-detector
 

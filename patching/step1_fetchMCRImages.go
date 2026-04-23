@@ -332,44 +332,50 @@ func ScanImage(imageURL, pkgTypes, outputPath string) error {
 	return nil
 }
 
-// ParseScanResults reads a trivy JSON output file and returns vulnerability counts.
+// ParseScanResults reads a trivy JSON output file, logs every vulnerability
+// found, and returns aggregate counts.
 func ParseScanResults(path string) (total int, high int, critical int, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("failed to read scan results: %w", err)
 	}
 
-	var results map[string]interface{}
-	if err := json.Unmarshal(data, &results); err != nil {
+	var report struct {
+		Results []struct {
+			Target          string `json:"Target"`
+			Vulnerabilities []struct {
+				VulnerabilityID  string `json:"VulnerabilityID"`
+				PkgName          string `json:"PkgName"`
+				InstalledVersion string `json:"InstalledVersion"`
+				FixedVersion     string `json:"FixedVersion"`
+				Severity         string `json:"Severity"`
+				Title            string `json:"Title"`
+			} `json:"Vulnerabilities"`
+		} `json:"Results"`
+	}
+	if err := json.Unmarshal(data, &report); err != nil {
 		return 0, 0, 0, fmt.Errorf("failed to parse scan results: %w", err)
 	}
 
-	resultsArr, ok := results["Results"].([]interface{})
-	if !ok {
-		return 0, 0, 0, nil
-	}
-
-	for _, r := range resultsArr {
-		result, ok := r.(map[string]interface{})
-		if !ok {
+	for _, result := range report.Results {
+		if len(result.Vulnerabilities) == 0 {
 			continue
 		}
-		vulns, ok := result["Vulnerabilities"].([]interface{})
-		if !ok {
-			continue
-		}
-		for _, v := range vulns {
-			vuln, ok := v.(map[string]interface{})
-			if !ok {
-				continue
-			}
+		log.Printf("  ── Target: %s (%d vulnerabilities) ──\n", result.Target, len(result.Vulnerabilities))
+		for _, v := range result.Vulnerabilities {
 			total++
-			switch vuln["Severity"] {
+			switch v.Severity {
 			case "HIGH":
 				high++
 			case "CRITICAL":
 				critical++
 			}
+			fixed := v.FixedVersion
+			if fixed == "" {
+				fixed = "(no fix)"
+			}
+			log.Printf("    [%s] %s — %s %s → %s | %s\n",
+				v.Severity, v.VulnerabilityID, v.PkgName, v.InstalledVersion, fixed, v.Title)
 		}
 	}
 
