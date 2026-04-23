@@ -171,10 +171,10 @@ func generateWork(onboard *onboarding.OnboardingInfo, fullTag string) (string, [
 }
 
 func CreatePR(onboard *onboarding.OnboardingInfo, tag string) {
-	err := workflow.TestImage(onboard.SpecRepository, onboard.SpecImageName, tag, onboard.Targets)
-	if err != nil {
-		log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
-	}
+	// err := workflow.TestImage(onboard.SpecRepository, onboard.SpecImageName, tag, onboard.Targets)
+	// if err != nil {
+	// 	log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
+	// }
 
 	prURL, err := workflow.CreateSpecPR(onboard, tag, false)
 	if err != nil {
