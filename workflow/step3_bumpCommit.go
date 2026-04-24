@@ -32,9 +32,10 @@ import (
 // and args.VERSION for the new tag, and writes the result to utils.SpecPath.
 func BumpCommit(onboard *onboarding.OnboardingInfo, fullTag string, templateTag string) (string, error) {
 	tag := semver.ToTag(fullTag)
-	remotePath := semver.SpecFilePath(onboard.SpecRepository, onboard.SpecImageName, tag)
+	specDir := onboard.SpecDir()
+	remotePath := semver.SpecFilePath(specDir, onboard.SpecImageName, tag)
 
-	templateRemotePath := semver.SpecFilePath(onboard.SpecRepository, onboard.SpecImageName, semver.ToTag(templateTag))
+	templateRemotePath := semver.SpecFilePath(specDir, onboard.SpecImageName, semver.ToTag(templateTag))
 	log.Printf("🔄 Commit bump for %s @ %s (template: %s → new: %s)\n", onboard.SpecImageName, tag, templateRemotePath, remotePath)
 
 	// Fetch the template spec from the onboard repo

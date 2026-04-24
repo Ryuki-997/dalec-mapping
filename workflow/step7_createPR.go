@@ -34,20 +34,12 @@ import (
 // When specOnly is true, only the specfile is committed.
 // Returns the PR URL on success.
 func CreateSpecPR(onboard *onboarding.OnboardingInfo, tag string, specOnly bool) (string, error) {
-	specRepository := onboard.SpecRepository
+	dir := onboard.SpecDir()
 	specImageName := onboard.SpecImageName
-
-	// Build directory prefix
-	var dir string
-	if specRepository != "" {
-		dir = fmt.Sprintf("autospecs/%s/%s", specRepository, specImageName)
-	} else {
-		dir = fmt.Sprintf("autospecs/%s", specImageName)
-	}
 
 	// 0. Create a feature branch from OnboardBranch
 	safeTag := strings.ReplaceAll(tag, "/", "-")
-	featureBranch := fmt.Sprintf("dalec/%s-%s", specImageName, safeTag)
+	featureBranch := fmt.Sprintf("dalec/%s-%s", onboard.SpecLeaf(), safeTag)
 	if err := createFeatureBranch(featureBranch); err != nil {
 		return "", fmt.Errorf("failed to create feature branch %s: %w", featureBranch, err)
 	}

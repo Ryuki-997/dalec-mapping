@@ -26,7 +26,7 @@ import (
 // ─── Chunk 1 · ENTRY ────────────────────────────────────────────────────────
 
 func main() {
-	inputPath := flag.String("path", "", "Input path to search for onboarding files (e.g. containernetworking and containernetworking/azure-cns both work). Omit to fetch all under autospecs/")
+	inputPath := flag.String("path", "", "Input path to search for onboarding files (e.g. containernetworking and containernetworking/azure-cns both work). Omit to fetch all under specs/")
 	patchMode := flag.Bool("patch", false, "Run patching workflow: fetch MCR images and scan for vulnerabilities")
 	flag.Parse()
 
@@ -149,7 +149,7 @@ func bumpCommit(onboard *onboarding.OnboardingInfo, fullTag, tag, templateTag st
 	if err := workflow.PushToRemote(onboard, tag, true); err != nil {
 		log.Fatalf("❌ Push failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
 	}
-	remotePath := semver.SpecFilePath(onboard.SpecRepository, onboard.SpecImageName, tag)
+	remotePath := semver.SpecFilePath(onboard.SpecDir(), onboard.SpecImageName, tag)
 	log.Printf("✅ Revision bump pushed for %s @ %s\n", onboard.SpecImageName, tag)
 	return remotePath
 }
@@ -166,15 +166,15 @@ func generateWork(onboard *onboarding.OnboardingInfo, fullTag string) (string, [
 	log.Printf("✅ Spec created for %s @ %s", onboard.SpecImageName, fullTag)
 
 	tag := semver.ToTag(fullTag)
-	remotePath := semver.SpecFilePath(onboard.SpecRepository, onboard.SpecImageName, tag)
+	remotePath := semver.SpecFilePath(onboard.SpecDir(), onboard.SpecImageName, tag)
 	return remotePath, resolvedTargets, nil
 }
 
 func CreatePR(onboard *onboarding.OnboardingInfo, tag string) {
-	// err := workflow.TestImage(onboard.SpecRepository, onboard.SpecImageName, tag, onboard.Targets)
-	// if err != nil {
-	// 	log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
-	// }
+	err := workflow.TestImage(onboard.SpecLeaf(), onboard.SpecImageName, tag, onboard.Targets)
+	if err != nil {
+		log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
+	}
 
 	prURL, err := workflow.CreateSpecPR(onboard, tag, false)
 	if err != nil {

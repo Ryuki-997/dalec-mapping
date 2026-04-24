@@ -190,11 +190,11 @@ func resolveAndAppend(
 	log.Printf("✅ Resolved tags for %s: %v (from patterns: %v)\n",
 		onboard.Repository, semver.TagNames(resolvedTags), onboard.Tag)
 
-	newTags := semver.FilterNewTags(resolvedTags, onboard.SpecRepository, onboard.SpecImageName, treePaths)
+	newTags := semver.FilterNewTags(resolvedTags, onboard.SpecDir(), onboard.SpecImageName, treePaths)
 
 	if hasSiblings {
 		// Re-onboard: need both new tags and an existing spec as template
-		existing := semver.FilterExistingTags(resolvedTags, onboard.SpecRepository, onboard.SpecImageName, treePaths)
+		existing := semver.FilterExistingTags(resolvedTags, onboard.SpecDir(), onboard.SpecImageName, treePaths)
 		if len(newTags) == 0 || len(existing) == 0 {
 			log.Printf("⏭  Skipping %s: re-onboard but no actionable tags (new=%d, existing=%d)\n",
 				onboard.SpecImageName, len(newTags), len(existing))
@@ -223,7 +223,7 @@ func resolveAndAppend(
 // ─── Chunk 4 · UTILITIES ────────────────────────────────────────────────────
 
 // getOnboardFilepath extracts specRepository and specImageName from an
-// onboard.yml path like "autospecs/<repo>/<image>/onboard.yml".
+// onboard.yml path like "specs/<repo>/<image>/onboard.yml".
 func getOnboardFilepath(path string) (string, string, error) {
 	parts := strings.Split(path, "/")
 	n := len(parts)

@@ -1,5 +1,7 @@
 package onboarding
 
+import "fmt"
+
 // ReviewMode controls how generated specs are delivered.
 type ReviewMode string
 
@@ -23,4 +25,21 @@ type OnboardingInfo struct {
 	// Dockerfile/Makefile content (cached from onboard repo in step1, then overwritten with fresh content in step2).
 	DockerfileContent []byte `yaml:"-"`
 	MakefileContent   []byte `yaml:"-"`
+}
+
+// SpecDir returns the specs directory path for this onboarding entry.
+// e.g. "specs/containernetworking/azure-cns" or "specs/azure-cns".
+func (o *OnboardingInfo) SpecDir() string {
+	if o.SpecRepository != "" {
+		return fmt.Sprintf("specs/%s/%s", o.SpecRepository, o.SpecImageName)
+	}
+	return fmt.Sprintf("specs/%s", o.SpecImageName)
+}
+
+// SpecLeaf returns the leaf path segment: "specRepo/specImage" or just "specImage".
+func (o *OnboardingInfo) SpecLeaf() string {
+	if o.SpecRepository != "" {
+		return fmt.Sprintf("%s/%s", o.SpecRepository, o.SpecImageName)
+	}
+	return o.SpecImageName
 }
