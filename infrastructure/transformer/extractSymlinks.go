@@ -4,9 +4,15 @@ import "path/filepath"
 
 // extractLinuxSymlinks returns the symlinks post-install map for a Linux target.
 // symlinkPath (/usr/bin/<name>) points to entrypoint (/usr/local/bin/<name>).
+// A root-level alias (/<name>) also points to the entrypoint so that containers
+// invoking /<name> directly (e.g. Kubernetes command overrides) find the binary.
 func extractLinuxSymlinks(symlinkPath, entrypoint string) map[string]interface{} {
+	alias := "/" + filepath.Base(symlinkPath)
 	return map[string]interface{}{
 		symlinkPath: map[string]interface{}{
+			"path": entrypoint,
+		},
+		alias: map[string]interface{}{
 			"path": entrypoint,
 		},
 	}
