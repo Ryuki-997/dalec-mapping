@@ -67,10 +67,20 @@ func (f *OnboardFile) UnmarshalYAML(value *yaml.Node) error {
 func (f *OnboardFile) Flatten(onboardParentDir, specRepository string) []ComponentConfig {
 	var results []ComponentConfig
 
+	// When the onboard file has a single standalone component whose name
+	// matches the repository folder, clear SpecRepository so paths and
+	// spec output use just the image name (no redundant prefix).
+	singleStandalone := len(f.Standalone) == 1 && len(f.Groups) == 0
+
 	for name, cfg := range f.Standalone {
 		cfg.SpecImageName = name
-		cfg.SpecRepository = specRepository
-		cfg.OnboardDir = fmt.Sprintf("%s/%s", onboardParentDir, name)
+		if singleStandalone && name == specRepository {
+			cfg.SpecRepository = ""
+			cfg.OnboardDir = onboardParentDir
+		} else {
+			cfg.SpecRepository = specRepository
+			cfg.OnboardDir = fmt.Sprintf("%s/%s", onboardParentDir, name)
+		}
 		results = append(results, cfg)
 	}
 

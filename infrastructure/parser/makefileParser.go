@@ -11,6 +11,13 @@ import (
 // Captures the last argument (package target) which is a path like cmd/client/main.go or ./cmd/client.
 var makefileGoBuildRe = regexp.MustCompile(`go\s+build\s+.+?\s+((?:\./)?[a-zA-Z][^\s]*)\s*$`)
 
+// shellBuiltins lists shell commands that can trail a go build in compound
+// lines (e.g. "go build ./cmd/foo && popd") and must not be treated as targets.
+var shellBuiltins = map[string]bool{
+	"popd": true, "pushd": true, "cd": true, "exit": true,
+	"echo": true, "return": true, "break": true, "continue": true,
+}
+
 func ParseMakefile(makefile []byte, info *contents.MakefileInfo) (*contents.MakefileInfo, error) {
 	scanner := bufio.NewScanner(strings.NewReader(string(makefile)))
 
@@ -28,19 +35,33 @@ func ParseMakefile(makefile []byte, info *contents.MakefileInfo) (*contents.Make
 
 		// Extract go build package targets from recipe lines.
 		if strings.HasPrefix(rawLine, "\t") && strings.Contains(line, "go build") {
-			if m := makefileGoBuildRe.FindStringSubmatch(line); m != nil {
+			// Isolate the go build command from compound shell lines
+			// (e.g. "pushd dir && go build ./cmd/foo && popd").
+			goBuildSegment := line
+			if idx := strings.Index(line, "go build"); idx >= 0 {
+				goBuildSegment = line[idx:]
+			}
+			// Strip trailing shell commands chained after the build.
+			for _, sep := range []string{" && ", " || ", " ; "} {
+				if i := strings.Index(goBuildSegment, sep); i > 0 {
+					goBuildSegment = goBuildSegment[:i]
+				}
+			}
+			if m := makefileGoBuildRe.FindStringSubmatch(goBuildSegment); m != nil {
 				target := m[1]
-				// Normalize file paths (e.g. cmd/client/main.go → ./cmd/client)
-				if strings.HasSuffix(target, ".go") {
-					idx := strings.LastIndex(target, "/")
-					if idx > 0 {
-						target = "./" + strings.TrimPrefix(target[:idx], "./")
+				if !shellBuiltins[target] {
+					// Normalize file paths (e.g. cmd/client/main.go → ./cmd/client)
+					if strings.HasSuffix(target, ".go") {
+						idx := strings.LastIndex(target, "/")
+						if idx > 0 {
+							target = "./" + strings.TrimPrefix(target[:idx], "./")
+						}
 					}
+					if !strings.HasPrefix(target, "./") {
+						target = "./" + target
+					}
+					info.GoBuildTargets = append(info.GoBuildTargets, target)
 				}
-				if !strings.HasPrefix(target, "./") {
-					target = "./" + target
-				}
-				info.GoBuildTargets = append(info.GoBuildTargets, target)
 			}
 		}
 	}

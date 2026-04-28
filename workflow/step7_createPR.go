@@ -152,6 +152,11 @@ func commitComponentFiles(components []ComponentSpec, branch string) ([]string, 
 				return nil, fmt.Errorf("failed to commit Makefile for %s: %w", specImageName, err)
 			}
 		}
+
+		// Copy tests/ directory from OnboardBranch if it exists.
+		if err := commitTestFiles(dir, specImageName, branch); err != nil {
+			return nil, fmt.Errorf("failed to commit test files for %s: %w", specImageName, err)
+		}
 	}
 	return names, nil
 }
@@ -186,6 +191,49 @@ func collectReviewers(components []ComponentSpec) []string {
 		}
 	}
 	return reviewers
+}
+
+// commitTestFiles fetches all files from the tests/ directory under a
+// component's SpecDir on OnboardBranch and commits them to the feature branch.
+// If no tests/ directory exists, it silently returns nil.
+func commitTestFiles(dir, specImageName, branch string) error {
+	testsDir := dir + "/tests"
+	contentsPath := fmt.Sprintf("repos/%s/%s/contents/%s?ref=%s",
+		utils.OnboardOwner, utils.OnboardRepo, testsDir, utils.OnboardBranch)
+
+	items, err := repository.FetchJSONArray(contentsPath)
+	if err != nil {
+		// No tests directory — not an error
+		return nil
+	}
+
+	for _, item := range items {
+		itemType, _ := item["type"].(string)
+		name, _ := item["name"].(string)
+		downloadURL, _ := item["download_url"].(string)
+		if name == "" || downloadURL == "" {
+			continue
+		}
+		if itemType == "dir" {
+			// Only handle top-level test files; skip subdirectories
+			continue
+		}
+
+		content, err := repository.FetchRawContent(downloadURL)
+		if err != nil {
+			return fmt.Errorf("failed to fetch test file %s: %w", name, err)
+		}
+		remotePath := fmt.Sprintf("%s/tests/%s", dir, name)
+		if err := commitFileToBranch(
+			remotePath,
+			fmt.Sprintf("Add test file %s for %s", name, specImageName),
+			content,
+			branch,
+		); err != nil {
+			return fmt.Errorf("failed to commit test file %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // ─── Chunk 3 · GIT ───────────────────────────────────────────────────────────

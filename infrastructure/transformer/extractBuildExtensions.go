@@ -8,8 +8,11 @@ import "dalec-mapping/domain/contents"
 func extractBuildExtensions(defaultSpec *contents.DefaultSpec) map[string]interface{} {
 	ext := map[string]interface{}{
 		"image-name":    defaultSpec.SpecImageName,
-		"repository":    defaultSpec.SpecRepository,
 		"build-targets": defaultSpec.BuildTargets,
+	}
+
+	if defaultSpec.SpecRepository != "" {
+		ext["repository"] = defaultSpec.SpecRepository
 	}
 
 	for _, bt := range defaultSpec.BuildTargets {

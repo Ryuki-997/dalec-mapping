@@ -128,7 +128,11 @@ func loadOnboardConfig(path, onboardParentDir, specRepository string) ([]onboard
 	}
 
 	for _, c := range components {
-		log.Printf("Onboard Data: %s/%s repo=%s tags=%v\n", c.SpecRepository, c.SpecImageName, c.Repository, c.Tag)
+		if c.SpecRepository != "" {
+			log.Printf("Onboard Data: %s/%s repo=%s tags=%v\n", c.SpecRepository, c.SpecImageName, c.Repository, c.Tag)
+		} else {
+			log.Printf("Onboard Data: %s repo=%s tags=%v\n", c.SpecImageName, c.Repository, c.Tag)
+		}
 	}
 	return components, nil
 }
