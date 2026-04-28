@@ -3,8 +3,8 @@ package transformer
 import "path/filepath"
 
 // extractLinuxSymlinks returns the symlinks post-install map for a Linux target.
-// symlinkPath (/usr/bin/<name>) points to entrypoint (/usr/local/bin/<name>).
-// A root-level alias (/<name>) also points to the entrypoint so that containers
+// symlinkPath (/usr/bin/<name>) → entrypoint (/usr/local/bin/<name>) is the primary symlink.
+// entrypoint (/usr/local/bin/<name>) → /<name> creates a root-level alias so containers
 // invoking /<name> directly (e.g. Kubernetes command overrides) find the binary.
 func extractLinuxSymlinks(symlinkPath, entrypoint string) map[string]interface{} {
 	alias := "/" + filepath.Base(symlinkPath)
@@ -12,8 +12,8 @@ func extractLinuxSymlinks(symlinkPath, entrypoint string) map[string]interface{}
 		symlinkPath: map[string]interface{}{
 			"path": entrypoint,
 		},
-		alias: map[string]interface{}{
-			"path": entrypoint,
+		entrypoint: map[string]interface{}{
+			"path": alias,
 		},
 	}
 }

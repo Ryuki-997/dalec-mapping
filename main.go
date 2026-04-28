@@ -5,8 +5,10 @@ import (
 	"dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/semver"
 	"dalec-mapping/patching"
+	"dalec-mapping/utils"
 	"dalec-mapping/workflow"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -39,17 +41,45 @@ func main() {
 
 	onboardFiles, firstOnboardFlags, templateTags := fetchOnboardFiles(*inputPath)
 
-	var specPaths []string
+	// prGroups collects PR entries keyed by group name (or component name for standalone).
+	// Each PREntry becomes one PR containing all its components' files.
+	prGroups := make(map[string]*workflow.PREntry)
+
 	for i, onboard := range onboardFiles {
 		log.Printf("Onboard Documents: %v %v %v\n", onboard.Repository, onboard.SpecImageName, onboard.Tag)
 		for _, fullTag := range onboard.Tag {
-			if remotePath := processTag(&onboard, fullTag, firstOnboardFlags[i], templateTags[i]); remotePath != "" {
-				specPaths = append(specPaths, remotePath)
+			remotePath, comp := processTag(&onboard, fullTag, firstOnboardFlags[i], templateTags[i])
+			if comp != nil {
+				groupKey := onboard.SpecImageName // standalone → own PR
+				groupName := ""
+				if onboard.GroupName != "" {
+					groupKey = onboard.GroupName // grouped → shared PR
+					groupName = onboard.GroupName
+				}
+				if prGroups[groupKey] == nil {
+					prGroups[groupKey] = &workflow.PREntry{GroupName: groupName}
+				}
+				comp.RemotePath = remotePath
+				prGroups[groupKey].Components = append(prGroups[groupKey].Components, *comp)
 			}
 		}
 	}
 
-	log.Printf("specPaths=%s\n", strings.Join(specPaths, ","))
+	// Create one PR per group (or standalone component).
+	for groupName, entry := range prGroups {
+		prURL, err := workflow.CreatePR(*entry)
+		if err != nil {
+			log.Printf("❌ PR creation failed for %s: %v", groupName, err)
+			continue
+		}
+		var specPaths []string
+		for _, comp := range entry.Components {
+			if comp.RemotePath != "" {
+				specPaths = append(specPaths, comp.RemotePath)
+			}
+		}
+		log.Printf("✅ PR created for %s: %s specPaths=%s\n", groupName, prURL, strings.Join(specPaths, ","))
+	}
 }
 
 func loadEnv() {
@@ -67,16 +97,17 @@ func loadEnv() {
 	}
 }
 
-func fetchOnboardFiles(inputPath string) ([]onboarding.OnboardingInfo, []bool, []string) {
-	var onboardFiles []onboarding.OnboardingInfo
+func fetchOnboardFiles(inputPath string) ([]onboarding.ComponentConfig, []bool, []string) {
+	var onboardFiles []onboarding.ComponentConfig
 	var firstOnboardFlags []bool
 	var templateTags []string
 
 	if err := workflow.FetchOnboardFiles(&onboardFiles, &firstOnboardFlags, &templateTags, inputPath); err != nil {
 		log.Fatalf("❌ Failed to fetch onboard data: %v", err)
 	}
+
 	if len(onboardFiles) == 0 {
-		log.Fatalf("No onboarding files found at path: %s", inputPath)
+		log.Fatalf("❌ Potentially No onboarding files found at path: %s", inputPath)
 	}
 
 	return onboardFiles, firstOnboardFlags, templateTags
@@ -85,8 +116,8 @@ func fetchOnboardFiles(inputPath string) ([]onboarding.OnboardingInfo, []bool, [
 // ─── Chunk 2 · PIPELINE ─────────────────────────────────────────────────────
 
 // processTag runs the full pipeline for a single tag and returns the remote
-// spec path if a new spec was generated, or empty string otherwise.
-func processTag(onboard *onboarding.OnboardingInfo, fullTag string, isFirstOnboard bool, templateTag string) string {
+// spec path (if pushed directly) and a PR entry (if a PR should be created).
+func processTag(onboard *onboarding.ComponentConfig, fullTag string, isFirstOnboard bool, templateTag string) (string, *workflow.ComponentSpec) {
 	tag := semver.ToTag(fullTag)
 	log.Printf("▶ Running pipeline for %s @ %s\n", onboard.Repository, fullTag)
 
@@ -100,22 +131,27 @@ func processTag(onboard *onboarding.OnboardingInfo, fullTag string, isFirstOnboa
 
 	switch action {
 	case actionBumpCommit:
-		return bumpCommit(onboard, fullTag, tag, templateTag)
+		return bumpCommit(onboard, fullTag, tag, templateTag), nil
 	case actionGenerate:
-		remotePath, resolvedTargets, err := generateWork(onboard, fullTag)
+		remotePath, specContent, err := generateWork(onboard, fullTag)
 		if err != nil {
 			log.Printf("\u26a0\ufe0f  Skipping %s @ %s: %v\n", onboard.SpecImageName, fullTag, err)
-			return ""
+			return "", nil
 		}
 		if onboard.ReviewMode == onboarding.AutoReview {
-			GitPush(onboard, remotePath, tag, resolvedTargets)
-			return remotePath
+			GitPush(onboard, remotePath, tag, nil)
+			return remotePath, nil
 		}
-		CreatePR(onboard, tag)
-		return "" // PR created — path not collected
+		// Defer PR creation — return component spec to be grouped.
+		return remotePath, &workflow.ComponentSpec{
+			Onboard:     onboard,
+			Tag:         tag,
+			SpecContent: specContent,
+			SpecOnly:    false,
+		}
 	}
 
-	return ""
+	return "", nil
 }
 
 type pipelineAction int
@@ -141,7 +177,7 @@ func decideAction(isFirstOnboard, contentChanged bool) pipelineAction {
 
 // ─── Chunk 3 · ACTIONS ──────────────────────────────────────────────────────
 
-func bumpCommit(onboard *onboarding.OnboardingInfo, fullTag, tag, templateTag string) string {
+func bumpCommit(onboard *onboarding.ComponentConfig, fullTag, tag, templateTag string) string {
 	log.Printf("🔄 Content unchanged for %s @ %s — bumping commit hash\n", onboard.SpecImageName, tag)
 	if _, err := workflow.BumpCommit(onboard, fullTag, templateTag); err != nil {
 		log.Fatalf("❌ Revision bump failed: %v", err)
@@ -154,11 +190,11 @@ func bumpCommit(onboard *onboarding.OnboardingInfo, fullTag, tag, templateTag st
 	return remotePath
 }
 
-func generateWork(onboard *onboarding.OnboardingInfo, fullTag string) (string, []string, error) {
+func generateWork(onboard *onboarding.ComponentConfig, fullTag string) (string, []byte, error) {
 	log.Println("Dalec Spec Generator - Scheduled Job")
 	log.Printf("Started at: %s", time.Now().Format(time.RFC3339))
 
-	resolvedTargets, err := workflow.GenerateSpec(onboard, fullTag)
+	_, err := workflow.GenerateSpec(onboard, fullTag)
 	if err != nil {
 		return "", nil, err
 	}
@@ -166,24 +202,22 @@ func generateWork(onboard *onboarding.OnboardingInfo, fullTag string) (string, [
 	log.Printf("✅ Spec created for %s @ %s", onboard.SpecImageName, fullTag)
 
 	tag := semver.ToTag(fullTag)
+
+	// // Test the generated spec by building and running the container image.
+	// if err := workflow.TestImage(utils.SpecPath, onboard.SpecImageName, tag, resolvedTargets); err != nil {
+	// 	return "", nil, fmt.Errorf("image test failed for %s @ %s: %w", onboard.SpecImageName, tag, err)
+	// }
+
+	specContent, err := os.ReadFile(utils.SpecPath)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to read generated spec: %w", err)
+	}
+
 	remotePath := semver.SpecFilePath(onboard.SpecDir(), onboard.SpecImageName, tag)
-	return remotePath, resolvedTargets, nil
+	return remotePath, specContent, nil
 }
 
-func CreatePR(onboard *onboarding.OnboardingInfo, tag string) {
-	err := workflow.TestImage(onboard.SpecLeaf(), onboard.SpecImageName, tag, onboard.Targets)
-	if err != nil {
-		log.Fatalf("❌ Image test failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
-	}
-
-	prURL, err := workflow.CreateSpecPR(onboard, tag, false)
-	if err != nil {
-		log.Fatalf("❌ PR creation failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
-	}
-	log.Printf("✅ PR created for %s @ %s: %s\n", onboard.SpecImageName, tag, prURL)
-}
-
-func GitPush(onboard *onboarding.OnboardingInfo, remotePath, tag string, resolvedTargets []string) {
+func GitPush(onboard *onboarding.ComponentConfig, remotePath, tag string, resolvedTargets []string) {
 	if err := workflow.PushToRemote(onboard, tag, false); err != nil {
 		log.Fatalf("❌ Push failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
 	}

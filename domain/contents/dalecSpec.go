@@ -25,7 +25,7 @@ var (
 type DefaultSpec struct {
 	repository.RepoInfo
 	DockerfileInfo
-	onboarding.OnboardingInfo
+	onboarding.ComponentConfig
 
 	Revision     int
 	BuildTargets []BuildTarget

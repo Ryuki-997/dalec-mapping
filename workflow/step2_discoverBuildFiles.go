@@ -27,7 +27,7 @@ import (
 
 // DiscoverBuildFiles fetches the Dockerfile and Makefile from the source repo at the
 // given tag, diffs them against cached siblings, and returns whether content changed.
-func DiscoverBuildFiles(onboard *onboarding.OnboardingInfo, repoInfo *repo.RepoInfo, tag string) (bool, error) {
+func DiscoverBuildFiles(onboard *onboarding.ComponentConfig, repoInfo *repo.RepoInfo, tag string) (bool, error) {
 	// Clear the result directory for a fresh start
 	if err := clearResultDirectory(utils.ResultDir); err != nil {
 		fmt.Printf("⚠️  Warning: %v\n", err)
@@ -101,7 +101,7 @@ func DiscoverBuildFiles(onboard *onboarding.OnboardingInfo, repoInfo *repo.RepoI
 // diffSiblings compares fresh Dockerfile/Makefile against cached versions and
 // returns true if content has changed. Only compares files that have both a
 // fresh and cached version (skips files where either side is nil/empty).
-func diffSiblings(onboard *onboarding.OnboardingInfo, cachedDF, cachedMF []byte) bool {
+func diffSiblings(onboard *onboarding.ComponentConfig, cachedDF, cachedMF []byte) bool {
 	if cachedDF == nil && cachedMF == nil {
 		return false
 	}

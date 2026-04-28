@@ -10,12 +10,12 @@ import (
 	"strings"
 )
 
-func InitDefaultSpec(onboardInfo *onboarding.OnboardingInfo, repoInfo *repository.RepoInfo, previousDalecSpecInfo parser.PreviousDalecSpec) (*contents.DefaultSpec, error) {
+func InitDefaultSpec(onboardInfo *onboarding.ComponentConfig, repoInfo *repository.RepoInfo, previousDalecSpecInfo parser.PreviousDalecSpec) (*contents.DefaultSpec, error) {
 	// Initialize & Populate Source of Truth Attributes from onboarding and repository info
 	defaultSpec := &contents.DefaultSpec{}
 	defaultSpec.RepoInfo = *repoInfo
 
-	defaultSpec.OnboardingInfo = *onboardInfo
+	defaultSpec.ComponentConfig = *onboardInfo
 
 	defaultSpec.DockerfileInfo = contents.Dockerfile
 

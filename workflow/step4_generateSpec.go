@@ -26,7 +26,7 @@ import (
 // GenerateSpec creates the DALEC spec from parsed build files using static
 // Dockerfile analysis. Returns the resolved build target strings for downstream
 // use (e.g. image test).
-func GenerateSpec(onboard *onboarding.OnboardingInfo, tag string) ([]string, error) {
+func GenerateSpec(onboard *onboarding.ComponentConfig, tag string) ([]string, error) {
 	// Fetch repository metadata (component path is extracted from the URL automatically)
 	var (
 		repoInfo *domainRepo.RepoInfo
