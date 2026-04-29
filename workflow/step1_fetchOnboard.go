@@ -28,9 +28,10 @@ import (
 
 // ─── Chunk 1 · MAIN ─────────────────────────────────────────────────────────
 
-// FetchOnboardFiles reads onboard.yml files from the spec repo, resolves tags,
-// fetches cached siblings, and populates the onboardImages slice.
-func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, isFirstOnboard *[]bool, templateTags *[]string, inputPath string) error {
+// FetchOnboardFiles reads partner-level onboard.yml files from the spec repo,
+// flattens all components (standalone and grouped), resolves tags, fetches
+// cached siblings, and populates the onboardImages slice.
+func FetchOnboardFiles(onboardImages *[]onboarding.ComponentConfig, isFirstOnboard *[]bool, templateTags *[]string, inputPath string) error {
 	log.Printf("🔍 Full onboard search path: %s\n", inputPath)
 
 	onboardItems, treePaths, err := fetchRepoTree(inputPath)
@@ -44,27 +45,30 @@ func FetchOnboardFiles(onboardImages *[]onboarding.OnboardingInfo, isFirstOnboar
 			continue
 		}
 		path, _ := itemMap["path"].(string)
-		if !strings.HasPrefix(path, inputPath) {
+		if !strings.HasPrefix(path, inputPath+"/") && path != inputPath {
 			continue
 		}
-		if strings.HasSuffix(path, "onboard.yml") {
-			log.Printf("📂 Processing onboard file: %s\n", path)
+		if !strings.HasSuffix(path, "onboard.yml") {
+			continue
 		}
+		log.Printf("📂 Processing onboard file: %s\n", path)
 
-		specRepository, specImageName, err := getOnboardFilepath(path)
+		onboardParentDir, specRepository, err := getOnboardFilepath(path)
 		if err != nil {
 			continue
 		}
 
-		onboard, err := loadOnboardConfig(path, specRepository, specImageName)
+		components, err := loadOnboardConfig(path, onboardParentDir, specRepository)
 		if err != nil {
 			log.Printf("⚠️  %v\n", err)
 			continue
 		}
 
-		hasSiblings := fetchCachedSiblings(&onboard, treePaths)
-
-		resolveAndAppend(&onboard, hasSiblings, treePaths, onboardImages, isFirstOnboard, templateTags)
+		for i := range components {
+			onboard := &components[i]
+			hasSiblings := fetchCachedSiblings(onboard, treePaths)
+			resolveAndAppend(onboard, hasSiblings, treePaths, onboardImages, isFirstOnboard, templateTags)
+		}
 	}
 	return nil
 }
@@ -91,7 +95,7 @@ func fetchRepoTree(inputPath string) ([]interface{}, map[string]bool, error) {
 
 	for _, item := range items {
 		if m, ok := item.(map[string]interface{}); ok {
-			if p, ok := m["path"].(string); ok && strings.HasPrefix(p, inputPath) && strings.HasSuffix(p, "/onboard.yml") {
+			if p, ok := m["path"].(string); ok && strings.HasPrefix(p, inputPath+"/") && strings.HasSuffix(p, "/onboard.yml") {
 				log.Printf("📋 Discovered onboard file: %s\n", p)
 			}
 		}
@@ -100,35 +104,42 @@ func fetchRepoTree(inputPath string) ([]interface{}, map[string]bool, error) {
 	return items, treePaths, nil
 }
 
-// loadOnboardConfig fetches and unmarshals a single onboard.yml from the remote repo.
-func loadOnboardConfig(path, specRepository, specImageName string) (onboarding.OnboardingInfo, error) {
+// loadOnboardConfig fetches a partner-level onboard.yml, unmarshals it into
+// an OnboardFile, and flattens all components into a slice of ComponentConfig.
+func loadOnboardConfig(path, onboardParentDir, specRepository string) ([]onboarding.ComponentConfig, error) {
 	rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s",
 		utils.OnboardOwner, utils.OnboardRepo, utils.OnboardBranch, path)
 	content, err := repository.FetchRawContent(rawURL)
 	if err != nil {
-		return onboarding.OnboardingInfo{}, fmt.Errorf("failed to fetch onboard file %s: %w", path, err)
+		return nil, fmt.Errorf("failed to fetch onboard file %s: %w", path, err)
 	}
 	if len(content) == 0 {
-		return onboarding.OnboardingInfo{}, fmt.Errorf("skipping empty onboard file: %s", path)
+		return nil, fmt.Errorf("skipping empty onboard file: %s", path)
 	}
 
-	onboard := onboarding.OnboardingInfo{
-		Tag:            []string{},
-		SpecImageName:  specImageName,
-		SpecRepository: specRepository,
-		OnboardDir:     path[:strings.LastIndex(path, "/")],
-	}
-	if err := yaml.Unmarshal(content, &onboard); err != nil {
-		return onboarding.OnboardingInfo{}, fmt.Errorf("failed to unmarshal %s: %w", path, err)
+	var file onboarding.OnboardFile
+	if err := yaml.Unmarshal(content, &file); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal %s: %w", path, err)
 	}
 
-	log.Printf("Onboard Data: %v\n", onboard)
-	return onboard, nil
+	components := file.Flatten(onboardParentDir, specRepository)
+	if len(components) == 0 {
+		return nil, fmt.Errorf("no components found in %s", path)
+	}
+
+	for _, c := range components {
+		if c.SpecRepository != "" {
+			log.Printf("Onboard Data: %s/%s repo=%s tags=%v\n", c.SpecRepository, c.SpecImageName, c.Repository, c.Tag)
+		} else {
+			log.Printf("Onboard Data: %s repo=%s tags=%v\n", c.SpecImageName, c.Repository, c.Tag)
+		}
+	}
+	return components, nil
 }
 
 // fetchCachedSiblings checks for and loads sibling Dockerfile/Makefile from the
 // onboard repo. Returns true if at least one sibling exists (re-onboard scenario).
-func fetchCachedSiblings(onboard *onboarding.OnboardingInfo, treePaths map[string]bool) bool {
+func fetchCachedSiblings(onboard *onboarding.ComponentConfig, treePaths map[string]bool) bool {
 	siblingDF := onboard.OnboardDir + "/Dockerfile"
 	siblingMF := onboard.OnboardDir + "/Makefile"
 	hasDF := treePaths[siblingDF]
@@ -167,10 +178,10 @@ func fetchCachedSiblings(onboard *onboarding.OnboardingInfo, treePaths map[strin
 // resolveAndAppend resolves tag patterns, filters by existing specs, and
 // appends the onboard entry to the output slices.
 func resolveAndAppend(
-	onboard *onboarding.OnboardingInfo,
+	onboard *onboarding.ComponentConfig,
 	hasSiblings bool,
 	treePaths map[string]bool,
-	onboardImages *[]onboarding.OnboardingInfo,
+	onboardImages *[]onboarding.ComponentConfig,
 	isFirstOnboard *[]bool,
 	templateTags *[]string,
 ) {
@@ -190,11 +201,11 @@ func resolveAndAppend(
 	log.Printf("✅ Resolved tags for %s: %v (from patterns: %v)\n",
 		onboard.Repository, semver.TagNames(resolvedTags), onboard.Tag)
 
-	newTags := semver.FilterNewTags(resolvedTags, onboard.SpecRepository, onboard.SpecImageName, treePaths)
+	newTags := semver.FilterNewTags(resolvedTags, onboard.SpecDir(), onboard.SpecImageName, treePaths)
 
 	if hasSiblings {
 		// Re-onboard: need both new tags and an existing spec as template
-		existing := semver.FilterExistingTags(resolvedTags, onboard.SpecRepository, onboard.SpecImageName, treePaths)
+		existing := semver.FilterExistingTags(resolvedTags, onboard.SpecDir(), onboard.SpecImageName, treePaths)
 		if len(newTags) == 0 || len(existing) == 0 {
 			log.Printf("⏭  Skipping %s: re-onboard but no actionable tags (new=%d, existing=%d)\n",
 				onboard.SpecImageName, len(newTags), len(existing))
@@ -222,22 +233,22 @@ func resolveAndAppend(
 
 // ─── Chunk 4 · UTILITIES ────────────────────────────────────────────────────
 
-// getOnboardFilepath extracts specRepository and specImageName from an
-// onboard.yml path like "autospecs/<repo>/<image>/onboard.yml".
+// getOnboardFilepath extracts the parent directory and partner name from an
+// onboard.yml path like "<prefix>/<partner>/onboard.yml".
+// Returns (parentDir, partnerName, error).
 func getOnboardFilepath(path string) (string, string, error) {
 	parts := strings.Split(path, "/")
 	n := len(parts)
 	if parts[n-1] != "onboard.yml" {
 		return "", "", fmt.Errorf("not an onboard file: %s", path)
 	}
-	switch n {
-	case 4:
-		return parts[1], parts[2], nil
-	case 3:
-		return "", parts[1], nil
-	default:
-		return "", "", fmt.Errorf("unexpected file path format: %s", path)
+	// Need at least <prefix>/<partner>/onboard.yml (3+ segments)
+	if n < 3 {
+		return "", "", fmt.Errorf("unexpected file path format: %s (expected <prefix>/<partner>/onboard.yml)", path)
 	}
+	parentDir := strings.Join(parts[:n-1], "/") // e.g. "specs/containernetworking"
+	partnerName := parts[n-2]                    // e.g. "containernetworking"
+	return parentDir, partnerName, nil
 }
 
 // getExistingFilePaths builds a lookup set of all file paths in the repo tree.

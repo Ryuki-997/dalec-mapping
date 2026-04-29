@@ -9,26 +9,30 @@ import (
 type BuildTarget string
 
 const (
-	AzLinux3Rpm           BuildTarget = "azlinux3/rpm"
-	AzLinux3Container     BuildTarget = "azlinux3/container"
-	NobleDeb              BuildTarget = "noble/deb"
-	JammyDeb              BuildTarget = "jammy/deb"
-	FocalDeb              BuildTarget = "focal/deb"
-	BionicDeb             BuildTarget = "bionic/deb"
-	BookwormDeb           BuildTarget = "bookworm/deb"
-	WindowsCrossContainer BuildTarget = "windowscross/container"
+	AzLinux3Rpm            BuildTarget = "azlinux3/rpm"
+	AzLinux3Container      BuildTarget = "azlinux3/container"
+	AzLinux3TestingSysext  BuildTarget = "azlinux3/testing/sysext"
+	NobleDeb               BuildTarget = "noble/deb"
+	JammyDeb               BuildTarget = "jammy/deb"
+	FocalDeb               BuildTarget = "focal/deb"
+	BionicDeb              BuildTarget = "bionic/deb"
+	BookwormDeb            BuildTarget = "bookworm/deb"
+	WindowsCrossContainer  BuildTarget = "windowscross/container"
+	WindowsCrossZip        BuildTarget = "windowscross/zip"
 )
 
 // AllTargets lists every valid build target.
 var AllTargets = []BuildTarget{
 	AzLinux3Container,
 	AzLinux3Rpm,
+	AzLinux3TestingSysext,
 	BookwormDeb,
 	NobleDeb,
 	JammyDeb,
 	FocalDeb,
 	BionicDeb,
 	WindowsCrossContainer,
+	WindowsCrossZip,
 }
 
 // IsValidTarget checks if a string is a known build target.

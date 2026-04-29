@@ -25,22 +25,14 @@ import (
 
 // PushToRemote commits the spec file to the onboard repo's base branch.
 // When specOnly is false, sibling Dockerfile/Makefile are also committed.
-func PushToRemote(onboard *onboarding.OnboardingInfo, tag string, specOnly bool) error {
-	specRepository := onboard.SpecRepository
+func PushToRemote(onboard *onboarding.ComponentConfig, tag string, specOnly bool) error {
+	dir := onboard.SpecDir()
 	specImageName := onboard.SpecImageName
 
 	// Read the local spec file
 	specContent, err := os.ReadFile(utils.SpecPath)
 	if err != nil {
 		return fmt.Errorf("failed to read spec file: %w", err)
-	}
-
-	// Build the directory prefix for all files
-	var dir string
-	if specRepository != "" {
-		dir = fmt.Sprintf("autospecs/%s/%s", specRepository, specImageName)
-	} else {
-		dir = fmt.Sprintf("autospecs/%s", specImageName)
 	}
 
 	specFile := fmt.Sprintf("%s-%s-specfile.yml", specImageName, tag)

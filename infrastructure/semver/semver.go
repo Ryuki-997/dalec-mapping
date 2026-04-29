@@ -78,10 +78,10 @@ func resolveGithubTags(repoURL string, regexTags []string) ([]repository.TagInfo
 // ─── Chunk 2 · TAG FILTERING ────────────────────────────────────────────────
 
 // FilterNewTags returns tags whose spec files do NOT yet exist remotely.
-func FilterNewTags(tags []repository.TagInfo, specRepo, specImage string, existingPaths map[string]bool) []repository.TagInfo {
+func FilterNewTags(tags []repository.TagInfo, specDir, specImage string, existingPaths map[string]bool) []repository.TagInfo {
 	var filtered []repository.TagInfo
 	for _, t := range tags {
-		sp := SpecFilePath(specRepo, specImage, ToTag(t.Name))
+		sp := SpecFilePath(specDir, specImage, ToTag(t.Name))
 		if existingPaths[sp] {
 			log.Printf("⏭  Skipping %s @ %s: spec file already exists at %s\n", specImage, t.Name, sp)
 			continue
@@ -92,10 +92,10 @@ func FilterNewTags(tags []repository.TagInfo, specRepo, specImage string, existi
 }
 
 // FilterExistingTags is the inverse of FilterNewTags — returns tags that already have specs.
-func FilterExistingTags(tags []repository.TagInfo, specRepo, specImage string, existingPaths map[string]bool) []repository.TagInfo {
+func FilterExistingTags(tags []repository.TagInfo, specDir, specImage string, existingPaths map[string]bool) []repository.TagInfo {
 	var existing []repository.TagInfo
 	for _, t := range tags {
-		sp := SpecFilePath(specRepo, specImage, ToTag(t.Name))
+		sp := SpecFilePath(specDir, specImage, ToTag(t.Name))
 		if existingPaths[sp] {
 			existing = append(existing, t)
 		}
@@ -104,11 +104,8 @@ func FilterExistingTags(tags []repository.TagInfo, specRepo, specImage string, e
 }
 
 // SpecFilePath returns the remote path for a spec file.
-func SpecFilePath(specRepo, specImage, tag string) string {
-	if specRepo != "" {
-		return fmt.Sprintf("autospecs/%s/%s/%s-%s-specfile.yml", specRepo, specImage, specImage, tag)
-	}
-	return fmt.Sprintf("autospecs/%s/%s-%s-specfile.yml", specImage, specImage, tag)
+func SpecFilePath(specDir, specImage, tag string) string {
+	return fmt.Sprintf("%s/%s-%s-specfile.yml", specDir, specImage, tag)
 }
 
 // TagNames extracts the Name field from a slice of TagInfo.

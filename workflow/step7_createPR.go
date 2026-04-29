@@ -1,14 +1,17 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // Step 8 — Create Pull Request
 //
-//   Creates a feature branch from OnboardBranch, commits the specfile,
-//   Dockerfile, and Makefile to it, then opens a PR merging the feature
-//   branch into OnboardBranch.
-//   Reviewers from the onboarding config are added to the PR.
+//   Creates a feature branch from OnboardBranch, commits specfiles,
+//   Dockerfiles, and Makefiles for one or more components, then opens
+//   a single PR merging the feature branch into OnboardBranch.
+//   Reviewers from the onboarding configs are added to the PR.
 //
-//   Chunk 1 · MAIN      CreateSpecPR()
-//   Chunk 2 · GIT       createFeatureBranch(), commitFileToBranch(),
-//                        createPullRequest(), addReviewers()
+//   Chunk 1 · MAIN      CreatePR()
+//   Chunk 2 · STEPS     deriveFeatureBranch(), commitComponentFiles(),
+//                        buildPRDescription(), collectReviewers()
+//   Chunk 3 · GIT       createFeatureBranch(), commitFileToBranch(),
+//                        createPullRequest(), addReviewers(),
+//                        deleteRemoteBranch()
 // ═══════════════════════════════════════════════════════════════════════════════
 
 package workflow
@@ -17,7 +20,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 
 	"dalec-mapping/domain/onboarding"
@@ -28,32 +30,38 @@ import (
 
 // ─── Chunk 1 · MAIN ─────────────────────────────────────────────────────────
 
-// CreateSpecPR creates a feature branch from OnboardBranch, commits the
-// specfile (and optionally Dockerfile/Makefile) to it, then opens a PR
-// merging the feature branch into OnboardBranch.
-// When specOnly is true, only the specfile is committed.
-// Returns the PR URL on success.
-func CreateSpecPR(onboard *onboarding.OnboardingInfo, tag string, specOnly bool) (string, error) {
-	specRepository := onboard.SpecRepository
-	specImageName := onboard.SpecImageName
+// ComponentSpec holds one component's contribution to a PR.
+type ComponentSpec struct {
+	Onboard     *onboarding.ComponentConfig
+	Tag         string
+	SpecContent []byte // generated spec file content
+	SpecOnly    bool
+	RemotePath  string // remote spec file path for downstream consumption
+}
 
-	// Build directory prefix
-	var dir string
-	if specRepository != "" {
-		dir = fmt.Sprintf("autospecs/%s/%s", specRepository, specImageName)
-	} else {
-		dir = fmt.Sprintf("autospecs/%s", specImageName)
+// PREntry represents a single PR to be created — either for one standalone
+// component or for a group of related components.
+type PREntry struct {
+	GroupName  string
+	Components []ComponentSpec
+}
+
+// CreatePR creates a feature branch from OnboardBranch, commits all components'
+// files to it, and opens a single PR. Works for both standalone components
+// (one component) and grouped components (multiple components).
+// Returns the PR URL on success.
+func CreatePR(entry PREntry) (string, error) {
+	if len(entry.Components) == 0 {
+		return "", fmt.Errorf("no components for %s", entry.GroupName)
 	}
 
-	// 0. Create a feature branch from OnboardBranch
-	safeTag := strings.ReplaceAll(tag, "/", "-")
-	featureBranch := fmt.Sprintf("dalec/%s-%s", specImageName, safeTag)
+	// 0. Derive and create the feature branch.
+	featureBranch := deriveFeatureBranch(entry)
 	if err := createFeatureBranch(featureBranch); err != nil {
 		return "", fmt.Errorf("failed to create feature branch %s: %w", featureBranch, err)
 	}
 	log.Printf("🌿 Created feature branch %s from %s\n", featureBranch, utils.OnboardBranch)
 
-	// cleanup deletes the remote feature branch on failure so it doesn't linger.
 	cleanup := func(wrapped error) (string, error) {
 		if delErr := deleteRemoteBranch(featureBranch); delErr != nil {
 			log.Printf("⚠️  Failed to clean up remote branch %s: %v\n", featureBranch, delErr)
@@ -63,69 +71,172 @@ func CreateSpecPR(onboard *onboarding.OnboardingInfo, tag string, specOnly bool)
 		return "", wrapped
 	}
 
-	// 1. Commit specfile to the feature branch
-	specFile := fmt.Sprintf("%s-%s-specfile.yml", specImageName, tag)
-	specContent, err := os.ReadFile(utils.SpecPath)
+	// 1. Commit each component's files to the shared branch.
+	componentNames, err := commitComponentFiles(entry.Components, featureBranch)
 	if err != nil {
-		return cleanup(fmt.Errorf("failed to read spec file: %w", err))
-	}
-	if err := commitFileToBranch(
-		fmt.Sprintf("%s/%s", dir, specFile),
-		fmt.Sprintf("Add %s", specFile),
-		specContent,
-		featureBranch,
-	); err != nil {
-		return cleanup(fmt.Errorf("failed to commit spec file: %w", err))
+		return cleanup(err)
 	}
 
-	// 2. Commit Dockerfile (if present and not spec-only)
-	if !specOnly && len(onboard.DockerfileContent) > 0 {
-		if err := commitFileToBranch(
-			fmt.Sprintf("%s/Dockerfile", dir),
-			fmt.Sprintf("Add Dockerfile for %s", specImageName),
-			onboard.DockerfileContent,
-			featureBranch,
-		); err != nil {
-			return cleanup(fmt.Errorf("failed to commit Dockerfile: %w", err))
-		}
-	}
-
-	// 3. Commit Makefile (if present and not spec-only)
-	if !specOnly && len(onboard.MakefileContent) > 0 {
-		if err := commitFileToBranch(
-			fmt.Sprintf("%s/Makefile", dir),
-			fmt.Sprintf("Add Makefile for %s", specImageName),
-			onboard.MakefileContent,
-			featureBranch,
-		); err != nil {
-			return cleanup(fmt.Errorf("failed to commit Makefile: %w", err))
-		}
-	}
-
-	// 4. Create the pull request: feature branch → OnboardBranch
-	prTitle := fmt.Sprintf("[Dalec] %s @ %s", specImageName, tag)
-	prBody := fmt.Sprintf("Auto-generated Dalec spec for **%s** @ `%s`.\n\nRepository: %s\n\nRequires 1 reviewer approval before merge.",
-		specImageName, tag, onboard.Repository)
-
+	// 2. Create the pull request.
+	prTitle, prBody := buildPRDescription(entry, componentNames)
 	prURL, prNumber, err := createPullRequest(prTitle, prBody, featureBranch)
 	if err != nil {
 		return cleanup(fmt.Errorf("failed to create PR: %w", err))
 	}
 	log.Printf("📝 Created PR #%d: %s\n", prNumber, prURL)
 
-	// 5. Add reviewers
-	if len(onboard.Reviewers) > 0 {
-		if err := addReviewers(prNumber, onboard.Reviewers); err != nil {
+	// 3. Add reviewers.
+	if reviewers := collectReviewers(entry.Components); len(reviewers) > 0 {
+		if err := addReviewers(prNumber, reviewers); err != nil {
 			log.Printf("⚠️  Failed to add reviewers to PR #%d: %v\n", prNumber, err)
 		} else {
-			log.Printf("👥 Added %d reviewer(s) to PR #%d\n", len(onboard.Reviewers), prNumber)
+			log.Printf("👥 Added %d reviewer(s) to PR #%d\n", len(reviewers), prNumber)
 		}
 	}
 
 	return prURL, nil
 }
 
-// ─── Chunk 2 · GIT ───────────────────────────────────────────────────────────
+// ─── Chunk 2 · STEPS ─────────────────────────────────────────────────────────
+
+// deriveFeatureBranch returns the branch name for a PR entry.
+// Standalone: dalec/<leaf>-<tag>, grouped: dalec/<repo>/<group>-<tag>.
+func deriveFeatureBranch(entry PREntry) string {
+	first := entry.Components[0]
+	safeTag := strings.ReplaceAll(first.Tag, "/", "-")
+
+	if len(entry.Components) == 1 && entry.GroupName == "" {
+		return fmt.Sprintf("dalec/%s-%s", first.Onboard.SpecLeaf(), safeTag)
+	}
+	return fmt.Sprintf("dalec/%s/%s-%s", first.Onboard.SpecRepository, entry.GroupName, safeTag)
+}
+
+// commitComponentFiles commits each component's specfile, Dockerfile, and
+// Makefile to the given branch. Returns the list of component names committed.
+func commitComponentFiles(components []ComponentSpec, branch string) ([]string, error) {
+	var names []string
+	for _, comp := range components {
+		onboard := comp.Onboard
+		dir := onboard.SpecDir()
+		specImageName := onboard.SpecImageName
+		names = append(names, specImageName)
+
+		specFile := fmt.Sprintf("%s-%s-specfile.yml", specImageName, comp.Tag)
+		if err := commitFileToBranch(
+			fmt.Sprintf("%s/%s", dir, specFile),
+			fmt.Sprintf("Add %s", specFile),
+			comp.SpecContent,
+			branch,
+		); err != nil {
+			return nil, fmt.Errorf("failed to commit spec file for %s: %w", specImageName, err)
+		}
+
+		if !comp.SpecOnly && len(onboard.DockerfileContent) > 0 {
+			if err := commitFileToBranch(
+				fmt.Sprintf("%s/Dockerfile", dir),
+				fmt.Sprintf("Add Dockerfile for %s", specImageName),
+				onboard.DockerfileContent,
+				branch,
+			); err != nil {
+				return nil, fmt.Errorf("failed to commit Dockerfile for %s: %w", specImageName, err)
+			}
+		}
+
+		if !comp.SpecOnly && len(onboard.MakefileContent) > 0 {
+			if err := commitFileToBranch(
+				fmt.Sprintf("%s/Makefile", dir),
+				fmt.Sprintf("Add Makefile for %s", specImageName),
+				onboard.MakefileContent,
+				branch,
+			); err != nil {
+				return nil, fmt.Errorf("failed to commit Makefile for %s: %w", specImageName, err)
+			}
+		}
+
+		// Copy tests/ directory from OnboardBranch if it exists.
+		if err := commitTestFiles(dir, specImageName, branch); err != nil {
+			return nil, fmt.Errorf("failed to commit test files for %s: %w", specImageName, err)
+		}
+	}
+	return names, nil
+}
+
+// buildPRDescription returns the title and body for the pull request,
+// adapting for single vs multi-component entries.
+func buildPRDescription(entry PREntry, componentNames []string) (title, body string) {
+	first := entry.Components[0]
+	if len(entry.Components) == 1 {
+		onboard := first.Onboard
+		title = fmt.Sprintf("[Dalec] %s @ %s", onboard.SpecImageName, first.Tag)
+		body = fmt.Sprintf("Auto-generated Dalec spec for **%s** @ `%s`.\n\nRepository: %s\n\nRequires 1 reviewer approval before merge.",
+			onboard.SpecImageName, first.Tag, onboard.Repository)
+	} else {
+		title = fmt.Sprintf("[Dalec] %s @ %s", entry.GroupName, first.Tag)
+		body = fmt.Sprintf("Auto-generated Dalec specs for group **%s** @ `%s`.\n\nComponents: %s\n\nRequires 1 reviewer approval before merge.",
+			entry.GroupName, first.Tag, strings.Join(componentNames, ", "))
+	}
+	return title, body
+}
+
+// collectReviewers returns a deduplicated list of reviewers across all components.
+func collectReviewers(components []ComponentSpec) []string {
+	seen := make(map[string]bool)
+	var reviewers []string
+	for _, comp := range components {
+		for _, r := range comp.Onboard.Reviewers {
+			if !seen[r] {
+				seen[r] = true
+				reviewers = append(reviewers, r)
+			}
+		}
+	}
+	return reviewers
+}
+
+// commitTestFiles fetches all files from the tests/ directory under a
+// component's SpecDir on OnboardBranch and commits them to the feature branch.
+// If no tests/ directory exists, it silently returns nil.
+func commitTestFiles(dir, specImageName, branch string) error {
+	testsDir := dir + "/tests"
+	contentsPath := fmt.Sprintf("repos/%s/%s/contents/%s?ref=%s",
+		utils.OnboardOwner, utils.OnboardRepo, testsDir, utils.OnboardBranch)
+
+	items, err := repository.FetchJSONArray(contentsPath)
+	if err != nil {
+		// No tests directory — not an error
+		return nil
+	}
+
+	for _, item := range items {
+		itemType, _ := item["type"].(string)
+		name, _ := item["name"].(string)
+		downloadURL, _ := item["download_url"].(string)
+		if name == "" || downloadURL == "" {
+			continue
+		}
+		if itemType == "dir" {
+			// Only handle top-level test files; skip subdirectories
+			continue
+		}
+
+		content, err := repository.FetchRawContent(downloadURL)
+		if err != nil {
+			return fmt.Errorf("failed to fetch test file %s: %w", name, err)
+		}
+		remotePath := fmt.Sprintf("%s/tests/%s", dir, name)
+		if err := commitFileToBranch(
+			remotePath,
+			fmt.Sprintf("Add test file %s for %s", name, specImageName),
+			content,
+			branch,
+		); err != nil {
+			return fmt.Errorf("failed to commit test file %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// ─── Chunk 3 · GIT ───────────────────────────────────────────────────────────
 
 // commitFileToBranch pushes a single file to a specific branch via the GitHub
 // Contents API. If the file already exists on that branch, its SHA is included

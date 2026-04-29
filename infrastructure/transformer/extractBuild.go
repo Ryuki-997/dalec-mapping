@@ -223,6 +223,10 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 		parts = append(parts, bl.cmd)
 	}
 
+	// Collect cross-stage copies for Go builder submodule stages (e.g. dropgz).
+	// Used both inside the pipeline step loop and when emitting deferred builds.
+	submodCopies := submoduleStageCopies(defaultSpec.Stages)
+
 	// Append pipeline steps (intermediate + wrapper stages) after the primary builds.
 	// Pipeline steps handle their own directory navigation, so no automatic cd-back
 	// is inserted here.
@@ -232,7 +236,6 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 		}
 
 		workdirCopies := intermediateStageCopies(defaultSpec.Stages, baseDir)
-		submodCopies := submoduleStageCopies(defaultSpec.Stages)
 		for dir := range workdirCopies {
 			for _, raw := range contents.Spec.PipelineSteps {
 				raw = strings.TrimSpace(raw)
@@ -263,6 +266,8 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 			// Strip leading env assignments for vars Dalec manages (GOOS, CGO_ENABLED, etc.)
 			// so pipeline steps never override Dalec's cross-compilation environment.
 			step = stripDalecHandledEnvs(step)
+			// Normalise bare $VAR to ${VAR} for consistency with cleanBuildCommand.
+			step = normalizeBareVars(step)
 			// Rewrite `cd /go/pkg/mod/<module>@<version>` to `cd "$BUILD_ROOT"/<sourceKey>`.
 			step = rewriteGoModCdPaths(step, goModDownloads)
 			// Rewrite bare `cd <sourceKey>` to `cd "$BUILD_ROOT"/<sourceKey>` so
@@ -303,8 +308,14 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 	}
 
 	// Emit deferred sub-module binary builds AFTER pipeline steps.
+	// Inject cross-stage copies (e.g. COPY --from=compressor /payload/* pkg/embed/fs/)
+	// before the build command so embedded content is in place.
 	for _, bl := range deferredLines {
 		parts = append(parts, "cd "+bl.cdPath)
+		bare := strings.TrimPrefix(bl.cdPath, `"$BUILD_ROOT"/`)
+		if cpCmds, ok := submodCopies[bare]; ok {
+			parts = append(parts, cpCmds...)
+		}
 		parts = append(parts, bl.cmd)
 	}
 
@@ -532,6 +543,17 @@ func stripDalecHandledEnvs(cmd string) string {
 	return cmd
 }
 
+// bareVarRe matches bare $VAR references with uppercase names (dalec args),
+// skipping lowercase shell variables like $f in for-loops.
+var bareVarRe = regexp.MustCompile(`\$([A-Z_][A-Z0-9_]*)`)
+
+// normalizeBareVars rewrites bare $VAR references to ${VAR} for consistency.
+// Only targets uppercase variable names (dalec args), leaving shell variables
+// like $f untouched.
+func normalizeBareVars(s string) string {
+	return bareVarRe.ReplaceAllString(s, "${$1}")
+}
+
 // standardWorkdirs lists working directories that are always available in the
 // build sandbox and never need an explicit mkdir.
 var standardWorkdirs = map[string]bool{
@@ -551,9 +573,17 @@ func submoduleStageCopies(stages []contents.Stage) map[string][]string {
 			stageRefs[s.Name] = true
 		}
 	}
+	// Build a set of stage names whose base image is a Go SDK image.
+	// Stages that reference these aliases (FROM go) are also Go builder stages.
+	goStageNames := make(map[string]bool)
+	for _, s := range stages {
+		if s.Name != "" && parser.IsGoImage(s.From) {
+			goStageNames[s.Name] = true
+		}
+	}
 	result := make(map[string][]string)
 	for _, stage := range stages {
-		if !parser.IsGoImage(stage.From) {
+		if !parser.IsGoImage(stage.From) && !goStageNames[stage.From] {
 			continue // only process Go builder stages (the ones intermediateStageCopies skips)
 		}
 		if stage.Name == "" {
@@ -654,7 +684,7 @@ func intermediateStageCopies(stages []contents.Stage, baseDir string) map[string
 				rewritten = append(rewritten, src)
 			}
 			srcs := strings.Join(rewritten, " ")
-			cpCmds = append(cpCmds, fmt.Sprintf("cp %s %s", srcs, cp.Dest))
+			cpCmds = append(cpCmds, normalizeBareVars(fmt.Sprintf("cp %s %s", srcs, cp.Dest)))
 		}
 		if len(cpCmds) > 0 {
 			result[stage.Workdir] = append(result[stage.Workdir], cpCmds...)
@@ -779,8 +809,7 @@ func cleanBuildCommand(cmd, ldflags string) string {
 	cmd = innerQuotedVar.ReplaceAllString(cmd, "$1")
 
 	// 3. Normalise bare $VAR to ${VAR} (skip ${ which is already braced).
-	bareVar := regexp.MustCompile(`\$([A-Za-z_]\w*)`)
-	cmd = bareVar.ReplaceAllString(cmd, "${$1}")
+	cmd = bareVarRe.ReplaceAllString(cmd, "${$1}")
 
 	// 4. Strip Dalec-handled env assignments.
 	cmd = envAssignRe.ReplaceAllStringFunc(cmd, func(match string) string {

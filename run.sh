@@ -27,23 +27,13 @@ run_and_stream() {
   return 0
 }
 
-# run_and_stream "Run 1: -path=autospecs/aks-container-networking/azure-cns" -path=autospecs/aks-container-networking/azure-cns
-# run_and_stream "Run 2: -path=autospecs/aks-container-networking/azure-cni" -path=autospecs/aks-container-networking/azure-cni
-# run_and_stream "Run 3: -path=autospecs/aks-container-networking/azure-ipam" -path=autospecs/aks-container-networking/azure-ipam
-# run_and_stream "Run 4: -path=autospecs/aks-secure-tls-bootstrap" -path=autospecs/aks-secure-tls-bootstrap
-# run_and_stream "Run 5: -path=autospecs/aks-node-controller" -path=autospecs/aks-node-controller
-# run_and_stream "Run 6: -path=autospecs/aks-vm-extension" -path=autospecs/aks-vm-extension
 
-## Test Runs
-run_and_stream "Run AKS-Container-Networking: -path=autospecs/test/azure-cns" -path=autospecs/test/azure-cns > output_azure-cns.log
-run_and_stream "Run AKS-Container-Networking: -path=autospecs/test/azure-cni" -path=autospecs/test/azure-cni > output_azure-cni.log
-run_and_stream "Run AKS-Container-Networking: -path=autospecs/test/azure-ipam" -path=autospecs/test/azure-ipam > output_azure-ipam.log
-# run_and_stream "Run AKS-Secure-TLS-Bootstrap: -path=autospecs/test/aks-secure-tls-bootstrap" -path=autospecs/test/aks-secure-tls-bootstrap
-# run_and_stream "Run AKS-Node-Controller: -path=autospecs/test/aks-node-controller" -path=autospecs/test/aks-node-controller
-# run_and_stream "Run AKS-VM-Extension: -path=autospecs/test/node-problem-detector" -path=autospecs/test/node-problem-detector
+# run_and_stream "Run ContainerNetworking: -path=specs/containernetworking" -path=specs/containernetworking
+# run_and_stream "Run AKS-Secure-TLS-Bootstrap: -path=specs/aks-secure-tls-bootstrap" -path=specs/aks-secure-tls-bootstrap
+# run_and_stream "Run AKS-Node-Controller: -path=specs/aks-node-controller" -path=specs/aks-node-controller
+run_and_stream "Run Azure-IPAM: -path=specs/azure-ipam" -path=specs/azure-ipam
 
 ## Project Dalec Components
-# run_and_stream "Run Addon-Resizer: -path=autospecs/addon-resizer" -path=autospecs/addon-resizer
 
 ## Different Org Components
 # run_and_stream "Run abc: -path=autospecs/service-hub" -path=autospecs/service-hub
