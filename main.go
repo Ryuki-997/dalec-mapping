@@ -131,7 +131,7 @@ func processTag(onboard *onboarding.ComponentConfig, fullTag string, isFirstOnbo
 
 	switch action {
 	case actionBumpCommit:
-		return bumpCommit(onboard, fullTag, tag, templateTag), nil
+		return bumpCommit(onboard, fullTag, tag, templateTag)
 	case actionGenerate:
 		remotePath, specContent, err := generateWork(onboard, fullTag)
 		if err != nil {
@@ -177,17 +177,25 @@ func decideAction(isFirstOnboard, contentChanged bool) pipelineAction {
 
 // ─── Chunk 3 · ACTIONS ──────────────────────────────────────────────────────
 
-func bumpCommit(onboard *onboarding.ComponentConfig, fullTag, tag, templateTag string) string {
+func bumpCommit(onboard *onboarding.ComponentConfig, fullTag, tag, templateTag string) (string, *workflow.ComponentSpec) {
 	log.Printf("🔄 Content unchanged for %s @ %s — bumping commit hash\n", onboard.SpecImageName, tag)
 	if _, err := workflow.BumpCommit(onboard, fullTag, templateTag); err != nil {
 		log.Fatalf("❌ Revision bump failed: %v", err)
 	}
-	if err := workflow.PushToRemote(onboard, tag, true); err != nil {
-		log.Fatalf("❌ Push failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
+
+	specContent, err := os.ReadFile(utils.SpecPath)
+	if err != nil {
+		log.Fatalf("❌ Failed to read bumped spec for %s @ %s: %v", onboard.SpecImageName, tag, err)
 	}
+
 	remotePath := semver.SpecFilePath(onboard.SpecDir(), onboard.SpecImageName, tag)
-	log.Printf("✅ Revision bump pushed for %s @ %s\n", onboard.SpecImageName, tag)
-	return remotePath
+	log.Printf("✅ Revision bump complete for %s @ %s — queued for PR\n", onboard.SpecImageName, tag)
+	return remotePath, &workflow.ComponentSpec{
+		Onboard:     onboard,
+		Tag:         tag,
+		SpecContent: specContent,
+		SpecOnly:    true,
+	}
 }
 
 func generateWork(onboard *onboarding.ComponentConfig, fullTag string) (string, []byte, error) {

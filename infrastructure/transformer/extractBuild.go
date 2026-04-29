@@ -394,17 +394,12 @@ if [ "${GOOS}" = "windows" ]; then
 fi`
 }
 
-// injectLastBinSuffix rewrites only the LAST `-o /go/bin/<name>` occurrence
-// in a multi-line command block, appending `${BIN_SUFFIX}` to the output path.
-// This ensures the suffix targets the final deliverable binary regardless of
-// whether it comes from a normal build line, pipeline step, or deferred line.
+// injectLastBinSuffix rewrites ALL `-o /go/bin/<name>` occurrences in a
+// multi-line command block, appending `${BIN_SUFFIX}` to each output path.
+// This ensures every built binary receives the platform-appropriate extension
+// (e.g. .exe on Windows) so artifact paths match the actual output files.
 func injectLastBinSuffix(text string) string {
-	allLocs := binOutRe.FindAllStringSubmatchIndex(text, -1)
-	if len(allLocs) == 0 {
-		return text
-	}
-	last := allLocs[len(allLocs)-1]
-	return text[:last[3]] + "${BIN_SUFFIX}" + text[last[3]:]
+	return binOutRe.ReplaceAllString(text, "-o ${1}${BIN_SUFFIX}")
 }
 
 // scanVarReferences finds all ${VAR}/$(VAR) references in the merged command text.
