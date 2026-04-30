@@ -7,36 +7,27 @@ import (
 	"path/filepath"
 
 	"dalec-mapping/domain/contents"
+	"dalec-mapping/pipeline"
 )
 
-func ParseOptionalFileInfo(dockerfile, makefile []byte, specFilePath string) (PreviousDalecSpec, error) {
-	contents.Dockerfile = contents.DockerfileInfo{
-		Args:   make(map[string]string),
-		Labels: make(map[string]string),
-		Stages: []contents.Stage{},
-	}
-
-	contents.Makefile = contents.MakefileInfo{
-		Variables: make(map[string]string),
-	}
-
-	ParseDockerfile(dockerfile, &contents.Dockerfile)
-	ParseMakefile(makefile, &contents.Makefile)
+func ParseOptionalFileInfo(dockerfile, makefile []byte, specFilePath string) (contents.PreviousDalecSpec, error) {
+	ParseDockerfile(dockerfile, &pipeline.Current.Dockerfile)
+	ParseMakefile(makefile, &pipeline.Current.Makefile)
 
 	previousDalecSpecInfo, err := fetchPreviousYAMLInfo(specFilePath)
 	if err != nil {
-		return PreviousDalecSpec{}, err
+		return contents.PreviousDalecSpec{}, err
 	}
 
 	return previousDalecSpecInfo, nil
 }
 
-func fetchPreviousYAMLInfo(filepath string) (PreviousDalecSpec, error) {
+func fetchPreviousYAMLInfo(filepath string) (contents.PreviousDalecSpec, error) {
 	log.Println("=== READING PREVIOUS YAML FILE ===")
 
 	if filepath == "" {
 		log.Println("⚠️  No previous YAML path provided to read previous spec.")
-		return PreviousDalecSpec{}, nil
+		return contents.PreviousDalecSpec{}, nil
 	}
 
 	writer := &DalecSpecWriter{}
@@ -44,10 +35,10 @@ func fetchPreviousYAMLInfo(filepath string) (PreviousDalecSpec, error) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			log.Println("⚠️  No previous YAML file found, proceeding without it.")
-			return PreviousDalecSpec{}, nil
+			return contents.PreviousDalecSpec{}, nil
 		}
 		log.Printf("❌ Error reading previous YAML file: %v\n", err)
-		return PreviousDalecSpec{}, err
+		return contents.PreviousDalecSpec{}, err
 	}
 
 	log.Println("✅ Successfully read previous YAML file.")

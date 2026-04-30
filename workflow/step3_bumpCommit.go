@@ -5,8 +5,9 @@
 //   Copies a previous tag's spec (templateTag), updates args.COMMIT and
 //   args.VERSION for the new tag, and writes a new spec file locally for push.
 //
-//   Chunk 1 · MAIN   BumpCommit()
-//   Chunk 2 · HELPER findMapValue()
+//   Chunk 1 · MAIN    BumpCommit()
+//   Chunk 2 · STEPS   fetchTemplateSpec(), resolveNewCommit(), updateSpecArgs(), writeSpecFile()
+//   Chunk 3 · HELPER  findMapValue()
 // ═══════════════════════════════════════════════════════════════════════════════
 
 package workflow
@@ -18,9 +19,9 @@ import (
 	"os"
 	"strings"
 
-	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/infrastructure/repository"
 	"dalec-mapping/infrastructure/semver"
+	"dalec-mapping/pipeline"
 	"dalec-mapping/utils"
 
 	"gopkg.in/yaml.v3"
@@ -30,63 +31,100 @@ import (
 
 // BumpCommit copies a previous tag's spec (templateTag), updates args.COMMIT
 // and args.VERSION for the new tag, and writes the result to utils.SpecPath.
-func BumpCommit(onboard *onboarding.ComponentConfig, fullTag string, templateTag string) (string, error) {
+func BumpCommit(templateTag string) (string, error) {
+	onboard := pipeline.Current.Onboard
+	fullTag := pipeline.Current.Tag
+
 	tag := semver.ToTag(fullTag)
 	specDir := onboard.SpecDir()
 	remotePath := semver.SpecFilePath(specDir, onboard.SpecImageName, tag)
-
 	templateRemotePath := semver.SpecFilePath(specDir, onboard.SpecImageName, semver.ToTag(templateTag))
+
 	log.Printf("🔄 Commit bump for %s @ %s (template: %s → new: %s)\n", onboard.SpecImageName, tag, templateRemotePath, remotePath)
 
-	// Fetch the template spec from the onboard repo
+	specNode, err := fetchTemplateSpec(templateRemotePath)
+	if err != nil {
+		return "", err
+	}
+
+	newCommit, err := resolveNewCommit(onboard.Repository, fullTag)
+	if err != nil {
+		return "", err
+	}
+
+	if err := updateSpecArgs(specNode, tag, newCommit); err != nil {
+		return "", err
+	}
+
+	if err := writeSpecFile(specNode); err != nil {
+		return "", err
+	}
+
+	log.Printf("✅ Commit bump complete — written to %s\n", utils.SpecPath)
+	return remotePath, nil
+}
+
+// ─── Chunk 2 · STEPS ─────────────────────────────────────────────────────────
+
+// fetchTemplateSpec fetches and decodes a previous tag's spec from the onboard repo.
+func fetchTemplateSpec(templateRemotePath string) (*yaml.Node, error) {
 	fileData, err := repository.FetchJSON(fmt.Sprintf("repos/%s/%s/contents/%s?ref=%s",
 		utils.OnboardOwner, utils.OnboardRepo, templateRemotePath, utils.OnboardBranch))
 	if err != nil {
-		return "", fmt.Errorf("failed to fetch template spec %s: %w", templateRemotePath, err)
+		return nil, fmt.Errorf("failed to fetch template spec %s: %w", templateRemotePath, err)
 	}
+
 	contentStr, ok := fileData["content"].(string)
 	if !ok {
-		return "", fmt.Errorf("unexpected response: missing content field for %s", templateRemotePath)
+		return nil, fmt.Errorf("unexpected response: missing content field for %s", templateRemotePath)
 	}
 
-	// Decode base64 spec content
 	specBytes, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(contentStr, "\n", ""))
 	if err != nil {
-		return "", fmt.Errorf("failed to decode spec content: %w", err)
+		return nil, fmt.Errorf("failed to decode spec content: %w", err)
 	}
 
-	// Parse as ordered YAML to preserve structure
 	var specNode yaml.Node
 	if err := yaml.Unmarshal(specBytes, &specNode); err != nil {
-		return "", fmt.Errorf("failed to parse existing spec YAML: %w", err)
+		return nil, fmt.Errorf("failed to parse existing spec YAML: %w", err)
 	}
 
-	// Resolve the new commit SHA for this tag
+	return &specNode, nil
+}
+
+// resolveNewCommit fetches the commit SHA for the given tag from the source repo.
+func resolveNewCommit(repoURL, fullTag string) (string, error) {
 	var newCommit string
-	if repository.IsADORepo(onboard.Repository) {
-		newCommit, err = repository.FetchADOTagCommit(onboard.Repository, fullTag)
+	var err error
+
+	if repository.IsADORepo(repoURL) {
+		newCommit, err = repository.FetchADOTagCommit(repoURL, fullTag)
 	} else {
-		owner, repoName, _ := repository.FetchRepositorySegments(onboard.Repository)
+		owner, repoName, _ := repository.FetchRepositorySegments(repoURL)
 		newCommit, err = repository.FetchTagCommit(owner, repoName, fullTag)
 	}
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve commit for tag %s: %w", fullTag, err)
 	}
-	log.Printf("   New commit SHA: %s\n", newCommit)
 
-	// Update args.COMMIT only
-	argsNode := findMapValue(&specNode, "args")
+	log.Printf("   New commit SHA: %s\n", newCommit)
+	return newCommit, nil
+}
+
+// updateSpecArgs updates args.COMMIT and args.VERSION in the parsed YAML node.
+func updateSpecArgs(specNode *yaml.Node, tag, newCommit string) error {
+	argsNode := findMapValue(specNode, "args")
 	if argsNode == nil {
-		return "", fmt.Errorf("spec file missing 'args' section")
+		return fmt.Errorf("spec file missing 'args' section")
 	}
+
 	commitNode := findMapValue(argsNode, "COMMIT")
 	if commitNode == nil {
-		return "", fmt.Errorf("spec file missing args.COMMIT")
+		return fmt.Errorf("spec file missing args.COMMIT")
 	}
 	log.Printf("   COMMIT: %s → %s\n", commitNode.Value, newCommit)
 	commitNode.Value = newCommit
 
-	// Update args.VERSION to the new tag's version
 	versionNode := findMapValue(argsNode, "VERSION")
 	if versionNode != nil {
 		newVersion := strings.TrimPrefix(tag, "v")
@@ -94,23 +132,25 @@ func BumpCommit(onboard *onboarding.ComponentConfig, fullTag string, templateTag
 		versionNode.Value = newVersion
 	}
 
-	// Marshal back and write to local spec path
-	out, err := yaml.Marshal(&specNode)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal updated spec: %w", err)
-	}
-	if err := os.MkdirAll(utils.ResultDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create result directory: %w", err)
-	}
-	if err := os.WriteFile(utils.SpecPath, out, 0644); err != nil {
-		return "", fmt.Errorf("failed to write updated spec: %w", err)
-	}
-
-	log.Printf("✅ Commit bump complete — written to %s\n", utils.SpecPath)
-	return remotePath, nil
+	return nil
 }
 
-// ─── Chunk 2 · HELPER ───────────────────────────────────────────────────────
+// writeSpecFile marshals the YAML node and writes it to the local spec path.
+func writeSpecFile(specNode *yaml.Node) error {
+	out, err := yaml.Marshal(specNode)
+	if err != nil {
+		return fmt.Errorf("failed to marshal updated spec: %w", err)
+	}
+	if err := os.MkdirAll(utils.ResultDir, 0755); err != nil {
+		return fmt.Errorf("failed to create result directory: %w", err)
+	}
+	if err := os.WriteFile(utils.SpecPath, out, 0644); err != nil {
+		return fmt.Errorf("failed to write updated spec: %w", err)
+	}
+	return nil
+}
+
+// ─── Chunk 3 · HELPER ───────────────────────────────────────────────────────
 
 // findMapValue searches a YAML node tree for a mapping key and returns its value node.
 func findMapValue(root *yaml.Node, key string) *yaml.Node {

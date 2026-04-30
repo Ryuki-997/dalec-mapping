@@ -2,23 +2,25 @@ package transformer
 
 import (
 	"dalec-mapping/domain/contents"
-	"dalec-mapping/domain/onboarding"
-	"dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/parser"
+	"dalec-mapping/pipeline"
 	"log"
 
 	"fmt"
 	"strings"
 )
 
-func InitDefaultSpec(onboardInfo *onboarding.ComponentConfig, repoInfo *repository.RepoInfo, previousDalecSpecInfo parser.PreviousDalecSpec) (*contents.DefaultSpec, error) {
+func InitDefaultSpec() (*contents.DefaultSpec, error) {
+	onboardInfo := pipeline.Current.Onboard
+	repoInfo := pipeline.Current.RepoInfo
+
 	// Initialize & Populate Source of Truth Attributes from onboarding and repository info
 	defaultSpec := &contents.DefaultSpec{}
 	defaultSpec.RepoInfo = *repoInfo
 
 	defaultSpec.ComponentConfig = *onboardInfo
 
-	defaultSpec.DockerfileInfo = contents.Dockerfile
+	defaultSpec.DockerfileInfo = pipeline.Current.Dockerfile
 
 	defaultSpec.Revision = 1
 

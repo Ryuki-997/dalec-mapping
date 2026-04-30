@@ -6,7 +6,8 @@
 //   onboard.ContentChanged accordingly.
 //
 //   Chunk 1 · MAIN    DiscoverBuildFiles()
-//   Chunk 2 · HELPERS diffSiblings(), clearResultDirectory()
+//   Chunk 2 · FETCH   fetchBuildFilesFromADO(), fetchBuildFilesFromGitHub()
+//   Chunk 3 · HELPERS diffSiblings(), clearResultDirectory()
 // ═══════════════════════════════════════════════════════════════════════════════
 
 package workflow
@@ -18,8 +19,8 @@ import (
 	"os"
 
 	"dalec-mapping/domain/onboarding"
-	repo "dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/repository"
+	"dalec-mapping/pipeline"
 	"dalec-mapping/utils"
 )
 
@@ -27,76 +28,110 @@ import (
 
 // DiscoverBuildFiles fetches the Dockerfile and Makefile from the source repo at the
 // given tag, diffs them against cached siblings, and returns whether content changed.
-func DiscoverBuildFiles(onboard *onboarding.ComponentConfig, repoInfo *repo.RepoInfo, tag string) (bool, error) {
-	// Clear the result directory for a fresh start
+func DiscoverBuildFiles() (bool, error) {
+	onboard := pipeline.Current.Onboard
+	tag := pipeline.Current.Tag
+
 	if err := clearResultDirectory(utils.ResultDir); err != nil {
 		log.Printf("⚠️  Warning: %v\n", err)
 	}
 
-	// Split component path from the repository URL and resolve file paths
-	// relative to it (supports ../ traversal for files outside the component).
 	_, componentPath := repository.SplitComponent(onboard.Repository)
 	dockerfilePath := repository.ResolveFilePath(componentPath, onboard.DockerfileDir)
 	makefilePath := repository.ResolveFilePath(componentPath, onboard.MakefileDir)
 
-	var (
-		dockerfileContent []byte
-		makefileContent   []byte
-		err               error
-	)
+	var dockerfileContent, makefileContent []byte
+	var err error
 
 	if repository.IsADORepo(onboard.Repository) {
-		if _, err = repository.FetchADORepoInfo(onboard.Repository, tag); err != nil {
-			return false, fmt.Errorf("failed to fetch repository info: %w", err)
-		}
-		if dockerfilePath != "" {
-			if dockerfileContent, err = repository.FetchADOFileContent(onboard.Repository, dockerfilePath, tag); err != nil {
-				log.Printf("⚠️  Warning: failed to fetch Dockerfile: %v\n", err)
-			}
-		}
-		if makefilePath != "" {
-			if makefileContent, err = repository.FetchADOFileContent(onboard.Repository, makefilePath, tag); err != nil {
-				log.Printf("⚠️  Warning: failed to fetch Makefile: %v\n", err)
-			}
-		}
+		dockerfileContent, makefileContent, err = fetchBuildFilesFromADO(onboard.Repository, dockerfilePath, makefilePath, tag)
 	} else {
-		if _, err = repository.FetchRepoInfo(onboard.Repository, tag); err != nil {
-			return false, fmt.Errorf("failed to fetch repository info: %w", err)
-		}
-		baseRef, _ := repository.SplitComponent(onboard.Repository)
-		owner, repoName, _ := repository.FetchRepositorySegments(baseRef)
-		ref := tag
-		if ref == "" {
-			_, _, ref = repository.FetchRepositorySegments(baseRef)
-		}
-		rawPath := fmt.Sprintf("%s/%s/%s", owner, repoName, ref)
-		if dockerfilePath != "" {
-			dockerfileURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s", rawPath, dockerfilePath)
-			if dockerfileContent, err = repository.FetchRawContent(dockerfileURL); err != nil {
-				log.Printf("⚠️  Warning: failed to fetch Dockerfile from %s: %v\n", dockerfileURL, err)
-			}
-		}
-		if makefilePath != "" {
-			makefileURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s", rawPath, makefilePath)
-			if makefileContent, err = repository.FetchRawContent(makefileURL); err != nil {
-				log.Printf("⚠️  Warning: failed to fetch Makefile from %s: %v\n", makefileURL, err)
-			}
-		}
+		dockerfileContent, makefileContent, err = fetchBuildFilesFromGitHub(onboard.Repository, dockerfilePath, makefilePath, tag)
+	}
+	if err != nil {
+		return false, err
 	}
 
-	// Save cached copies before overwriting, then store fresh content
 	cachedDF := onboard.DockerfileContent
 	cachedMF := onboard.MakefileContent
 	onboard.DockerfileContent = dockerfileContent
 	onboard.MakefileContent = makefileContent
 
-	// Compare fresh vs cached
 	contentChanged := diffSiblings(onboard, cachedDF, cachedMF)
-
 	return contentChanged, nil
 }
 
-// ─── Chunk 2 · HELPERS ──────────────────────────────────────────────────────
+// ─── Chunk 2 · FETCH ─────────────────────────────────────────────────────────
+
+// fetchBuildFilesFromADO fetches Dockerfile and Makefile from an ADO repository.
+func fetchBuildFilesFromADO(repoURL, dockerfilePath, makefilePath, tag string) ([]byte, []byte, error) {
+	if _, err := repository.FetchADORepoInfo(repoURL, tag); err != nil {
+		return nil, nil, fmt.Errorf("failed to fetch repository info: %w", err)
+	}
+
+	var dockerfileContent, makefileContent []byte
+
+	if dockerfilePath != "" {
+		content, err := repository.FetchADOFileContent(repoURL, dockerfilePath, tag)
+		if err != nil {
+			log.Printf("⚠️  Warning: failed to fetch Dockerfile: %v\n", err)
+		} else {
+			dockerfileContent = content
+		}
+	}
+
+	if makefilePath != "" {
+		content, err := repository.FetchADOFileContent(repoURL, makefilePath, tag)
+		if err != nil {
+			log.Printf("⚠️  Warning: failed to fetch Makefile: %v\n", err)
+		} else {
+			makefileContent = content
+		}
+	}
+
+	return dockerfileContent, makefileContent, nil
+}
+
+// fetchBuildFilesFromGitHub fetches Dockerfile and Makefile from a GitHub repository.
+func fetchBuildFilesFromGitHub(repoURL, dockerfilePath, makefilePath, tag string) ([]byte, []byte, error) {
+	if _, err := repository.FetchRepoInfo(repoURL, tag); err != nil {
+		return nil, nil, fmt.Errorf("failed to fetch repository info: %w", err)
+	}
+
+	baseRef, _ := repository.SplitComponent(repoURL)
+	owner, repoName, _ := repository.FetchRepositorySegments(baseRef)
+	ref := tag
+	if ref == "" {
+		_, _, ref = repository.FetchRepositorySegments(baseRef)
+	}
+	rawPath := fmt.Sprintf("%s/%s/%s", owner, repoName, ref)
+
+	var dockerfileContent, makefileContent []byte
+
+	if dockerfilePath != "" {
+		dockerfileURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s", rawPath, dockerfilePath)
+		content, err := repository.FetchRawContent(dockerfileURL)
+		if err != nil {
+			log.Printf("⚠️  Warning: failed to fetch Dockerfile from %s: %v\n", dockerfileURL, err)
+		} else {
+			dockerfileContent = content
+		}
+	}
+
+	if makefilePath != "" {
+		makefileURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s", rawPath, makefilePath)
+		content, err := repository.FetchRawContent(makefileURL)
+		if err != nil {
+			log.Printf("⚠️  Warning: failed to fetch Makefile from %s: %v\n", makefileURL, err)
+		} else {
+			makefileContent = content
+		}
+	}
+
+	return dockerfileContent, makefileContent, nil
+}
+
+// ─── Chunk 3 · HELPERS ──────────────────────────────────────────────────────
 
 // diffSiblings compares fresh Dockerfile/Makefile against cached versions and
 // returns true if content has changed. Only compares files that have both a

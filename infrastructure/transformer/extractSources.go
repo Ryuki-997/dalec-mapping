@@ -20,6 +20,7 @@ package transformer
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import (
+	"dalec-mapping/pipeline"
 	"dalec-mapping/domain/contents"
 	"dalec-mapping/infrastructure/repository"
 	"fmt"
@@ -78,7 +79,7 @@ func extractSourcesSection(defaultSpec *contents.DefaultSpec, goModDownloads []G
 // and gomod discovery is scoped within it. Otherwise falls back to heuristics
 // from MakefileDir/DockerfileDir.
 func buildPrimarySource(sources map[string]interface{}, defaultSpec *contents.DefaultSpec) {
-	subpaths := collectGoModSubpaths(defaultSpec, contents.Spec)
+	subpaths := collectGoModSubpaths(defaultSpec, pipeline.Current.Spec)
 
 	// Determine where the primary go.mod lives.
 	// Priority: ComponentPath > MakefileDir > gomod subpath > DockerfileDir
@@ -217,13 +218,13 @@ func collectGoModSubpaths(defaultSpec *contents.DefaultSpec, spec *contents.Dock
 // (legacy) and `cd /go/pkg/mod/<module>@<version>` patterns and returns
 // parsed info for each.
 func DetectGoModDownloads(defaultSpec *contents.DefaultSpec) []GoModDownloadInfo {
-	if contents.Spec == nil {
+	if pipeline.Current.Spec == nil {
 		return nil
 	}
 
 	var stepsToScan []string
-	stepsToScan = append(stepsToScan, contents.Spec.PipelineSteps...)
-	for _, bin := range contents.Spec.Binaries {
+	stepsToScan = append(stepsToScan, pipeline.Current.Spec.PipelineSteps...)
+	for _, bin := range pipeline.Current.Spec.Binaries {
 		if bin.BuildCommand != "" {
 			stepsToScan = append(stepsToScan, bin.BuildCommand)
 		}

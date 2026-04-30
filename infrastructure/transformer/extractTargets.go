@@ -115,7 +115,7 @@ func resolveTestPaths(osName string, isContainer bool, defaultSpec *contents.Def
 	}
 
 	// Derive the binary name from the parsed artifact paths (same source used
-	// by extractArtifacts). computeArtifactPaths reads contents.Spec which is
+	// by extractArtifacts). computeArtifactPaths reads pipeline.Current.Spec which is
 	// populated by the Dockerfile AST parser.
 	for artifactPath := range computeArtifactPaths(defaultSpec) {
 		if base := canonicalBase(artifactPath); base != "" {

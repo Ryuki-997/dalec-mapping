@@ -2,6 +2,7 @@ package parser
 
 import (
 	"dalec-mapping/domain/contents"
+	"dalec-mapping/pipeline"
 	"fmt"
 	"log"
 	"os"
@@ -704,12 +705,12 @@ var lineContinuationRe = regexp.MustCompile(`\\\s*\n\s*`)
 
 // ─── Chunk 5 · MAIN ─────────────────────────────────────────────────────────
 
-// ExtractStaticBuildValues derives a DockerfileSpec from the global contents.Dockerfile
-// set by ParseDockerfile. Stores the result in contents.Spec and returns it.
+// ExtractStaticBuildValues derives a DockerfileSpec from pipeline.Current.Dockerfile.
+// Stores the result in pipeline.Current.Spec and returns it.
 // Returns nil if no Dockerfile stages are available or no Go builder stage is found.
 func ExtractStaticBuildValues() *contents.DockerfileSpec {
-	stages := contents.Dockerfile.Stages
-	globalArgs := contents.Dockerfile.Args
+	stages := pipeline.Current.Dockerfile.Stages
+	globalArgs := pipeline.Current.Dockerfile.Args
 
 	if len(stages) == 0 {
 		return nil
@@ -751,7 +752,7 @@ func ExtractStaticBuildValues() *contents.DockerfileSpec {
 	log.Printf("📊 Static extractor: %d binaries, %d pipeline steps, entrypoint=%s, symlink=%s\n",
 		len(binaries), len(pipelineSteps), entrypoint, symlink)
 
-	contents.Spec = spec
+	pipeline.Current.Spec = spec
 	return spec
 }
 

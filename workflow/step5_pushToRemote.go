@@ -16,9 +16,9 @@ import (
 	"log"
 	"os"
 
-	"dalec-mapping/domain/onboarding"
 	repo "dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/repository"
+	"dalec-mapping/pipeline"
 	"dalec-mapping/utils"
 )
 
@@ -26,7 +26,8 @@ import (
 
 // PushToRemote commits the spec file to the onboard repo's base branch.
 // When specOnly is false, sibling Dockerfile/Makefile are also committed.
-func PushToRemote(onboard *onboarding.ComponentConfig, tag string, specOnly bool) error {
+func PushToRemote(tag string, specOnly bool) error {
+	onboard := pipeline.Current.Onboard
 	dir := onboard.SpecDir()
 	specImageName := onboard.SpecImageName
 

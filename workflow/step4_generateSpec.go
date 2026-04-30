@@ -4,7 +4,8 @@
 //   Parses the Dockerfile and Makefile, then transforms them into a DALEC spec
 //   YAML file written to the result directory.
 //
-//   Chunk 1 · MAIN  GenerateSpec()
+//   Chunk 1 · MAIN   GenerateSpec()
+//   Chunk 2 · STEPS  fetchRepoMetadata(), parseAndExtract(), buildAndWriteSpec()
 // ═══════════════════════════════════════════════════════════════════════════════
 
 package workflow
@@ -13,11 +14,10 @@ import (
 	"log"
 	"os"
 
-	"dalec-mapping/domain/onboarding"
-	domainRepo "dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/parser"
 	"dalec-mapping/infrastructure/repository"
 	"dalec-mapping/infrastructure/transformer"
+	"dalec-mapping/pipeline"
 	"dalec-mapping/utils"
 )
 
@@ -26,52 +26,78 @@ import (
 // GenerateSpec creates the DALEC spec from parsed build files using static
 // Dockerfile analysis. Returns the resolved build target strings for downstream
 // use (e.g. image test).
-func GenerateSpec(onboard *onboarding.ComponentConfig, tag string) ([]string, error) {
-	// Fetch repository metadata (component path is extracted from the URL automatically)
-	var (
-		repoInfo *domainRepo.RepoInfo
-		err      error
-	)
-	if repository.IsADORepo(onboard.Repository) {
-		repoInfo, err = repository.FetchADORepoInfo(onboard.Repository, tag)
-	} else {
-		repoInfo, err = repository.FetchRepoInfo(onboard.Repository, tag)
-	}
-	if err != nil {
+func GenerateSpec() ([]string, error) {
+	if err := fetchRepoMetadata(); err != nil {
 		log.Printf("❌ Error fetching repository info: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Parse Dockerfile and Makefile — sets contents.Dockerfile and contents.Makefile globals.
-	specFilePath := "" // TODO: later
-	previousDalecSpecInfo, err := parser.ParseOptionalFileInfo(onboard.DockerfileContent, onboard.MakefileContent, specFilePath)
-	if err != nil {
+	if err := parseAndExtract(); err != nil {
 		log.Printf("❌ Error parsing optional files: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Static extraction from Dockerfile AST — sets contents.Spec global.
+	resolvedTargets, err := buildAndWriteSpec()
+	if err != nil {
+		return nil, err
+	}
+
+	return resolvedTargets, nil
+}
+
+// ─── Chunk 2 · STEPS ─────────────────────────────────────────────────────────
+
+// fetchRepoMetadata fetches repository metadata from GitHub or ADO based on the repo URL.
+// Stores the result in pipeline.Current.RepoInfo.
+func fetchRepoMetadata() error {
+	onboard := pipeline.Current.Onboard
+	tag := pipeline.Current.Tag
+
+	var err error
+	if repository.IsADORepo(onboard.Repository) {
+		pipeline.Current.RepoInfo, err = repository.FetchADORepoInfo(onboard.Repository, tag)
+	} else {
+		pipeline.Current.RepoInfo, err = repository.FetchRepoInfo(onboard.Repository, tag)
+	}
+	return err
+}
+
+// parseAndExtract parses Dockerfile/Makefile content and runs static extraction.
+// Stores the previous spec info in pipeline.Current.PreviousSpec.
+func parseAndExtract() error {
+	onboard := pipeline.Current.Onboard
+	specFilePath := "" // TODO: later
+
+	previousDalecSpecInfo, err := parser.ParseOptionalFileInfo(onboard.DockerfileContent, onboard.MakefileContent, specFilePath)
+	if err != nil {
+		return err
+	}
+	pipeline.Current.PreviousSpec = previousDalecSpecInfo
+
 	if parser.ExtractStaticBuildValues() != nil {
 		log.Println("✅ Using static Dockerfile extraction")
 	} else {
 		log.Println("⚠️  Static extraction yielded no results, proceeding with defaults")
 	}
 
-	// Build the default spec from repo metadata + global Dockerfile info.
-	defaultSpec, err := transformer.InitDefaultSpec(onboard, repoInfo, previousDalecSpecInfo)
+	return nil
+}
+
+// buildAndWriteSpec builds the default spec, transforms it to a DALEC spec, and writes the output.
+func buildAndWriteSpec() ([]string, error) {
+	defaultSpec, err := transformer.InitDefaultSpec()
 	if err != nil {
 		return nil, err
 	}
+	pipeline.Current.DefaultSpec = defaultSpec
 
-	// Collect resolved target strings for downstream use
 	resolvedTargets := make([]string, len(defaultSpec.BuildTargets))
-	for i, bt := range defaultSpec.BuildTargets {
-		resolvedTargets[i] = string(bt)
+	for i, buildTarget := range defaultSpec.BuildTargets {
+		resolvedTargets[i] = string(buildTarget)
 	}
 
 	parser.PrintDockerfileInfo(defaultSpec)
 
-	// Transform to final DALEC spec and write output
 	dalecSpec := transformer.TransformToDalec(defaultSpec)
 
 	if err := parser.WriteOutput(dalecSpec); err != nil {

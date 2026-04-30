@@ -2,9 +2,9 @@ package main
 
 import (
 	"dalec-mapping/domain/onboarding"
-	"dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/semver"
 	"dalec-mapping/patching"
+	"dalec-mapping/pipeline"
 	"dalec-mapping/utils"
 	"dalec-mapping/workflow"
 	"flag"
@@ -20,66 +20,36 @@ import (
 // ═══════════════════════════════════════════════════════════════════════════════
 // Main — Dalec Spec Pipeline
 //
-//   Chunk 1 · ENTRY       main(), loadEnv(), fetchOnboardFiles()
-//   Chunk 2 · PIPELINE    processTag(), decideAction()
-//   Chunk 3 · ACTIONS     bumpCommit(), generateSpec(), testAndCreatePR()
+//   Chunk 1 · ENTRY       main(), parseFlags(), loadEnv(), fetchOnboardFiles()
+//   Chunk 2 · ORCHESTRATION processOnboardFiles(), submitPRs()
+//   Chunk 3 · PIPELINE    processTag(), decideAction()
+//   Chunk 4 · ACTIONS     bumpCommit(), generateWork(), GitPush()
+//   Chunk 5 · PATCHING    runPatchWorkflow()
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // ─── Chunk 1 · ENTRY ────────────────────────────────────────────────────────
 
 func main() {
-	inputPath := flag.String("path", "", "Input path to search for onboarding files (e.g. containernetworking and containernetworking/azure-cns both work). Omit to fetch all under specs/")
-	patchMode := flag.Bool("patch", false, "Run patching workflow: fetch MCR images and scan for vulnerabilities")
-	flag.Parse()
+	inputPath, patchMode := parseFlags()
 
 	loadEnv()
 
-	if *patchMode {
+	if patchMode {
 		runPatchWorkflow()
 		return
 	}
 
-	onboardFiles, firstOnboardFlags, templateTags := fetchOnboardFiles(*inputPath)
+	onboardFiles, firstOnboardFlags, templateTags := fetchOnboardFiles(inputPath)
+	prGroups := processOnboardFiles(onboardFiles, firstOnboardFlags, templateTags)
+	submitPRs(prGroups)
+}
 
-	// prGroups collects PR entries keyed by group name (or component name for standalone).
-	// Each PREntry becomes one PR containing all its components' files.
-	prGroups := make(map[string]*workflow.PREntry)
-
-	for i, onboard := range onboardFiles {
-		log.Printf("Onboard Documents: %v %v %v\n", onboard.Repository, onboard.SpecImageName, onboard.Tag)
-		for _, fullTag := range onboard.Tag {
-			remotePath, comp := processTag(&onboard, fullTag, firstOnboardFlags[i], templateTags[i])
-			if comp != nil {
-				groupKey := onboard.SpecImageName // standalone → own PR
-				groupName := ""
-				if onboard.GroupName != "" {
-					groupKey = onboard.GroupName // grouped → shared PR
-					groupName = onboard.GroupName
-				}
-				if prGroups[groupKey] == nil {
-					prGroups[groupKey] = &workflow.PREntry{GroupName: groupName}
-				}
-				comp.RemotePath = remotePath
-				prGroups[groupKey].Components = append(prGroups[groupKey].Components, *comp)
-			}
-		}
-	}
-
-	// Create one PR per group (or standalone component).
-	for groupName, entry := range prGroups {
-		prURL, err := workflow.CreatePR(*entry)
-		if err != nil {
-			log.Printf("❌ PR creation failed for %s: %v", groupName, err)
-			continue
-		}
-		var specPaths []string
-		for _, comp := range entry.Components {
-			if comp.RemotePath != "" {
-				specPaths = append(specPaths, comp.RemotePath)
-			}
-		}
-		log.Printf("✅ PR created for %s: %s specPaths=%s\n", groupName, prURL, strings.Join(specPaths, ","))
-	}
+// parseFlags registers and parses CLI flags, returning the resolved values.
+func parseFlags() (string, bool) {
+	inputPath := flag.String("path", "", "Input path to search for onboarding files (e.g. containernetworking and containernetworking/azure-cns both work). Omit to fetch all under specs/")
+	patchMode := flag.Bool("patch", false, "Run patching workflow: fetch MCR images and scan for vulnerabilities")
+	flag.Parse()
+	return *inputPath, *patchMode
 }
 
 func loadEnv() {
@@ -90,9 +60,7 @@ func loadEnv() {
 		log.Printf("No .env file found: %v", err)
 	}
 
-	if tok := os.Getenv("GH_TOKEN"); tok != "" {
-		log.Printf("🔑 GH_TOKEN is set (prefix: %s...)", tok[:min(10, len(tok))])
-	} else {
+	if tok := os.Getenv("GH_TOKEN"); tok == "" {
 		log.Printf("⚠️  GH_TOKEN is not set — GitHub API calls will be unauthenticated")
 	}
 }
@@ -113,7 +81,57 @@ func fetchOnboardFiles(inputPath string) ([]onboarding.ComponentConfig, []bool, 
 	return onboardFiles, firstOnboardFlags, templateTags
 }
 
-// ─── Chunk 2 · PIPELINE ─────────────────────────────────────────────────────
+// ─── Chunk 2 · ORCHESTRATION ─────────────────────────────────────────────────
+
+// processOnboardFiles iterates all onboard configs and their tags, running the
+// pipeline for each and collecting PR entries keyed by group name.
+func processOnboardFiles(onboardFiles []onboarding.ComponentConfig, firstOnboardFlags []bool, templateTags []string) map[string]*workflow.PREntry {
+	prGroups := make(map[string]*workflow.PREntry)
+
+	for i, onboard := range onboardFiles {
+		log.Printf("Onboard Documents: %v %v %v\n", onboard.Repository, onboard.SpecImageName, onboard.Tag)
+		for _, fullTag := range onboard.Tag {
+			remotePath, comp := processTag(&onboard, fullTag, firstOnboardFlags[i], templateTags[i])
+			if comp == nil {
+				continue
+			}
+
+			groupKey := onboard.SpecImageName
+			groupName := ""
+			if onboard.GroupName != "" {
+				groupKey = onboard.GroupName
+				groupName = onboard.GroupName
+			}
+			if prGroups[groupKey] == nil {
+				prGroups[groupKey] = &workflow.PREntry{GroupName: groupName}
+			}
+			comp.RemotePath = remotePath
+			prGroups[groupKey].Components = append(prGroups[groupKey].Components, *comp)
+		}
+	}
+
+	return prGroups
+}
+
+// submitPRs creates one PR per group (or standalone component) and logs results.
+func submitPRs(prGroups map[string]*workflow.PREntry) {
+	for groupName, entry := range prGroups {
+		prURL, err := workflow.CreatePR(*entry)
+		if err != nil {
+			log.Printf("❌ PR creation failed for %s: %v", groupName, err)
+			continue
+		}
+		var specPaths []string
+		for _, comp := range entry.Components {
+			if comp.RemotePath != "" {
+				specPaths = append(specPaths, comp.RemotePath)
+			}
+		}
+		log.Printf("✅ PR created for %s: %s specPaths=%s\n", groupName, prURL, strings.Join(specPaths, ","))
+	}
+}
+
+// ─── Chunk 3 · PIPELINE ─────────────────────────────────────────────────────
 
 // processTag runs the full pipeline for a single tag and returns the remote
 // spec path (if pushed directly) and a PR entry (if a PR should be created).
@@ -121,8 +139,11 @@ func processTag(onboard *onboarding.ComponentConfig, fullTag string, isFirstOnbo
 	tag := semver.ToTag(fullTag)
 	log.Printf("▶ Running pipeline for %s @ %s\n", onboard.Repository, fullTag)
 
-	repoInfo := &repository.RepoInfo{}
-	contentChanged, err := workflow.DiscoverBuildFiles(onboard, repoInfo, fullTag)
+	pipeline.Reset()
+	pipeline.Current.Onboard = onboard
+	pipeline.Current.Tag = fullTag
+
+	contentChanged, err := workflow.DiscoverBuildFiles()
 	if err != nil {
 		log.Fatalf("❌ DiscoverBuildFiles failed: %v", err)
 	}
@@ -175,11 +196,11 @@ func decideAction(isFirstOnboard, contentChanged bool) pipelineAction {
 	return actionBumpCommit
 }
 
-// ─── Chunk 3 · ACTIONS ──────────────────────────────────────────────────────
+// ─── Chunk 4 · ACTIONS ──────────────────────────────────────────────────────
 
 func bumpCommit(onboard *onboarding.ComponentConfig, fullTag, tag, templateTag string) (string, *workflow.ComponentSpec) {
 	log.Printf("🔄 Content unchanged for %s @ %s — bumping commit hash\n", onboard.SpecImageName, tag)
-	if _, err := workflow.BumpCommit(onboard, fullTag, templateTag); err != nil {
+	if _, err := workflow.BumpCommit(templateTag); err != nil {
 		log.Fatalf("❌ Revision bump failed: %v", err)
 	}
 
@@ -202,7 +223,7 @@ func generateWork(onboard *onboarding.ComponentConfig, fullTag string) (string, 
 	log.Println("Dalec Spec Generator - Scheduled Job")
 	log.Printf("Started at: %s", time.Now().Format(time.RFC3339))
 
-	_, err := workflow.GenerateSpec(onboard, fullTag)
+	_, err := workflow.GenerateSpec()
 	if err != nil {
 		return "", nil, err
 	}
@@ -226,13 +247,13 @@ func generateWork(onboard *onboarding.ComponentConfig, fullTag string) (string, 
 }
 
 func GitPush(onboard *onboarding.ComponentConfig, remotePath, tag string, resolvedTargets []string) {
-	if err := workflow.PushToRemote(onboard, tag, false); err != nil {
+	if err := workflow.PushToRemote(tag, false); err != nil {
 		log.Fatalf("❌ Push failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
 	}
 	log.Printf("✅ Spec pushed for %s @ %s\n", onboard.SpecImageName, tag)
 }
 
-// ─── Chunk 4 · PATCHING ─────────────────────────────────────────────────────
+// ─── Chunk 5 · PATCHING ─────────────────────────────────────────────────────
 
 func runPatchWorkflow() {
 	log.Println("🩹 Running patching workflow — scanning ACR images for vulnerabilities")

@@ -24,6 +24,7 @@ package transformer
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import (
+	"dalec-mapping/pipeline"
 	"dalec-mapping/domain/contents"
 	"log"
 	"os"
@@ -100,11 +101,11 @@ func extractArgs(defaultSpec *contents.DefaultSpec, referencedVars map[string]bo
 	return args
 }
 
-// initializeMakefile returns a copy of contents.Makefile seeded with platform
+// initializeMakefile returns a copy of pipeline.Current.Makefile seeded with platform
 // variables set to empty so callers never see unresolved ${ARCH}/${OS} references.
 func initializeMakefile() *contents.MakefileInfo {
 	mi := &contents.MakefileInfo{Variables: make(map[string]string)}
-	for k, v := range contents.Makefile.Variables {
+	for k, v := range pipeline.Current.Makefile.Variables {
 		mi.Variables[k] = v
 	}
 	mi.Variables["ARCH"] = ""

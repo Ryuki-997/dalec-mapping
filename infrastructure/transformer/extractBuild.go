@@ -25,6 +25,7 @@ package transformer
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import (
+	"dalec-mapping/pipeline"
 	"fmt"
 	"log"
 	"regexp"
@@ -67,7 +68,7 @@ func extractBuildSection(defaultSpec *contents.DefaultSpec, goModDownloads []GoM
 		if dalecHandledEnvs[varName] {
 			continue
 		}
-		if _, exists := contents.Makefile.Variables[varName]; exists {
+		if _, exists := pipeline.Current.Makefile.Variables[varName]; exists {
 			env[varName] = fmt.Sprintf("${%s}", varName)
 		}
 	}
@@ -111,7 +112,7 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 	// Otherwise: Priority: gomod subpath → makefile location → dockerfile location.
 	goModSubdir := ""
 	if defaultSpec.ComponentPath == "" {
-		if subpaths := collectGoModSubpaths(defaultSpec, contents.Spec); len(subpaths) > 0 {
+		if subpaths := collectGoModSubpaths(defaultSpec, pipeline.Current.Spec); len(subpaths) > 0 {
 			goModSubdir = subpaths[0]
 		}
 		if goModSubdir == "" && defaultSpec.MakefileDir != "" {
@@ -130,8 +131,8 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 	// Source file paths in rawCmds are relative to the repo root (e.g. cni/network/plugin/main.go).
 	if len(rawCmds) == 0 {
 		fallbackName := defaultSpec.Repo
-		if contents.Spec != nil && len(contents.Spec.Binaries) > 0 && contents.Spec.Binaries[0].Name != "" {
-			fallbackName = contents.Spec.Binaries[0].Name
+		if pipeline.Current.Spec != nil && len(pipeline.Current.Spec.Binaries) > 0 && pipeline.Current.Spec.Binaries[0].Name != "" {
+			fallbackName = pipeline.Current.Spec.Binaries[0].Name
 		}
 		cdTarget := baseDir
 		if goModSubdir != "" {
@@ -140,8 +141,8 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 		// Use Makefile go build target when available (e.g. "./cmd/client") instead
 		// of "." which fails when the go.mod directory has no Go files at root.
 		buildTarget := "."
-		if len(contents.Makefile.GoBuildTargets) > 0 {
-			buildTarget = contents.Makefile.GoBuildTargets[0]
+		if len(pipeline.Current.Makefile.GoBuildTargets) > 0 {
+			buildTarget = pipeline.Current.Makefile.GoBuildTargets[0]
 		}
 		fallback := fmt.Sprintf("%s\ncd %s\ngo build -o /go/bin/%s${BIN_SUFFIX} %s", binSuffixPreamble(), cdTarget, fallbackName, buildTarget)
 		return []map[string]interface{}{{"command": fallback}}, fallback
@@ -190,8 +191,8 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 
 	if len(buildLines) == 0 {
 		fallbackName := defaultSpec.Repo
-		if contents.Spec != nil && len(contents.Spec.Binaries) > 0 && contents.Spec.Binaries[0].Name != "" {
-			fallbackName = contents.Spec.Binaries[0].Name
+		if pipeline.Current.Spec != nil && len(pipeline.Current.Spec.Binaries) > 0 && pipeline.Current.Spec.Binaries[0].Name != "" {
+			fallbackName = pipeline.Current.Spec.Binaries[0].Name
 		}
 		fallback := fmt.Sprintf("%s\ncd %s\ngo build -o /go/bin/%s${BIN_SUFFIX} .", binSuffixPreamble(), baseDir, fallbackName)
 		return []map[string]interface{}{{"command": fallback}}, fallback
@@ -231,14 +232,14 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 	// Append pipeline steps (intermediate + wrapper stages) after the primary builds.
 	// Pipeline steps handle their own directory navigation, so no automatic cd-back
 	// is inserted here.
-	if contents.Spec != nil && len(contents.Spec.PipelineSteps) > 0 {
-		if mkdirs := stageWorkdirs(defaultSpec.Stages, contents.Spec.PipelineSteps, baseDir); len(mkdirs) > 0 {
+	if pipeline.Current.Spec != nil && len(pipeline.Current.Spec.PipelineSteps) > 0 {
+		if mkdirs := stageWorkdirs(defaultSpec.Stages, pipeline.Current.Spec.PipelineSteps, baseDir); len(mkdirs) > 0 {
 			parts = append(parts, "mkdir -p "+strings.Join(mkdirs, " "))
 		}
 
 		workdirCopies := intermediateStageCopies(defaultSpec.Stages, baseDir)
 		for dir := range workdirCopies {
-			for _, raw := range contents.Spec.PipelineSteps {
+			for _, raw := range pipeline.Current.Spec.PipelineSteps {
 				raw = strings.TrimSpace(raw)
 				if !strings.HasPrefix(raw, "cp ") {
 					continue
@@ -255,7 +256,7 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 			}
 		}
 
-		for _, step := range contents.Spec.PipelineSteps {
+		for _, step := range pipeline.Current.Spec.PipelineSteps {
 			step = strings.TrimSpace(step)
 			if step == "" {
 				continue
@@ -337,16 +338,16 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 // "dropgz" when binaries[0].Name is "azure-ipam"). BIN_SUFFIX is injected so the same
 // step works for both Linux (BIN_SUFFIX="") and windowscross (BIN_SUFFIX=".exe").
 func rawBuildCommands(goModDownloads []GoModDownloadInfo) []string {
-	if contents.Spec == nil {
+	if pipeline.Current.Spec == nil {
 		return nil
 	}
 
-	epBase := entrypointBinaryName(contents.Spec)
+	epBase := entrypointBinaryName(pipeline.Current.Spec)
 
 	var cmds []string
 
-	for i := range contents.Spec.Binaries {
-		aux := &contents.Spec.Binaries[i]
+	for i := range pipeline.Current.Spec.Binaries {
+		aux := &pipeline.Current.Spec.Binaries[i]
 		if aux.Name == "" {
 			continue
 		}
@@ -363,7 +364,7 @@ func rawBuildCommands(goModDownloads []GoModDownloadInfo) []string {
 			cmd = fmt.Sprintf("go build -ldflags \"%s\" -o %s", aux.LdFlags, out)
 		}
 
-		if cmd != "" && epBase != "" && epBase != aux.Name && len(contents.Spec.Binaries) == 1 && !isSubmoduleName(epBase, goModDownloads) {
+		if cmd != "" && epBase != "" && epBase != aux.Name && len(pipeline.Current.Spec.Binaries) == 1 && !isSubmoduleName(epBase, goModDownloads) {
 			cmd = strings.ReplaceAll(cmd,
 				"/go/bin/"+aux.Name+"${BIN_SUFFIX}",
 				"/go/bin/"+epBase+"${BIN_SUFFIX}",

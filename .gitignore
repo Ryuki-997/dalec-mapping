@@ -5,13 +5,9 @@
 result/
 correct/
 fips-check/
-pua/
-onboard.yml
 
 TODO
 ISSUES.md
 SERVICES.md
 
-kubelogin-test.sh
-partnerTest.go
-tmp.yml
+CLAUDE.md

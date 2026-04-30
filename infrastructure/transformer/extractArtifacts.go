@@ -21,6 +21,7 @@ package transformer
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import (
+	"dalec-mapping/pipeline"
 	"dalec-mapping/domain/contents"
 	"log"
 
@@ -55,8 +56,8 @@ func computeArtifactPaths(defaultSpec *contents.DefaultSpec) map[string]interfac
 	paths := make(map[string]interface{})
 
 	// Wrapper pipeline: the LAST go build output from pipeline steps is the final artifact.
-	if contents.Spec != nil && len(contents.Spec.PipelineSteps) > 0 {
-		if wrapperPath := lastGoBuildOutputInPipeline(contents.Spec.PipelineSteps); wrapperPath != "" {
+	if pipeline.Current.Spec != nil && len(pipeline.Current.Spec.PipelineSteps) > 0 {
+		if wrapperPath := lastGoBuildOutputInPipeline(pipeline.Current.Spec.PipelineSteps); wrapperPath != "" {
 			paths[filepath.ToSlash(wrapperPath)] = struct{}{}
 			log.Printf("ARTIFACTS: %v\n", wrapperPath)
 			return paths
@@ -64,12 +65,12 @@ func computeArtifactPaths(defaultSpec *contents.DefaultSpec) map[string]interfac
 	}
 
 	// Standard case: derive from binaries.
-	if contents.Spec != nil && len(contents.Spec.Binaries) > 0 {
-		epBase := entrypointBinaryName(contents.Spec)
-		for _, bin := range contents.Spec.Binaries {
+	if pipeline.Current.Spec != nil && len(pipeline.Current.Spec.Binaries) > 0 {
+		epBase := entrypointBinaryName(pipeline.Current.Spec)
+		for _, bin := range pipeline.Current.Spec.Binaries {
 			p := resolveOutputPath(bin)
 			// Single-binary rename when entrypoint differs.
-			if epBase != "" && canonicalBase(p) != epBase && len(contents.Spec.Binaries) == 1 {
+			if epBase != "" && canonicalBase(p) != epBase && len(pipeline.Current.Spec.Binaries) == 1 {
 				p = "/go/bin/" + epBase
 			}
 			artifact := filepath.ToSlash(p)
