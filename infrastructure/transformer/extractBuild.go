@@ -26,6 +26,7 @@ package transformer
 
 import (
 	"fmt"
+	"log"
 	"regexp"
 	"sort"
 	"strings"
@@ -83,10 +84,10 @@ func buildEnv() map[string]interface{} {
 	return map[string]interface{}{
 		"GOPROXY":      "direct",
 		"GOEXPERIMENT": "systemcrypto",
-		"CGO_ENABLED": "1", // required by GOEXPERIMENT=systemcrypto (FIPS)
-		"VERSION":     "${VERSION}",
-		"GOOS":        "${TARGETOS}",
-		"GOARCH":      "${TARGETARCH}",
+		"CGO_ENABLED":  "1", // required by GOEXPERIMENT=systemcrypto (FIPS)
+		"VERSION":      "${VERSION}",
+		"GOOS":         "${TARGETOS}",
+		"GOARCH":       "${TARGETARCH}",
 	}
 }
 
@@ -142,7 +143,7 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 		if len(contents.Makefile.GoBuildTargets) > 0 {
 			buildTarget = contents.Makefile.GoBuildTargets[0]
 		}
-		fallback := fmt.Sprintf("%s\ncd %s\ngo build -o /go/bin/%s %s", binSuffixPreamble(), cdTarget, fallbackName, buildTarget)
+		fallback := fmt.Sprintf("%s\ncd %s\ngo build -o /go/bin/%s${BIN_SUFFIX} %s", binSuffixPreamble(), cdTarget, fallbackName, buildTarget)
 		return []map[string]interface{}{{"command": fallback}}, fallback
 	}
 
@@ -192,7 +193,7 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 		if contents.Spec != nil && len(contents.Spec.Binaries) > 0 && contents.Spec.Binaries[0].Name != "" {
 			fallbackName = contents.Spec.Binaries[0].Name
 		}
-		fallback := fmt.Sprintf("%s\ncd %s\ngo build -o /go/bin/%s .", binSuffixPreamble(), baseDir, fallbackName)
+		fallback := fmt.Sprintf("%s\ncd %s\ngo build -o /go/bin/%s${BIN_SUFFIX} .", binSuffixPreamble(), baseDir, fallbackName)
 		return []map[string]interface{}{{"command": fallback}}, fallback
 	}
 
@@ -375,7 +376,7 @@ func rawBuildCommands(goModDownloads []GoModDownloadInfo) []string {
 
 		if cmd != "" {
 			cmds = append(cmds, cmd)
-			fmt.Printf("Build step: %v\n", cmd)
+			log.Printf("Build step: %v\n", cmd)
 		}
 	}
 	return cmds
@@ -399,7 +400,7 @@ fi`
 // This ensures every built binary receives the platform-appropriate extension
 // (e.g. .exe on Windows) so artifact paths match the actual output files.
 func injectLastBinSuffix(text string) string {
-	return binOutRe.ReplaceAllString(text, "-o ${1}${BIN_SUFFIX}")
+	return binOutRe.ReplaceAllString(text, "-o ${1}$${BIN_SUFFIX}")
 }
 
 // scanVarReferences finds all ${VAR}/$(VAR) references in the merged command text.
@@ -723,7 +724,7 @@ func stageWorkdirs(stages []contents.Stage, pipelineSteps []string, baseDir stri
 		return nil
 	}
 
-		// Exclude dirs already handled via mkdir -p in pipeline steps.
+	// Exclude dirs already handled via mkdir -p in pipeline steps.
 	for _, step := range pipelineSteps {
 		step = strings.TrimSpace(step)
 		if strings.HasPrefix(step, "mkdir") {
@@ -834,4 +835,3 @@ func cleanBuildCommand(cmd, ldflags string) string {
 	cmd = regexp.MustCompile(`/{2,}`).ReplaceAllString(cmd, "/")
 	return strings.TrimSpace(cmd)
 }
-

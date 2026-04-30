@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -31,10 +32,10 @@ func ParseOptionalFileInfo(dockerfile, makefile []byte, specFilePath string) (Pr
 }
 
 func fetchPreviousYAMLInfo(filepath string) (PreviousDalecSpec, error) {
-	fmt.Println("=== READING PREVIOUS YAML FILE ===")
+	log.Println("=== READING PREVIOUS YAML FILE ===")
 
 	if filepath == "" {
-		fmt.Println("⚠️  No previous YAML path provided to read previous spec.")
+		log.Println("⚠️  No previous YAML path provided to read previous spec.")
 		return PreviousDalecSpec{}, nil
 	}
 
@@ -42,14 +43,14 @@ func fetchPreviousYAMLInfo(filepath string) (PreviousDalecSpec, error) {
 	yamlInfo, err := writer.ReadYAML(filepath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			fmt.Println("⚠️  No previous YAML file found, proceeding without it.")
+			log.Println("⚠️  No previous YAML file found, proceeding without it.")
 			return PreviousDalecSpec{}, nil
 		}
-		fmt.Printf("❌ Error reading previous YAML file: %v\n", err)
+		log.Printf("❌ Error reading previous YAML file: %v\n", err)
 		return PreviousDalecSpec{}, err
 	}
 
-	fmt.Println("✅ Successfully read previous YAML file.")
+	log.Println("✅ Successfully read previous YAML file.")
 	return yamlInfo, nil
 }
 

@@ -9,16 +9,16 @@ import (
 type BuildTarget string
 
 const (
-	AzLinux3Rpm            BuildTarget = "azlinux3/rpm"
-	AzLinux3Container      BuildTarget = "azlinux3/container"
-	AzLinux3TestingSysext  BuildTarget = "azlinux3/testing/sysext"
-	NobleDeb               BuildTarget = "noble/deb"
-	JammyDeb               BuildTarget = "jammy/deb"
-	FocalDeb               BuildTarget = "focal/deb"
-	BionicDeb              BuildTarget = "bionic/deb"
-	BookwormDeb            BuildTarget = "bookworm/deb"
-	WindowsCrossContainer  BuildTarget = "windowscross/container"
-	WindowsCrossZip        BuildTarget = "windowscross/zip"
+	AzLinux3Rpm           BuildTarget = "azlinux3/rpm"
+	AzLinux3Container     BuildTarget = "azlinux3/container"
+	AzLinux3TestingSysext BuildTarget = "azlinux3/testing/sysext"
+	NobleDeb              BuildTarget = "noble/deb"
+	JammyDeb              BuildTarget = "jammy/deb"
+	FocalDeb              BuildTarget = "focal/deb"
+	BionicDeb             BuildTarget = "bionic/deb"
+	BookwormDeb           BuildTarget = "bookworm/deb"
+	WindowsCrossContainer BuildTarget = "windowscross/container"
+	WindowsCrossZip       BuildTarget = "windowscross/zip"
 )
 
 // AllTargets lists every valid build target.
@@ -58,8 +58,8 @@ func (bt BuildTarget) IsContainer() bool {
 	if parts := strings.SplitN(string(bt), "/", 2); len(parts) == 2 {
 		if parts[1] == "container" {
 			return true
-			}
 		}
+	}
 	return false
 }
 

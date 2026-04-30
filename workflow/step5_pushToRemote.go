@@ -13,6 +13,7 @@ package workflow
 import (
 	"encoding/base64"
 	"fmt"
+	"log"
 	"os"
 
 	"dalec-mapping/domain/onboarding"
@@ -100,6 +101,6 @@ func commitFile(filePath, message string, content []byte) error {
 	if err != nil {
 		return fmt.Errorf("failed to commit %s via GitHub API: %w", filePath, err)
 	}
-	fmt.Printf("Committed %s to %s\n", filePath, utils.OnboardBranch)
+	log.Printf("Committed %s to %s\n", filePath, utils.OnboardBranch)
 	return nil
 }

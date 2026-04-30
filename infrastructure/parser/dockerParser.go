@@ -3,6 +3,7 @@ package parser
 import (
 	"dalec-mapping/domain/contents"
 	"fmt"
+	"log"
 	"os"
 	"path"
 	"regexp"
@@ -286,30 +287,30 @@ func parseKeyValue(node *parser.Node) (string, string) {
 }
 
 func PrintDockerfileInfo(defaultSpec *contents.DefaultSpec) {
-	fmt.Println("Parsed Dockerfile Stages:")
-	fmt.Println("")
+	log.Println("Parsed Dockerfile Stages:")
+	log.Println("")
 
 	for _, stage := range defaultSpec.Stages {
-		fmt.Printf("Stage: %s (From: %s)\n", stage.Name, stage.From)
-		fmt.Println("  Env:")
+		log.Printf("Stage: %s (From: %s)\n", stage.Name, stage.From)
+		log.Println("  Env:")
 		for k, v := range stage.Env {
-			fmt.Printf("    %s=%s\n", k, v)
+			log.Printf("    %s=%s\n", k, v)
 		}
-		fmt.Println("  Runs:")
+		log.Println("  Runs:")
 		for _, run := range stage.Runs {
-			fmt.Printf("    %s\n", run)
+			log.Printf("    %s\n", run)
 		}
-		fmt.Println("  Copies:")
+		log.Println("  Copies:")
 		for _, copy := range stage.Copies {
-			fmt.Printf("    From: %s, Source: %v, Dest: %s\n", copy.From, copy.Source, copy.Dest)
+			log.Printf("    From: %s, Source: %v, Dest: %s\n", copy.From, copy.Source, copy.Dest)
 		}
-		fmt.Println("")
+		log.Println("")
 	}
 
 	for k, v := range defaultSpec.Args {
-		fmt.Printf("Build Arg: %s=%s\n", k, v)
+		log.Printf("Build Arg: %s=%s\n", k, v)
 	}
-	fmt.Println("")
+	log.Println("")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -515,7 +516,7 @@ func ExtractIntermediateRuntimeDeps(stages []contents.Stage) []IntermediateRunti
 			SelectiveCopy: copyFromSelective[stageRef],
 		})
 
-		fmt.Printf("📦 Intermediate stage %q installs packages: %v (selective=%v)\n",
+		log.Printf("📦 Intermediate stage %q installs packages: %v (selective=%v)\n",
 			stageRef, packages, copyFromSelective[stageRef])
 	}
 
@@ -716,7 +717,7 @@ func ExtractStaticBuildValues() *contents.DockerfileSpec {
 
 	builderIdx := findBuilderStage(stages)
 	if builderIdx < 0 {
-		fmt.Println("⚠️  Static extractor: no Go builder stage found")
+		log.Println("⚠️  Static extractor: no Go builder stage found")
 		return nil
 	}
 
@@ -747,7 +748,7 @@ func ExtractStaticBuildValues() *contents.DockerfileSpec {
 		Targets:       targets,
 	}
 
-	fmt.Printf("📊 Static extractor: %d binaries, %d pipeline steps, entrypoint=%s, symlink=%s\n",
+	log.Printf("📊 Static extractor: %d binaries, %d pipeline steps, entrypoint=%s, symlink=%s\n",
 		len(binaries), len(pipelineSteps), entrypoint, symlink)
 
 	contents.Spec = spec

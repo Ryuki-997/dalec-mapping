@@ -13,8 +13,8 @@ type RepoInfo struct {
 	Owner         string
 	Repo          string
 	Branch        string
-	ComponentPath string          // component subdirectory within the repo (e.g. "test/node-problem-detector")
-	ComponentName string          // leaf name of the component (e.g. "node-problem-detector")
+	ComponentPath string // component subdirectory within the repo (e.g. "test/node-problem-detector")
+	ComponentName string // leaf name of the component (e.g. "node-problem-detector")
 	GitURL        string
 	Description   string
 	Version       string

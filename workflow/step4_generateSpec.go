@@ -10,7 +10,7 @@
 package workflow
 
 import (
-	"fmt"
+	"log"
 	"os"
 
 	"dalec-mapping/domain/onboarding"
@@ -38,7 +38,7 @@ func GenerateSpec(onboard *onboarding.ComponentConfig, tag string) ([]string, er
 		repoInfo, err = repository.FetchRepoInfo(onboard.Repository, tag)
 	}
 	if err != nil {
-		fmt.Printf("❌ Error fetching repository info: %v\n", err)
+		log.Printf("❌ Error fetching repository info: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -46,15 +46,15 @@ func GenerateSpec(onboard *onboarding.ComponentConfig, tag string) ([]string, er
 	specFilePath := "" // TODO: later
 	previousDalecSpecInfo, err := parser.ParseOptionalFileInfo(onboard.DockerfileContent, onboard.MakefileContent, specFilePath)
 	if err != nil {
-		fmt.Printf("❌ Error parsing optional files: %v\n", err)
+		log.Printf("❌ Error parsing optional files: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Static extraction from Dockerfile AST — sets contents.Spec global.
 	if parser.ExtractStaticBuildValues() != nil {
-		fmt.Println("✅ Using static Dockerfile extraction")
+		log.Println("✅ Using static Dockerfile extraction")
 	} else {
-		fmt.Println("⚠️  Static extraction yielded no results, proceeding with defaults")
+		log.Println("⚠️  Static extraction yielded no results, proceeding with defaults")
 	}
 
 	// Build the default spec from repo metadata + global Dockerfile info.
@@ -75,10 +75,10 @@ func GenerateSpec(onboard *onboarding.ComponentConfig, tag string) ([]string, er
 	dalecSpec := transformer.TransformToDalec(defaultSpec)
 
 	if err := parser.WriteOutput(dalecSpec); err != nil {
-		fmt.Printf("❌ Error writing output YAML file: %v\n", err)
+		log.Printf("❌ Error writing output YAML file: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("✅ Successfully generated %s\n\n", utils.ResultDir)
+	log.Printf("✅ Successfully generated %s\n\n", utils.ResultDir)
 	return resolvedTargets, nil
 }

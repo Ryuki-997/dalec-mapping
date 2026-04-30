@@ -38,9 +38,9 @@ const githubAPIBase = "https://api.github.com"
 type GithubReturnType int
 
 const (
-	ReturnJSON      GithubReturnType = iota 	// → map[string]interface{}
-	ReturnJSONArray                          	// → []map[string]interface{}
-	ReturnRaw                                	// → []byte
+	ReturnJSON      GithubReturnType = iota // → map[string]interface{}
+	ReturnJSONArray                         // → []map[string]interface{}
+	ReturnRaw                               // → []byte
 )
 
 // makeGitHubRequest is the single internal HTTP entry-point.
@@ -165,7 +165,7 @@ func FetchRepoInfo(repoPath, tag string) (*repository.RepoInfo, error) {
 	baseRef, componentPath := SplitComponent(repoPath)
 	owner, repo, branch := FetchRepositorySegments(baseRef)
 
-	fmt.Printf("Parsed - Owner: %s, Repo: %s, Branch: %s, ComponentPath: %s\n", owner, repo, branch, componentPath)
+	log.Printf("Parsed - Owner: %s, Repo: %s, Branch: %s, ComponentPath: %s\n", owner, repo, branch, componentPath)
 
 	info := &repository.RepoInfo{
 		Owner:         owner,

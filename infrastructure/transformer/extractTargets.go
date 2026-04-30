@@ -35,6 +35,7 @@ import (
 	"dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/parser"
 	"dalec-mapping/infrastructure/test"
+	"log"
 
 	"fmt"
 	"strings"
@@ -100,7 +101,9 @@ type testPaths struct {
 // resolveTestPaths determines the binary name and install paths used in file tests.
 //
 // For container targets: binaryPath = /usr/bin/<name> (real binary, permissions check),
-//                        symlinkPath = /usr/local/bin/<name> (symlink, existence-only)
+//
+//	symlinkPath = /usr/local/bin/<name> (symlink, existence-only)
+//
 // For package targets (deb/rpm): binaryPath = /usr/bin/<name>, symlinkPath = "" (no symlink)
 func resolveTestPaths(osName string, isContainer bool, defaultSpec *contents.DefaultSpec) testPaths {
 	tp := testPaths{
@@ -162,7 +165,7 @@ func linuxDeps(osName string, defaultSpec *contents.DefaultSpec, intermediateDep
 			if _, exists := runtimeDeps[pkg]; !exists {
 				runtimeDeps[pkg] = map[string]interface{}{}
 				if idep.SelectiveCopy {
-					fmt.Printf("⚠️  Runtime dep %q from stage %q: Dockerfile selectively copies files — full package will be installed by Dalec.\n", pkg, idep.StageName)
+					log.Printf("⚠️  Runtime dep %q from stage %q: Dockerfile selectively copies files — full package will be installed by Dalec.\n", pkg, idep.StageName)
 				}
 			}
 		}

@@ -30,7 +30,7 @@ import (
 func DiscoverBuildFiles(onboard *onboarding.ComponentConfig, repoInfo *repo.RepoInfo, tag string) (bool, error) {
 	// Clear the result directory for a fresh start
 	if err := clearResultDirectory(utils.ResultDir); err != nil {
-		fmt.Printf("⚠️  Warning: %v\n", err)
+		log.Printf("⚠️  Warning: %v\n", err)
 	}
 
 	// Split component path from the repository URL and resolve file paths
@@ -51,12 +51,12 @@ func DiscoverBuildFiles(onboard *onboarding.ComponentConfig, repoInfo *repo.Repo
 		}
 		if dockerfilePath != "" {
 			if dockerfileContent, err = repository.FetchADOFileContent(onboard.Repository, dockerfilePath, tag); err != nil {
-				fmt.Printf("⚠️  Warning: failed to fetch Dockerfile: %v\n", err)
+				log.Printf("⚠️  Warning: failed to fetch Dockerfile: %v\n", err)
 			}
 		}
 		if makefilePath != "" {
 			if makefileContent, err = repository.FetchADOFileContent(onboard.Repository, makefilePath, tag); err != nil {
-				fmt.Printf("⚠️  Warning: failed to fetch Makefile: %v\n", err)
+				log.Printf("⚠️  Warning: failed to fetch Makefile: %v\n", err)
 			}
 		}
 	} else {
@@ -73,13 +73,13 @@ func DiscoverBuildFiles(onboard *onboarding.ComponentConfig, repoInfo *repo.Repo
 		if dockerfilePath != "" {
 			dockerfileURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s", rawPath, dockerfilePath)
 			if dockerfileContent, err = repository.FetchRawContent(dockerfileURL); err != nil {
-				fmt.Printf("⚠️  Warning: failed to fetch Dockerfile from %s: %v\n", dockerfileURL, err)
+				log.Printf("⚠️  Warning: failed to fetch Dockerfile from %s: %v\n", dockerfileURL, err)
 			}
 		}
 		if makefilePath != "" {
 			makefileURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s", rawPath, makefilePath)
 			if makefileContent, err = repository.FetchRawContent(makefileURL); err != nil {
-				fmt.Printf("⚠️  Warning: failed to fetch Makefile from %s: %v\n", makefileURL, err)
+				log.Printf("⚠️  Warning: failed to fetch Makefile from %s: %v\n", makefileURL, err)
 			}
 		}
 	}
@@ -134,6 +134,6 @@ func clearResultDirectory(resultDir string) error {
 	if err := os.RemoveAll(resultDir); err != nil {
 		return fmt.Errorf("failed to clear result directory: %w", err)
 	}
-	fmt.Printf("🗑️  Cleared result directory: %s\n", resultDir)
+	log.Printf("🗑️  Cleared result directory: %s\n", resultDir)
 	return nil
 }

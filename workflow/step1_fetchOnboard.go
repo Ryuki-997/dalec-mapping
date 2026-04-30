@@ -247,7 +247,7 @@ func getOnboardFilepath(path string) (string, string, error) {
 		return "", "", fmt.Errorf("unexpected file path format: %s (expected <prefix>/<partner>/onboard.yml)", path)
 	}
 	parentDir := strings.Join(parts[:n-1], "/") // e.g. "specs/containernetworking"
-	partnerName := parts[n-2]                    // e.g. "containernetworking"
+	partnerName := parts[n-2]                   // e.g. "containernetworking"
 	return parentDir, partnerName, nil
 }
 

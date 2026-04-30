@@ -347,5 +347,3 @@ func addReviewers(prNumber int, reviewers []string) error {
 	})
 	return err
 }
-
-

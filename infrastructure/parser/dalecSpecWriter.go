@@ -3,6 +3,7 @@ package parser
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 
@@ -36,7 +37,7 @@ func (w *DalecSpecWriter) ReadYAML(path string) (PreviousDalecSpec, error) {
 		return data, fmt.Errorf("failed to unmarshal YAML: %w", err)
 	}
 
-	fmt.Printf("Version: %v, Revision: %v\n", data.Args.Version, data.Args.Revision)
+	log.Printf("Version: %v, Revision: %v\n", data.Args.Version, data.Args.Revision)
 
 	return data, nil
 }
@@ -78,7 +79,7 @@ func (w *DalecSpecWriter) WriteYAML(spec DalecSpec, outputPath string) (string, 
 	for _, key := range fieldOrder {
 		value, ok := spec[key]
 		if !ok {
-			fmt.Printf("Key %s not found, skipping\n", key)
+			log.Printf("Key %s not found, skipping\n", key)
 			continue
 		}
 

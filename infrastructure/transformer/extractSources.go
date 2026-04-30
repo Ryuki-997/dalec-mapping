@@ -23,6 +23,7 @@ import (
 	"dalec-mapping/domain/contents"
 	"dalec-mapping/infrastructure/repository"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 )
@@ -273,7 +274,7 @@ func DetectGoModDownloads(defaultSpec *contents.DefaultSpec) []GoModDownloadInfo
 			VersionVar: versionVar,
 			GitURL:     gitURL,
 		})
-		fmt.Printf("📦 Detected sub-module source: %s (version: %s)\n", sourceKey, versionVar)
+		log.Printf("📦 Detected sub-module source: %s (version: %s)\n", sourceKey, versionVar)
 	}
 	return results
 }

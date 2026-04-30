@@ -303,7 +303,7 @@ func ScanImage(imageURL, pkgTypes, outputPath string) error {
 
 	cmdArgs := []string{
 		"run", "--rm",
-		"-v", outputDir+":/output",
+		"-v", outputDir + ":/output",
 		"aquasec/trivy:latest",
 		"image",
 		"--image-src", "remote", // skip local docker/containerd/podman — pull directly from registry
@@ -314,7 +314,7 @@ func ScanImage(imageURL, pkgTypes, outputPath string) error {
 		"--password", password,
 		imageURL,
 		"-f", "json",
-		"-o", "/output/"+outputFile,
+		"-o", "/output/" + outputFile,
 	}
 	cmd := exec.Command("docker", cmdArgs...)
 	cmd.Stdout = os.Stdout

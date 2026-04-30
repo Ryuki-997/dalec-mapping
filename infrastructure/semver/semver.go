@@ -67,7 +67,7 @@ func resolveGithubTags(repoURL string, regexTags []string) ([]repository.TagInfo
 	for _, pattern := range regexTags {
 		for _, t := range matchRegex(allTags, pattern) {
 			if !matchedNames[t.Name] {
-				fmt.Printf("⏭  Skipping %s @ %s (stripped: %s): tag exists but has no associated release\n", repoURL, t.Name, ToTag(t.Name))
+				log.Printf("⏭  Skipping %s @ %s (stripped: %s): tag exists but has no associated release\n", repoURL, t.Name, ToTag(t.Name))
 			}
 		}
 	}

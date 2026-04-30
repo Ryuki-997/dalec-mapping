@@ -5,6 +5,7 @@ import (
 	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/parser"
+	"log"
 
 	"fmt"
 	"strings"
@@ -39,7 +40,7 @@ func resolveOnboardTargets(targets []string) []contents.BuildTarget {
 		if bt, ok := contents.IsValidTarget(t); ok {
 			resolved = append(resolved, bt)
 		} else {
-			fmt.Printf("\u26a0\ufe0f  Ignoring unsupported onboard target: %s\n", t)
+			log.Printf("\u26a0\ufe0f  Ignoring unsupported onboard target: %s\n", t)
 		}
 	}
 	return resolved
@@ -55,7 +56,7 @@ func TransformToDalec(defaultSpec *contents.DefaultSpec) parser.DalecSpec {
 	// Detect pinned Go toolchain image from Dockerfile stages and store version.
 	if pin := parser.DetectGoToolchainPin(defaultSpec.Stages); pin != nil {
 		defaultSpec.GoVersion = pin.GoVersion()
-		fmt.Printf("🔧 Go toolchain pin detected: %s (version: %s)\n", pin.ImageRef, defaultSpec.GoVersion)
+		log.Printf("🔧 Go toolchain pin detected: %s (version: %s)\n", pin.ImageRef, defaultSpec.GoVersion)
 	}
 
 	// Detect go mod download patterns once — shared across build, sources, and args.

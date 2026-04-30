@@ -25,7 +25,7 @@ package transformer
 
 import (
 	"dalec-mapping/domain/contents"
-	"fmt"
+	"log"
 	"os"
 	"strings"
 )
@@ -84,9 +84,9 @@ func extractMetadata(defaultSpec *contents.DefaultSpec, spec map[string]interfac
 // only Makefile variables in this set are promoted to args with their resolved values.
 func extractArgs(defaultSpec *contents.DefaultSpec, referencedVars map[string]bool, goModDownloads []GoModDownloadInfo) map[string]interface{} {
 	args := map[string]interface{}{
-		"REVISION":   defaultSpec.Revision,
-		"VERSION":    defaultSpec.Version,
-		"COMMIT":     defaultSpec.LatestCommit,
+		"REVISION": defaultSpec.Revision,
+		"VERSION":  defaultSpec.Version,
+		"COMMIT":   defaultSpec.LatestCommit,
 		// Emitted as blank — BuildKit injects actual values at build time.
 		"TARGETOS":   "",
 		"TARGETARCH": "",
@@ -130,7 +130,7 @@ func mergeDockerfileArgs(args map[string]interface{}, defaultSpec *contents.Defa
 			continue
 		}
 		args[k] = value
-		fmt.Printf("key: %s, value: %v\n", k, value)
+		log.Printf("key: %s, value: %v\n", k, value)
 	}
 	return args
 }
@@ -148,7 +148,7 @@ func mergeMakefileVars(args map[string]interface{}, makefileInfo *contents.Makef
 		if rawValue, exists := makefileInfo.Variables[varName]; exists {
 			resolved := expandVarRefs(defaultSpec, makefileInfo, rawValue)
 			args[varName] = resolved
-			fmt.Printf("key (from Makefile): %s, value: %v\n", varName, resolved)
+			log.Printf("key (from Makefile): %s, value: %v\n", varName, resolved)
 		}
 	}
 	return args
@@ -177,7 +177,7 @@ func mergeSubmoduleVars(args map[string]interface{}, defaultSpec *contents.Defau
 		}
 		value = expandVarRefs(defaultSpec, makefileInfo, value)
 		args[varName] = value
-		fmt.Printf("key (from submodule): %s, value: %v\n", varName, value)
+		log.Printf("key (from submodule): %s, value: %v\n", varName, value)
 	}
 	return args
 }
@@ -198,7 +198,7 @@ type varRef struct {
 // using Makefile variables and Dockerfile ARGs. Make built-in function calls
 // (e.g. $(shell ...)) are stripped rather than expanded.
 func expandVarRefs(defaultSpec *contents.DefaultSpec, makefileInfo *contents.MakefileInfo, value string) string {
-	fmt.Printf("Before: %s\n", value)
+	log.Printf("Before: %s\n", value)
 
 	for {
 		ref, ok := parseNextVarRef(value)
@@ -214,7 +214,7 @@ func expandVarRefs(defaultSpec *contents.DefaultSpec, makefileInfo *contents.Mak
 		value = substituteVar(value, ref, makefileInfo, defaultSpec)
 	}
 
-	fmt.Printf("After: %s\n", value)
+	log.Printf("After: %s\n", value)
 	return value
 }
 
@@ -233,7 +233,7 @@ func parseNextVarRef(value string) (varRef, bool) {
 
 	endOff := strings.Index(value[pos:], closeTok)
 	if endOff == -1 {
-		fmt.Printf("Broken makefile variable reference in value: %s\n", value)
+		log.Printf("Broken makefile variable reference in value: %s\n", value)
 		os.Exit(1)
 	}
 
@@ -250,7 +250,7 @@ func parseNextVarRef(value string) (varRef, bool) {
 // stripMakeFuncCall removes a Make built-in function call (e.g. $(shell ...))
 // from value and trims any resulting leading slashes or whitespace.
 func stripMakeFuncCall(value string, ref varRef) string {
-	fmt.Printf("Skipping Make function: %s%s%s\n", ref.openTok, ref.key, ref.closeTok)
+	log.Printf("Skipping Make function: %s%s%s\n", ref.openTok, ref.key, ref.closeTok)
 	value = value[:ref.pos] + value[ref.pos+ref.span:]
 	value = strings.TrimLeft(value, "/")
 	return strings.TrimSpace(value)
@@ -260,16 +260,16 @@ func stripMakeFuncCall(value string, ref varRef) string {
 // with its resolved value from Makefile variables or Dockerfile ARGs.
 // Exits if the variable cannot be resolved.
 func substituteVar(value string, ref varRef, makefileInfo *contents.MakefileInfo, defaultSpec *contents.DefaultSpec) string {
-	fmt.Printf("Nested replacement found at index: %d (pattern: %s)\n", ref.pos, ref.openTok)
+	log.Printf("Nested replacement found at index: %d (pattern: %s)\n", ref.pos, ref.openTok)
 
 	replacement, ok := resolveVarRef(ref.key, makefileInfo, defaultSpec)
 	if !ok {
-		fmt.Printf("Undefined makefile variable %s referenced in value: %s\n", ref.key, value)
+		log.Printf("Undefined makefile variable %s referenced in value: %s\n", ref.key, value)
 		os.Exit(1)
 	}
 
 	value = strings.ReplaceAll(value, ref.openTok+ref.key+ref.closeTok, replacement)
-	fmt.Printf("Value after nested replacement: %s\n", value)
+	log.Printf("Value after nested replacement: %s\n", value)
 	return value
 }
 
@@ -308,4 +308,3 @@ func resolveVarRef(key string, makefileInfo *contents.MakefileInfo, defaultSpec 
 	}
 	return "", false
 }
-
