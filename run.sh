@@ -28,9 +28,9 @@ run_and_stream() {
 }
 
 
-# run_and_stream "Run ContainerNetworking: -path=specs/containernetworking" -path=specs/containernetworking
+run_and_stream "Run ContainerNetworking: -path=specs/containernetworking" -path=specs/containernetworking
 # run_and_stream "Run AKS-Secure-TLS-Bootstrap: -path=specs/aks-secure-tls-bootstrap" -path=specs/aks-secure-tls-bootstrap
-run_and_stream "Run AKS-Node-Controller: -path=specs/aks-node-controller" -path=specs/aks-node-controller
+# run_and_stream "Run AKS-Node-Controller: -path=specs/aks-node-controller" -path=specs/aks-node-controller
 
 ## Project Dalec Components
 

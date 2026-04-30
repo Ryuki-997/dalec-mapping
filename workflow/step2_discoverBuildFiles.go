@@ -30,7 +30,7 @@ import (
 // given tag, diffs them against cached siblings, and returns whether content changed.
 func DiscoverBuildFiles() (bool, error) {
 	onboard := pipeline.Current.Onboard
-	tag := pipeline.Current.Tag
+	tag := pipeline.Current.Tag.Full
 
 	if err := clearResultDirectory(utils.ResultDir); err != nil {
 		log.Printf("⚠️  Warning: %v\n", err)

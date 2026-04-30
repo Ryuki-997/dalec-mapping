@@ -24,17 +24,17 @@ type State struct {
 	// Onboard is the current component being processed.
 	Onboard *onboarding.ComponentConfig
 
-	// Tag is the full tag string for this iteration (e.g. "azure-ipam/v0.4.0").
-	Tag string
+	// Tag holds all derived representations of the current tag.
+	Tag onboarding.TagSet
 
 	// RepoInfo is the resolved repository metadata for the current component.
 	RepoInfo *repository.RepoInfo
 
-	// DefaultSpec is the assembled spec combining repo, dockerfile, and onboard data.
-	DefaultSpec *contents.DefaultSpec
+	// BuildTargets is the resolved set of build targets from onboard.yml.
+	BuildTargets []contents.BuildTarget
 
-	// PreviousSpec is the previously generated spec (for revision tracking).
-	PreviousSpec contents.PreviousDalecSpec
+	// GoVersion is the Go toolchain version detected from the Dockerfile (e.g. "1.24").
+	GoVersion string
 
 	// Dockerfile holds the parsed AST result of the project's Dockerfile.
 	Dockerfile contents.DockerfileInfo

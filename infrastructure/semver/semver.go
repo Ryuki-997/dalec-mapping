@@ -48,64 +48,117 @@ func resolveADOTags(repoURL string, regexTags []string) ([]repository.TagInfo, e
 	return matchPatterns(tags, regexTags), nil
 }
 
-// resolveGithubTags fetches release-filtered and all git tags from GitHub,
-// matches patterns against release tags, and warns about git-only matches.
+// resolveGithubTags fetches all git tags from GitHub and matches patterns against them.
 func resolveGithubTags(repoURL string, regexTags []string) ([]repository.TagInfo, error) {
 	owner, repoName, _ := repository.FetchRepositorySegments(repoURL)
-	releaseTags, allTags, err := repository.FetchAllGithubTags(owner, repoName)
+	allTags, err := repository.FetchAllGithubTags(owner, repoName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch tags for %s: %w", repoURL, err)
 	}
 
-	matched := matchPatterns(releaseTags, regexTags)
-
-	// Warn about tags that exist as git tags but have no associated release
-	matchedNames := make(map[string]bool, len(matched))
-	for _, t := range matched {
-		matchedNames[t.Name] = true
-	}
-	for _, pattern := range regexTags {
-		for _, t := range matchRegex(allTags, pattern) {
-			if !matchedNames[t.Name] {
-				log.Printf("Skipping %s @ %s (stripped: %s): tag exists but has no associated release\n", repoURL, t.Name, ToTag(t.Name))
-			}
-		}
-	}
-
-	return matched, nil
+	return matchPatterns(allTags, regexTags), nil
 }
 
 // ─── Chunk 2 · TAG FILTERING ────────────────────────────────────────────────
 
-// FilterNewTags returns tags whose spec files do NOT yet exist remotely.
-func FilterNewTags(tags []repository.TagInfo, specDir, specImage string, existingPaths map[string]bool) []repository.TagInfo {
-	var filtered []repository.TagInfo
-	for _, t := range tags {
-		sp := SpecFilePath(specDir, specImage, ToTag(t.Name))
-		if existingPaths[sp] {
-			log.Printf("Skipping %s @ %s: spec file already exists at %s\n", specImage, t.Name, sp)
+// ActionableTag represents a tag that needs processing, with its next revision number.
+type ActionableTag struct {
+	repository.TagInfo
+	NextRevision int // The revision number to create (e.g. 1 for new, 2 for second revision)
+}
+
+// FilterActionableTags returns tags that need processing: either they have no
+// existing revisions, or their latest revision's commit differs from the tag's
+// current commit SHA. Each returned tag carries the next revision number to use.
+func FilterActionableTags(tags []repository.TagInfo, specDir, specImage, owner, repo, branch string, treePaths map[string]bool) []ActionableTag {
+	var actionable []ActionableTag
+	for _, tagInfo := range tags {
+		tag := ToTag(tagInfo.Name)
+		latestRevision, found := FindLatestRevision(specDir, specImage, tag, treePaths)
+
+		if !found {
+			// No existing spec — first revision
+			actionable = append(actionable, ActionableTag{
+				TagInfo:      tagInfo,
+				NextRevision: 1,
+			})
 			continue
 		}
-		filtered = append(filtered, t)
-	}
-	return filtered
-}
 
-// FilterExistingTags is the inverse of FilterNewTags — returns tags that already have specs.
-func FilterExistingTags(tags []repository.TagInfo, specDir, specImage string, existingPaths map[string]bool) []repository.TagInfo {
-	var existing []repository.TagInfo
-	for _, t := range tags {
-		sp := SpecFilePath(specDir, specImage, ToTag(t.Name))
-		if existingPaths[sp] {
-			existing = append(existing, t)
+		// Check if the latest revision's commit matches the tag's current commit
+		latestSpecPath := SpecFilePath(specDir, specImage, tag, latestRevision)
+		existingCommit, err := repository.FetchRemoteSpecCommit(latestSpecPath, owner, repo, branch)
+		if err != nil {
+			log.Printf("⚠️  Could not read commit from %s: %v — treating as actionable\n", latestSpecPath, err)
+			actionable = append(actionable, ActionableTag{
+				TagInfo:      tagInfo,
+				NextRevision: latestRevision + 1,
+			})
+			continue
+		}
+
+		if existingCommit != tagInfo.Commit {
+			log.Printf("Tag %s commit changed (%s → %s) — scheduling R%d\n",
+				tagInfo.Name, existingCommit[:8], tagInfo.Commit[:8], latestRevision+1)
+			actionable = append(actionable, ActionableTag{
+				TagInfo:      tagInfo,
+				NextRevision: latestRevision + 1,
+			})
+		} else {
+			log.Printf("Skipping %s @ %s: spec R%d already up to date\n", specImage, tagInfo.Name, latestRevision)
 		}
 	}
-	return existing
+	return actionable
 }
 
-// SpecFilePath returns the remote path for a spec file.
-func SpecFilePath(specDir, specImage, tag string) string {
-	return fmt.Sprintf("%s/%s-%s-specfile.yml", specDir, specImage, tag)
+// FilterUpToDateTags returns tags whose latest revision's commit matches the
+// tag's current commit (i.e. no work needed). Used to find template specs.
+func FilterUpToDateTags(tags []repository.TagInfo, specDir, specImage string, treePaths map[string]bool) []repository.TagInfo {
+	var upToDate []repository.TagInfo
+	for _, tagInfo := range tags {
+		tag := ToTag(tagInfo.Name)
+		_, found := FindLatestRevision(specDir, specImage, tag, treePaths)
+		if found {
+			upToDate = append(upToDate, tagInfo)
+		}
+	}
+	return upToDate
+}
+
+// SpecFilePath returns the remote path for a spec file at the given revision.
+// Format: {specDir}/{specImage}-{tag}-R{revision}-specfile.yml
+func SpecFilePath(specDir, specImage, tag string, revision int) string {
+	return fmt.Sprintf("%s/%s-%s-R%d-specfile.yml", specDir, specImage, tag, revision)
+}
+
+// FindLatestRevision scans the tree paths for the highest revision number
+// of a spec file matching {specImage}-{tag}-R{n}-specfile.yml.
+// Returns (0, false) when no matching revision exists.
+func FindLatestRevision(specDir, specImage, tag string, treePaths map[string]bool) (int, bool) {
+	pattern := regexp.MustCompile(
+		fmt.Sprintf(`^%s/%s-%s-R(\d+)-specfile\.yml$`,
+			regexp.QuoteMeta(specDir),
+			regexp.QuoteMeta(specImage),
+			regexp.QuoteMeta(tag)),
+	)
+
+	highest := 0
+	found := false
+	for path := range treePaths {
+		matches := pattern.FindStringSubmatch(path)
+		if matches == nil {
+			continue
+		}
+		n, err := strconv.Atoi(matches[1])
+		if err != nil {
+			continue
+		}
+		found = true
+		if n > highest {
+			highest = n
+		}
+	}
+	return highest, found
 }
 
 // TagNames extracts the Name field from a slice of TagInfo.

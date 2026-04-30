@@ -47,13 +47,13 @@ var binOutRe = regexp.MustCompile(`-o (/go/bin/[^${}\s]+)`)
 // extractBuildSection assembles the top-level `build:` map for a Dalec spec.
 // Returns the build map and the set of ${VAR} names referenced inside it,
 // so the caller can forward them as top-level args.
-func extractBuildSection(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloadInfo) (map[string]interface{}, map[string]bool) {
+func extractBuildSection(goModDownloads []GoModDownloadInfo) (map[string]interface{}, map[string]bool) {
 	build := make(map[string]interface{})
 
 	env := buildEnv()
 	build["env"] = env
 
-	steps, scanText := buildSteps(defaultSpec, goModDownloads)
+	steps, scanText := buildSteps(goModDownloads)
 	build["steps"] = steps
 
 	referencedVars := scanVarReferences(scanText)
@@ -99,10 +99,13 @@ func buildEnv() map[string]interface{} {
 // Also returns the combined command text for var scanning.
 // The first step after the preamble is always `cd <baseDir>` where baseDir is
 // repo (or repo/componentPath when a component is set).
-func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloadInfo) ([]map[string]interface{}, string) {
-	baseDir := defaultSpec.Repo
-	if defaultSpec.ComponentPath != "" {
-		baseDir = defaultSpec.Repo + "/" + defaultSpec.ComponentPath
+func buildSteps(goModDownloads []GoModDownloadInfo) ([]map[string]interface{}, string) {
+	repoInfo := pipeline.Current.RepoInfo
+	onboard := pipeline.Current.Onboard
+
+	baseDir := repoInfo.Repo
+	if repoInfo.ComponentPath != "" {
+		baseDir = repoInfo.Repo + "/" + repoInfo.ComponentPath
 	}
 
 	rawCmds := rawBuildCommands(goModDownloads)
@@ -111,18 +114,18 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 	// When ComponentPath is set, go.mod is at the component root — no extra subdir needed.
 	// Otherwise: Priority: gomod subpath → makefile location → dockerfile location.
 	goModSubdir := ""
-	if defaultSpec.ComponentPath == "" {
-		if subpaths := collectGoModSubpaths(defaultSpec, pipeline.Current.Spec); len(subpaths) > 0 {
+	if repoInfo.ComponentPath == "" {
+		if subpaths := collectGoModSubpaths(pipeline.Current.Spec); len(subpaths) > 0 {
 			goModSubdir = subpaths[0]
 		}
-		if goModSubdir == "" && defaultSpec.MakefileDir != "" {
-			dir := strings.TrimSuffix(defaultSpec.MakefileDir, "/")
+		if goModSubdir == "" && onboard.MakefileDir != "" {
+			dir := strings.TrimSuffix(onboard.MakefileDir, "/")
 			if idx := strings.LastIndex(dir, "/"); idx >= 0 {
 				goModSubdir = dir[:idx]
 			}
 		}
-		if goModSubdir == "" && defaultSpec.DockerfileDir != "" {
-			d := strings.TrimSuffix(defaultSpec.DockerfileDir, "/")
+		if goModSubdir == "" && onboard.DockerfileDir != "" {
+			d := strings.TrimSuffix(onboard.DockerfileDir, "/")
 			if idx := strings.LastIndex(d, "/"); idx >= 0 {
 				goModSubdir = d[:idx]
 			}
@@ -130,7 +133,7 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 	}
 	// Source file paths in rawCmds are relative to the repo root (e.g. cni/network/plugin/main.go).
 	if len(rawCmds) == 0 {
-		fallbackName := defaultSpec.Repo
+		fallbackName := repoInfo.Repo
 		if pipeline.Current.Spec != nil && len(pipeline.Current.Spec.Binaries) > 0 && pipeline.Current.Spec.Binaries[0].Name != "" {
 			fallbackName = pipeline.Current.Spec.Binaries[0].Name
 		}
@@ -190,7 +193,7 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 	}
 
 	if len(buildLines) == 0 {
-		fallbackName := defaultSpec.Repo
+		fallbackName := repoInfo.Repo
 		if pipeline.Current.Spec != nil && len(pipeline.Current.Spec.Binaries) > 0 && pipeline.Current.Spec.Binaries[0].Name != "" {
 			fallbackName = pipeline.Current.Spec.Binaries[0].Name
 		}
@@ -227,17 +230,17 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 
 	// Collect cross-stage copies for Go builder submodule stages (e.g. dropgz).
 	// Used both inside the pipeline step loop and when emitting deferred builds.
-	submodCopies := submoduleStageCopies(defaultSpec.Stages)
+	submodCopies := submoduleStageCopies(pipeline.Current.Dockerfile.Stages)
 
 	// Append pipeline steps (intermediate + wrapper stages) after the primary builds.
 	// Pipeline steps handle their own directory navigation, so no automatic cd-back
 	// is inserted here.
 	if pipeline.Current.Spec != nil && len(pipeline.Current.Spec.PipelineSteps) > 0 {
-		if mkdirs := stageWorkdirs(defaultSpec.Stages, pipeline.Current.Spec.PipelineSteps, baseDir); len(mkdirs) > 0 {
+		if mkdirs := stageWorkdirs(pipeline.Current.Dockerfile.Stages, pipeline.Current.Spec.PipelineSteps, baseDir); len(mkdirs) > 0 {
 			parts = append(parts, "mkdir -p "+strings.Join(mkdirs, " "))
 		}
 
-		workdirCopies := intermediateStageCopies(defaultSpec.Stages, baseDir)
+		workdirCopies := intermediateStageCopies(pipeline.Current.Dockerfile.Stages, baseDir)
 		for dir := range workdirCopies {
 			for _, raw := range pipeline.Current.Spec.PipelineSteps {
 				raw = strings.TrimSpace(raw)

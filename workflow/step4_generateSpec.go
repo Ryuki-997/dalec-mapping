@@ -51,7 +51,7 @@ func GenerateSpec() ([]string, error) {
 // Stores the result in pipeline.Current.RepoInfo.
 func fetchRepoMetadata() error {
 	onboard := pipeline.Current.Onboard
-	tag := pipeline.Current.Tag
+	tag := pipeline.Current.Tag.Full
 
 	var err error
 	if repository.IsADORepo(onboard.Repository) {
@@ -63,16 +63,10 @@ func fetchRepoMetadata() error {
 }
 
 // parseAndExtract parses Dockerfile/Makefile content and runs static extraction.
-// Stores the previous spec info in pipeline.Current.PreviousSpec.
 func parseAndExtract() error {
 	onboard := pipeline.Current.Onboard
-	specFilePath := "" // TODO: later
 
-	previousDalecSpecInfo, err := parser.ParseOptionalFileInfo(onboard.DockerfileContent, onboard.MakefileContent, specFilePath)
-	if err != nil {
-		return err
-	}
-	pipeline.Current.PreviousSpec = previousDalecSpecInfo
+	parser.ParseOptionalFileInfo(onboard.DockerfileContent, onboard.MakefileContent)
 
 	if parser.ExtractStaticBuildValues() != nil {
 		log.Println("✅ Using static Dockerfile extraction")
@@ -83,22 +77,20 @@ func parseAndExtract() error {
 	return nil
 }
 
-// buildAndWriteSpec builds the default spec, transforms it to a DALEC spec, and writes the output.
+// buildAndWriteSpec resolves build targets, transforms to a DALEC spec, and writes the output.
 func buildAndWriteSpec() ([]string, error) {
-	defaultSpec, err := transformer.InitDefaultSpec()
-	if err != nil {
+	if err := transformer.ResolveBuildTargets(); err != nil {
 		return nil, err
 	}
-	pipeline.Current.DefaultSpec = defaultSpec
 
-	resolvedTargets := make([]string, len(defaultSpec.BuildTargets))
-	for i, buildTarget := range defaultSpec.BuildTargets {
+	resolvedTargets := make([]string, len(pipeline.Current.BuildTargets))
+	for i, buildTarget := range pipeline.Current.BuildTargets {
 		resolvedTargets[i] = string(buildTarget)
 	}
 
-	parser.PrintDockerfileInfo(defaultSpec)
+	parser.PrintDockerfileInfo()
 
-	dalecSpec := transformer.TransformToDalec(defaultSpec)
+	dalecSpec := transformer.TransformToDalec()
 
 	if err := parser.WriteOutput(dalecSpec); err != nil {
 		log.Printf("❌ Error writing output YAML file: %v\n", err)

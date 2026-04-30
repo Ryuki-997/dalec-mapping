@@ -2,6 +2,7 @@ package onboarding
 
 import (
 	"fmt"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -97,11 +98,44 @@ func (f *OnboardFile) Flatten(onboardParentDir, specRepository string) []Compone
 	return results
 }
 
+// ─── Tag representations ─────────────────────────────────────────────────────
+
+// TagSet holds all derived representations of a single resolved tag.
+type TagSet struct {
+	// Pattern is the customer-provided regex pattern that matched this tag (e.g. "azure-ipam/v0\\.4\\..*").
+	Pattern string
+
+	// Full is the resolved tag string from GitHub (e.g. "azure-ipam/v0.4.0").
+	Full string
+
+	// Stripped is the short semver form with v prefix (e.g. "v0.4.0").
+	Stripped string
+
+	// Version is the pure numeric semver without v prefix (e.g. "0.4.0").
+	Version string
+
+	// Revision is the next spec revision number for this tag (e.g. 1, 2, 3).
+	Revision int
+}
+
+// NewTagSet constructs a TagSet from a full tag, its matching pattern, and stripped form.
+// Derives the version (X.Y.Z) by trimming the v prefix from the stripped tag.
+func NewTagSet(fullTag, pattern, strippedTag string, revision int) TagSet {
+	version := strings.TrimPrefix(strippedTag, "v")
+	return TagSet{
+		Pattern:  pattern,
+		Full:     fullTag,
+		Stripped: strippedTag,
+		Version:  version,
+		Revision: revision,
+	}
+}
+
 // ComponentConfig represents a single component both in the YAML onboard file
 // and at runtime throughout the pipeline.
 type ComponentConfig struct {
 	Repository    string     `yaml:"repository"`
-	Tag           []string   `yaml:"tags"`
+	TagPatterns   []string   `yaml:"tags"`
 	Targets       []string   `yaml:"targets"`
 	Reviewers     []string   `yaml:"reviewers,omitempty"`
 	ReviewMode    ReviewMode `yaml:"reviewMode,omitempty"`
@@ -117,6 +151,10 @@ type ComponentConfig struct {
 	// Dockerfile/Makefile content (cached from onboard repo in step1, then overwritten with fresh content in step2).
 	DockerfileContent []byte `yaml:"-"`
 	MakefileContent   []byte `yaml:"-"`
+
+	// ResolvedTags holds fully-resolved tag sets confirmed against the remote branch.
+	// Populated in resolveAndAppend after filtering actionable tags.
+	ResolvedTags []TagSet `yaml:"-"`
 }
 
 // SpecDir returns the component's directory path in the onboard repo.

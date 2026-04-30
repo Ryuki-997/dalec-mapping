@@ -129,9 +129,9 @@ func loadOnboardConfig(path, onboardParentDir, specRepository string) ([]onboard
 
 	for _, c := range components {
 		if c.SpecRepository != "" {
-			log.Printf("Onboard Data: %s/%s repo=%s tags=%v\n", c.SpecRepository, c.SpecImageName, c.Repository, c.Tag)
+			log.Printf("Onboard Data: %s/%s repo=%s tags=%v\n", c.SpecRepository, c.SpecImageName, c.Repository, c.TagPatterns)
 		} else {
-			log.Printf("Onboard Data: %s repo=%s tags=%v\n", c.SpecImageName, c.Repository, c.Tag)
+			log.Printf("Onboard Data: %s repo=%s tags=%v\n", c.SpecImageName, c.Repository, c.TagPatterns)
 		}
 	}
 	return components, nil
@@ -175,8 +175,9 @@ func fetchCachedSiblings(onboard *onboarding.ComponentConfig, treePaths map[stri
 
 // ─── Chunk 3 · TAG LOGIC ────────────────────────────────────────────────────
 
-// resolveAndAppend resolves tag patterns, filters by existing specs, and
-// appends the onboard entry to the output slices.
+// resolveAndAppend resolves tag patterns, filters by existing specs and commit
+// comparison, and appends the onboard entry to the output slices.
+// Tags that already have an up-to-date spec are skipped.
 func resolveAndAppend(
 	onboard *onboarding.ComponentConfig,
 	hasSiblings bool,
@@ -185,50 +186,51 @@ func resolveAndAppend(
 	isFirstOnboard *[]bool,
 	templateTags *[]string,
 ) {
-	if onboard.Tag == nil {
-		onboard.Tag = []string{"latest"}
+	if onboard.TagPatterns == nil {
+		onboard.TagPatterns = []string{"latest"}
 	}
 
-	resolvedTags, err := semver.ResolveRepoTags(onboard.Repository, onboard.Tag)
+	resolvedTags, err := semver.ResolveRepoTags(onboard.Repository, onboard.TagPatterns)
 	if err != nil {
 		log.Printf("⚠️  Failed to resolve tags for %s: %v\n", onboard.Repository, err)
 		return
 	}
 	if len(resolvedTags) == 0 {
-		log.Printf("Skipping %s: no release tags matched patterns %v\n", onboard.SpecImageName, onboard.Tag)
+		log.Printf("Skipping %s: no tags matched patterns %v\n", onboard.SpecImageName, onboard.TagPatterns)
 		return
 	}
 	log.Printf("✅ Resolved tags for %s: %v (from patterns: %v)\n",
-		onboard.Repository, semver.TagNames(resolvedTags), onboard.Tag)
+		onboard.Repository, semver.TagNames(resolvedTags), onboard.TagPatterns)
 
-	newTags := semver.FilterNewTags(resolvedTags, onboard.SpecDir(), onboard.SpecImageName, treePaths)
+	actionableTags := semver.FilterActionableTags(resolvedTags, onboard.SpecDir(), onboard.SpecImageName, utils.OnboardOwner, utils.OnboardRepo, utils.OnboardBranch, treePaths)
 
-	if hasSiblings {
-		// Re-onboard: need both new tags and an existing spec as template
-		existing := semver.FilterExistingTags(resolvedTags, onboard.SpecDir(), onboard.SpecImageName, treePaths)
-		if len(newTags) == 0 || len(existing) == 0 {
-			log.Printf("Skipping %s: re-onboard but no actionable tags (new=%d, existing=%d)\n",
-				onboard.SpecImageName, len(newTags), len(existing))
-			return
-		}
-		onboard.Tag = semver.TagNames(newTags)
-		*onboardImages = append(*onboardImages, *onboard)
-		*isFirstOnboard = append(*isFirstOnboard, false)
-		*templateTags = append(*templateTags, existing[len(existing)-1].Name)
+	if len(actionableTags) == 0 {
+		log.Printf("Skipping %s: all tags already up to date\n", onboard.SpecImageName)
 		return
 	}
 
-	// First-time onboard
-	if len(newTags) > 0 {
-		onboard.Tag = semver.TagNames(newTags)
-	} else {
-		// All tags already have specs — re-process the latest
-		log.Printf("⚠️  All resolved tags for %s already have specs — re-processing latest tag\n", onboard.SpecImageName)
-		onboard.Tag = []string{resolvedTags[len(resolvedTags)-1].Name}
+	// Populate ResolvedTags with confirmed tag sets from remote branch
+	resolvedTagSets := make([]onboarding.TagSet, len(actionableTags))
+	for i, at := range actionableTags {
+		strippedTag := semver.ToTag(at.Name)
+		resolvedTagSets[i] = onboarding.NewTagSet(at.Name, "", strippedTag, at.NextRevision)
 	}
+	onboard.ResolvedTags = resolvedTagSets
+
+	// Determine first-onboard flag and template tag
+	isFirst := !hasSiblings
+	templateTag := ""
+	if hasSiblings {
+		// Find an existing tag with specs to use as template for bump-commit
+		upToDate := semver.FilterUpToDateTags(resolvedTags, onboard.SpecDir(), onboard.SpecImageName, treePaths)
+		if len(upToDate) > 0 {
+			templateTag = upToDate[len(upToDate)-1].Name
+		}
+	}
+
 	*onboardImages = append(*onboardImages, *onboard)
-	*isFirstOnboard = append(*isFirstOnboard, true)
-	*templateTags = append(*templateTags, "")
+	*isFirstOnboard = append(*isFirstOnboard, isFirst)
+	*templateTags = append(*templateTags, templateTag)
 }
 
 // ─── Chunk 4 · UTILITIES ────────────────────────────────────────────────────

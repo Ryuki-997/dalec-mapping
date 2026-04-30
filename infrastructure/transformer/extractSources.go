@@ -62,11 +62,11 @@ type GoModDownloadInfo struct {
 
 // extractSourcesSection assembles all source entries for the Dalec spec.
 // Pre-computed goModDownloads are emitted as separate prefetched sources.
-func extractSourcesSection(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloadInfo) map[string]interface{} {
+func extractSourcesSection(goModDownloads []GoModDownloadInfo) map[string]interface{} {
 	sources := make(map[string]interface{})
 
-	buildPrimarySource(sources, defaultSpec)
-	buildSubmoduleSources(sources, defaultSpec, goModDownloads)
+	buildPrimarySource(sources)
+	buildSubmoduleSources(sources, goModDownloads)
 
 	return sources
 }
@@ -78,17 +78,20 @@ func extractSourcesSection(defaultSpec *contents.DefaultSpec, goModDownloads []G
 // When a ComponentPath is set on the spec, it is used as the primary subpath
 // and gomod discovery is scoped within it. Otherwise falls back to heuristics
 // from MakefileDir/DockerfileDir.
-func buildPrimarySource(sources map[string]interface{}, defaultSpec *contents.DefaultSpec) {
-	subpaths := collectGoModSubpaths(defaultSpec, pipeline.Current.Spec)
+func buildPrimarySource(sources map[string]interface{}) {
+	repoInfo := pipeline.Current.RepoInfo
+	onboard := pipeline.Current.Onboard
+
+	subpaths := collectGoModSubpaths(pipeline.Current.Spec)
 
 	// Determine where the primary go.mod lives.
 	// Priority: ComponentPath > MakefileDir > gomod subpath > DockerfileDir
 	rootGoModSubpath := ""
-	if defaultSpec.ComponentPath != "" {
-		rootGoModSubpath = defaultSpec.ComponentPath
+	if repoInfo.ComponentPath != "" {
+		rootGoModSubpath = repoInfo.ComponentPath
 	}
-	if rootGoModSubpath == "" && defaultSpec.MakefileDir != "" {
-		dir := strings.TrimSuffix(defaultSpec.MakefileDir, "/")
+	if rootGoModSubpath == "" && onboard.MakefileDir != "" {
+		dir := strings.TrimSuffix(onboard.MakefileDir, "/")
 		if idx := strings.LastIndex(dir, "/"); idx >= 0 {
 			rootGoModSubpath = dir[:idx]
 		}
@@ -96,15 +99,15 @@ func buildPrimarySource(sources map[string]interface{}, defaultSpec *contents.De
 	if rootGoModSubpath == "" && len(subpaths) > 0 {
 		rootGoModSubpath = subpaths[0]
 	}
-	if rootGoModSubpath == "" && defaultSpec.DockerfileDir != "" {
-		d := strings.TrimSuffix(defaultSpec.DockerfileDir, "/")
+	if rootGoModSubpath == "" && onboard.DockerfileDir != "" {
+		d := strings.TrimSuffix(onboard.DockerfileDir, "/")
 		if idx := strings.LastIndex(d, "/"); idx >= 0 {
 			rootGoModSubpath = d[:idx]
 		}
 	}
 
 	rootEntry := map[string]interface{}{
-		string(defaultSpec.Generator): map[string]interface{}{},
+		string(repoInfo.Generator): map[string]interface{}{},
 	}
 	if rootGoModSubpath != "" {
 		rootEntry["subpath"] = rootGoModSubpath
@@ -113,22 +116,22 @@ func buildPrimarySource(sources map[string]interface{}, defaultSpec *contents.De
 	generateEntries := []map[string]interface{}{rootEntry}
 	for _, sub := range subpaths {
 		generateEntries = append(generateEntries, map[string]interface{}{
-			string(defaultSpec.Generator): map[string]interface{}{},
-			"subpath":                     sub,
+			string(repoInfo.Generator): map[string]interface{}{},
+			"subpath":                  sub,
 		})
 	}
 
 	gitBlock := map[string]interface{}{
-		"url":    defaultSpec.GitURL,
+		"url":    repoInfo.GitURL,
 		"commit": "${COMMIT}",
 	}
-	if repository.IsADORepo(defaultSpec.GitURL) {
+	if repository.IsADORepo(repoInfo.GitURL) {
 		gitBlock["auth"] = map[string]interface{}{
 			"header": "GIT_AUTH_HEADER",
 		}
 	}
 
-	sources[defaultSpec.Repo] = map[string]interface{}{
+	sources[repoInfo.Repo] = map[string]interface{}{
 		"git":      gitBlock,
 		"generate": generateEntries,
 	}
@@ -138,7 +141,9 @@ func buildPrimarySource(sources map[string]interface{}, defaultSpec *contents.De
 
 // buildSubmoduleSources adds a separate git+gomod entry for each pre-computed
 // go mod download dependency (e.g. dropgz).
-func buildSubmoduleSources(sources map[string]interface{}, defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloadInfo) {
+func buildSubmoduleSources(sources map[string]interface{}, goModDownloads []GoModDownloadInfo) {
+	repoInfo := pipeline.Current.RepoInfo
+
 	for _, info := range goModDownloads {
 		// Format commit as <subPath>/<versionVar> to match Go module tag convention
 		// e.g. "dropgz/${DROPGZ_VERSION}" resolves to git tag "dropgz/v0.0.12"
@@ -159,7 +164,7 @@ func buildSubmoduleSources(sources map[string]interface{}, defaultSpec *contents
 		entry := map[string]interface{}{
 			"git": subGitBlock,
 			"generate": []map[string]interface{}{
-				{string(defaultSpec.Generator): map[string]interface{}{}},
+				{string(repoInfo.Generator): map[string]interface{}{}},
 			},
 		}
 		if info.SubPath != "" {
@@ -173,19 +178,21 @@ func buildSubmoduleSources(sources map[string]interface{}, defaultSpec *contents
 
 // collectGoModSubpaths returns ordered unique subdirectory paths found via
 // literal `cd <subdir> &&` in binary build commands and pipeline steps.
-// When a ComponentPath is set on defaultSpec, only subpaths that fall within
+// When a ComponentPath is set, only subpaths that fall within
 // the component directory (DFS) are included.
-func collectGoModSubpaths(defaultSpec *contents.DefaultSpec, spec *contents.DockerfileSpec) []string {
+func collectGoModSubpaths(spec *contents.DockerfileSpec) []string {
 	if spec == nil {
 		return nil
 	}
+	repoInfo := pipeline.Current.RepoInfo
+
 	seen := map[string]bool{}
 	var subpaths []string
-	componentPath := defaultSpec.ComponentPath
+	componentPath := repoInfo.ComponentPath
 
 	add := func(s string) {
 		s = strings.TrimPrefix(s, "/")
-		if s == "" || s == defaultSpec.Repo || seen[s] {
+		if s == "" || s == repoInfo.Repo || seen[s] {
 			return
 		}
 		// When a component path is set, only accept subpaths within it.
@@ -217,10 +224,11 @@ func collectGoModSubpaths(defaultSpec *contents.DefaultSpec, spec *contents.Dock
 // submodule references. Detects both `go mod download <module>@<version>`
 // (legacy) and `cd /go/pkg/mod/<module>@<version>` patterns and returns
 // parsed info for each.
-func DetectGoModDownloads(defaultSpec *contents.DefaultSpec) []GoModDownloadInfo {
+func DetectGoModDownloads() []GoModDownloadInfo {
 	if pipeline.Current.Spec == nil {
 		return nil
 	}
+	repoInfo := pipeline.Current.RepoInfo
 
 	var stepsToScan []string
 	stepsToScan = append(stepsToScan, pipeline.Current.Spec.PipelineSteps...)
@@ -259,7 +267,7 @@ func DetectGoModDownloads(defaultSpec *contents.DefaultSpec) []GoModDownloadInfo
 		}
 		seen[sourceKey] = true
 
-		gitURL := defaultSpec.GitURL
+		gitURL := repoInfo.GitURL
 		subPath := sourceKey
 		if len(parts) >= 3 {
 			gitURL = fmt.Sprintf("https://%s/%s/%s", parts[0], parts[1], parts[2])

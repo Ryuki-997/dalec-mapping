@@ -21,8 +21,8 @@ package transformer
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import (
-	"dalec-mapping/pipeline"
 	"dalec-mapping/domain/contents"
+	"dalec-mapping/pipeline"
 	"log"
 
 	"path/filepath"
@@ -36,15 +36,15 @@ var goBuildOutputRe = regexp.MustCompile(`-o\s+(/go/bin/[^\s]+)`)
 // ─── Chunk 1 · ORCHESTRATION ─────────────────────────────────────────────────
 
 // extractArtifactsSection returns the global artifacts section (Linux binaries + license).
-func extractArtifactsSection(defaultSpec *contents.DefaultSpec) map[string]interface{} {
+func extractArtifactsSection() map[string]interface{} {
 	binaries := make(map[string]interface{})
-	for path := range computeArtifactPaths(defaultSpec) {
+	for path := range computeArtifactPaths() {
 		binaries[path] = map[string]interface{}{}
 	}
 	return map[string]interface{}{
 		"binaries": binaries,
 		"licenses": map[string]interface{}{
-			defaultSpec.Repo + "/LICENSE": map[string]interface{}{},
+			pipeline.Current.RepoInfo.Repo + "/LICENSE": map[string]interface{}{},
 		},
 	}
 }
@@ -52,7 +52,7 @@ func extractArtifactsSection(defaultSpec *contents.DefaultSpec) map[string]inter
 // ─── Chunk 2 · PATH RESOLUTION ──────────────────────────────────────────────
 
 // computeArtifactPaths returns the Linux binary artifact paths (no .exe).
-func computeArtifactPaths(defaultSpec *contents.DefaultSpec) map[string]interface{} {
+func computeArtifactPaths() map[string]interface{} {
 	paths := make(map[string]interface{})
 
 	// Wrapper pipeline: the LAST go build output from pipeline steps is the final artifact.
@@ -81,8 +81,8 @@ func computeArtifactPaths(defaultSpec *contents.DefaultSpec) map[string]interfac
 	}
 
 	// Fallback.
-	paths["/go/bin/"+defaultSpec.Repo] = struct{}{}
-	log.Printf("ARTIFACTS: /go/bin/%s\n", defaultSpec.Repo)
+	paths["/go/bin/"+pipeline.Current.RepoInfo.Repo] = struct{}{}
+	log.Printf("ARTIFACTS: /go/bin/%s\n", pipeline.Current.RepoInfo.Repo)
 	return paths
 }
 
@@ -91,9 +91,9 @@ func computeArtifactPaths(defaultSpec *contents.DefaultSpec) map[string]interfac
 // computeWindowsArtifactBinaries returns the windowscross artifact binaries map.
 // Appends ".exe" to each Linux artifact key — matches the file written by the
 // BIN_SUFFIX build step when GOOS=windows.
-func computeWindowsArtifactBinaries(defaultSpec *contents.DefaultSpec) map[string]interface{} {
+func computeWindowsArtifactBinaries() map[string]interface{} {
 	binaries := make(map[string]interface{})
-	for linuxPath := range computeArtifactPaths(defaultSpec) {
+	for linuxPath := range computeArtifactPaths() {
 		binaries[linuxPath+".exe"] = map[string]interface{}{}
 	}
 	return binaries

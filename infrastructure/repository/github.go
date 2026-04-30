@@ -19,6 +19,7 @@ package repository
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -179,9 +180,6 @@ func FetchRepoInfo(repoPath, tag string) (*repository.RepoInfo, error) {
 	if err := fetchRepoMetadata(info); err != nil {
 		return nil, fmt.Errorf("failed to fetch repo metadata: %w", err)
 	}
-	if err := fetchReleaseMetadata(info); err != nil {
-		return nil, fmt.Errorf("failed to fetch latest commit: %w", err)
-	}
 	if err := fetchSourceGenerator(info); err != nil {
 		return nil, fmt.Errorf("failed to fetch source generator: %w", err)
 	}
@@ -253,39 +251,6 @@ func fetchRepoMetadata(info *repository.RepoInfo) error {
 		if spdxID, ok := license["spdx_id"].(string); ok && spdxID != "NOASSERTION" {
 			info.License = spdxID
 		}
-	}
-
-	return nil
-}
-
-// fetchReleaseMetadata acquires the latest release version and commit SHA.
-func fetchReleaseMetadata(info *repository.RepoInfo) error {
-	data, err := FetchJSON(fmt.Sprintf("repos/%s/%s/releases/latest", info.Owner, info.Repo))
-	if err != nil {
-		return err
-	}
-
-	if releaseURL, ok := data["url"].(string); !ok || releaseURL == "" {
-		return fmt.Errorf("url not found in response")
-	}
-
-	tag, ok := data["tag_name"].(string)
-	if !ok {
-		return fmt.Errorf("tag_name not found in response")
-	}
-	if m := semverTagRe.FindString(tag); m != "" {
-		info.Version = m
-	} else {
-		info.Version = tag
-	}
-
-	data, err = FetchJSON(fmt.Sprintf("repos/%s/%s/commits/%s", info.Owner, info.Repo, tag))
-	if err != nil {
-		return err
-	}
-
-	if sha, ok := data["sha"].(string); ok {
-		info.LatestCommit = sha
 	}
 
 	return nil
@@ -383,10 +348,9 @@ func fetchSourceGenerator(info *repository.RepoInfo) error {
 
 // ─── Chunk 4 · TAGS ────────────────────────────────────────────────────────
 
-// fetchTagInfo resolves `tag` to a release commit SHA and populates info.LatestCommit and info.Version.
-// Looks up the release by tag name, then resolves the tag to a commit SHA via the commits API.
-// If a direct release lookup 404s (e.g. the actual tag is "azure-ipam/v0.4.0"), it searches
-// FetchAllTags for a matching semver and retries.
+// fetchTagInfo resolves `tag` to a commit SHA and populates info.LatestCommit and info.Version.
+// Looks up the tag via the commits API to resolve to the actual commit SHA.
+// If a direct lookup fails, it searches all git tags for a matching semver.
 func fetchTagInfo(info *repository.RepoInfo, tag string) error {
 	if tag == "" {
 		return fmt.Errorf("Tag must be specified")
@@ -394,27 +358,27 @@ func fetchTagInfo(info *repository.RepoInfo, tag string) error {
 
 	fullTag := tag
 
-	// Try to find the release by tag name
-	_, err := FetchJSON(fmt.Sprintf("repos/%s/%s/releases/tags/%s", info.Owner, info.Repo, fullTag))
+	// Try resolving the tag directly via commits API
+	commitData, err := FetchJSON(fmt.Sprintf("repos/%s/%s/commits/%s", info.Owner, info.Repo, fullTag))
 	if err != nil {
 		// Tag not found directly — search all tags for a matching semver
-		_, allGitTags, fetchErr := FetchAllGithubTags(info.Owner, info.Repo)
+		allTags, fetchErr := FetchAllGithubTags(info.Owner, info.Repo)
 		if fetchErr != nil {
 			return fmt.Errorf("tag %q not found and could not fetch tag list: %w", tag, fetchErr)
 		}
-		for _, t := range allGitTags {
+		for _, t := range allTags {
 			if semverTagRe.FindString(t.Name) == tag {
 				fullTag = t.Name
 				break
 			}
 		}
 		if fullTag == tag {
-			return fmt.Errorf("tag %q not found in repository releases", tag)
+			return fmt.Errorf("tag %q not found in repository", tag)
 		}
-		// Verify the resolved tag has a release
-		_, err = FetchJSON(fmt.Sprintf("repos/%s/%s/releases/tags/%s", info.Owner, info.Repo, fullTag))
+		// Resolve the matched full tag
+		commitData, err = FetchJSON(fmt.Sprintf("repos/%s/%s/commits/%s", info.Owner, info.Repo, fullTag))
 		if err != nil {
-			return fmt.Errorf("release for tag %q not found: %w", fullTag, err)
+			return fmt.Errorf("failed to resolve commit for tag %q: %w", fullTag, err)
 		}
 	}
 
@@ -425,11 +389,6 @@ func fetchTagInfo(info *repository.RepoInfo, tag string) error {
 		info.Version = strings.TrimPrefix(tag, "v")
 	}
 
-	// Resolve tag to commit SHA via the commits API
-	commitData, err := FetchJSON(fmt.Sprintf("repos/%s/%s/commits/%s", info.Owner, info.Repo, fullTag))
-	if err != nil {
-		return fmt.Errorf("failed to resolve commit for tag %q: %w", fullTag, err)
-	}
 	if sha, ok := commitData["sha"].(string); ok {
 		info.LatestCommit = sha
 		return nil
@@ -451,32 +410,15 @@ func FetchTagCommit(owner, repo, tagRef string) (string, error) {
 	return "", fmt.Errorf("failed to extract commit SHA from tag %q", tagRef)
 }
 
-// FetchAllGithubTags fetches all tags for a repository, returning both
-// release-filtered tags and the full set of git tags.
+// FetchAllGithubTags fetches all git tags for a repository.
 // Each TagInfo carries the tag name and its commit SHA.
-func FetchAllGithubTags(owner, repo string) (releaseTags []TagInfo, allGitTags []TagInfo, err error) {
-	releaseSet := make(map[string]bool)
-	page := 1
-	for {
-		data, err := FetchJSONArray(fmt.Sprintf("repos/%s/%s/releases?per_page=100&page=%d", owner, repo, page))
-		if err != nil || len(data) == 0 {
-			break
-		}
-		for _, release := range data {
-			if tag, ok := release["tag_name"].(string); ok {
-				releaseSet[tag] = true
-			}
-		}
-		if len(data) < 100 {
-			break
-		}
-		page++
+func FetchAllGithubTags(owner, repo string) ([]TagInfo, error) {
+	tagData, err := FetchJSONArray(fmt.Sprintf("repos/%s/%s/git/refs/tags", owner, repo))
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch tags for %s/%s: %w", owner, repo, err)
 	}
 
-	tagData, fetchErr := FetchJSONArray(fmt.Sprintf("repos/%s/%s/git/refs/tags", owner, repo))
-	if fetchErr != nil {
-		return nil, nil, fmt.Errorf("failed to fetch tags for %s/%s: %w", owner, repo, fetchErr)
-	}
+	var tags []TagInfo
 	for _, item := range tagData {
 		ref, ok := item["ref"].(string)
 		if !ok {
@@ -489,13 +431,61 @@ func FetchAllGithubTags(owner, repo string) (releaseTags []TagInfo, allGitTags [
 			sha, _ = obj["sha"].(string)
 		}
 
-		ti := TagInfo{Name: name, Commit: sha}
-		allGitTags = append(allGitTags, ti)
+		tags = append(tags, TagInfo{Name: name, Commit: sha})
+	}
+	return tags, nil
+}
 
-		if len(releaseSet) > 0 && !releaseSet[name] {
+// FetchRemoteSpecCommit fetches a spec file from the given repo/branch and parses
+// the args.COMMIT value from the YAML. Returns the commit SHA stored in the spec.
+func FetchRemoteSpecCommit(specFilePath, owner, repo, branch string) (string, error) {
+	contentsPath := fmt.Sprintf("repos/%s/%s/contents/%s?ref=%s", owner, repo, specFilePath, branch)
+
+	data, err := FetchJSON(contentsPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch spec file %s: %w", specFilePath, err)
+	}
+
+	contentStr, ok := data["content"].(string)
+	if !ok {
+		return "", fmt.Errorf("unexpected response: missing content field for %s", specFilePath)
+	}
+
+	// Decode base64 content
+	cleaned := strings.ReplaceAll(contentStr, "\n", "")
+	decoded, err := base64.StdEncoding.DecodeString(cleaned)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode content for %s: %w", specFilePath, err)
+	}
+
+	// Parse COMMIT from args section using simple line scanning
+	commit := parseArgFromYAML(string(decoded), "COMMIT")
+	if commit == "" {
+		return "", fmt.Errorf("args.COMMIT not found in %s", specFilePath)
+	}
+	return commit, nil
+}
+
+// parseArgFromYAML extracts a named arg value from a YAML spec string.
+// Scans for lines like "  COMMIT: abc123" within the args block.
+func parseArgFromYAML(content, argName string) string {
+	inArgs := false
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "args:" {
+			inArgs = true
 			continue
 		}
-		releaseTags = append(releaseTags, ti)
+		if inArgs {
+			// End of args block (next top-level key)
+			if len(line) > 0 && line[0] != ' ' && line[0] != '\t' {
+				break
+			}
+			if strings.HasPrefix(trimmed, argName+":") {
+				value := strings.TrimPrefix(trimmed, argName+":")
+				return strings.TrimSpace(value)
+			}
+		}
 	}
-	return releaseTags, allGitTags, nil
+	return ""
 }

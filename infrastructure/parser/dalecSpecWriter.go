@@ -7,8 +7,6 @@ import (
 	"os"
 	"strings"
 
-	"dalec-mapping/domain/contents"
-
 	"gopkg.in/yaml.v3"
 )
 
@@ -17,25 +15,6 @@ type DalecSpecWriter struct{}
 // DalecSpec represents a Dalec specification using flexible maps for dynamic keys
 type DalecSpec map[string]interface{}
 
-// ReadYAML reads a DalecSpec file and unmarshal updated values
-func (w *DalecSpecWriter) ReadYAML(path string) (contents.PreviousDalecSpec, error) {
-	data := contents.PreviousDalecSpec{}
-
-	// Read file content
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return data, fmt.Errorf("failed to read file: %w", err)
-	}
-
-	// Unmarshal YAML content
-	if err := yaml.Unmarshal(content, &data); err != nil {
-		return data, fmt.Errorf("failed to unmarshal YAML: %w", err)
-	}
-
-	log.Printf("Version: %v, Revision: %v\n", data.Args.Version, data.Args.Revision)
-
-	return data, nil
-}
 
 // WriteYAML converts DalecSpec to formatted YAML
 func (w *DalecSpecWriter) WriteYAML(spec DalecSpec, outputPath string) (string, error) {
