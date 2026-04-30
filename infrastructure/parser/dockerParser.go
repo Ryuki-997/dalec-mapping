@@ -517,7 +517,7 @@ func ExtractIntermediateRuntimeDeps(stages []contents.Stage) []IntermediateRunti
 			SelectiveCopy: copyFromSelective[stageRef],
 		})
 
-		log.Printf("📦 Intermediate stage %q installs packages: %v (selective=%v)\n",
+		log.Printf("Intermediate stage %q installs packages: %v (selective=%v)\n",
 			stageRef, packages, copyFromSelective[stageRef])
 	}
 
@@ -749,7 +749,7 @@ func ExtractStaticBuildValues() *contents.DockerfileSpec {
 		Targets:       targets,
 	}
 
-	log.Printf("📊 Static extractor: %d binaries, %d pipeline steps, entrypoint=%s, symlink=%s\n",
+	log.Printf("Static extractor: %d binaries, %d pipeline steps, entrypoint=%s, symlink=%s\n",
 		len(binaries), len(pipelineSteps), entrypoint, symlink)
 
 	pipeline.Current.Spec = spec

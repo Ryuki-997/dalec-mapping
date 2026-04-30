@@ -166,7 +166,7 @@ func ListACRImages(ctx context.Context) ([]ACRImage, error) {
 	}
 	reg.Client = authClient
 
-	log.Printf("🔍 Listing repositories in %s\n", ACRBaseURL)
+	log.Printf("Listing repositories in %s\n", ACRBaseURL)
 
 	repos, err := registry.Repositories(ctx, reg)
 	if err != nil {
@@ -179,7 +179,7 @@ func ListACRImages(ctx context.Context) ([]ACRImage, error) {
 			continue
 		}
 
-		log.Printf("  📦 Found matching repo: %s\n", repoName)
+		log.Printf("  Found matching repo: %s\n", repoName)
 
 		// Fetch tags for this repository
 		repoRef, err := remote.NewRepository(ACRBaseURL + "/" + repoName)
@@ -196,7 +196,7 @@ func ListACRImages(ctx context.Context) ([]ACRImage, error) {
 		}
 
 		if len(tags) == 0 {
-			log.Printf("  ⏭️  No tags found for %s — skipping\n", repoName)
+			log.Printf("  No tags found for %s — skipping\n", repoName)
 			continue
 		}
 
@@ -206,7 +206,7 @@ func ListACRImages(ctx context.Context) ([]ACRImage, error) {
 		})
 	}
 
-	log.Printf("📋 Discovered %d matching repositories\n", len(images))
+	log.Printf("Discovered %d matching repositories\n", len(images))
 	return images, nil
 }
 
@@ -239,7 +239,7 @@ func FetchAndScanACRImages() ([]string, error) {
 		shortName := strings.TrimPrefix(img.Repository, ACRPathPrefix)
 		shortName = strings.ReplaceAll(shortName, "/", "-")
 
-		log.Printf("🔍 Validating ACR image: %s\n", imgURL)
+		log.Printf("Validating ACR image: %s\n", imgURL)
 
 		exists, err := oras.ValidateAndExists(imgURL)
 		if err != nil {
@@ -247,7 +247,7 @@ func FetchAndScanACRImages() ([]string, error) {
 			continue
 		}
 		if !exists {
-			log.Printf("  ⏭️  Image %s not found — skipping\n", imgURL)
+			log.Printf("  Image %s not found — skipping\n", imgURL)
 			continue
 		}
 
@@ -260,12 +260,12 @@ func FetchAndScanACRImages() ([]string, error) {
 			continue
 		}
 
-		log.Printf("  📄 Scan results written to %s\n", outputPath)
+		log.Printf("  Scan results written to %s\n", outputPath)
 		scanResults = append(scanResults, outputPath)
 
 		// Silently skip remaining tags
 		for _, tag := range img.Tags[1:] {
-			log.Printf("  ⏭️  Skipping %s:%s (non-public)\n", img.Repository, tag)
+			log.Printf("  Skipping %s:%s (non-public)\n", img.Repository, tag)
 		}
 	}
 

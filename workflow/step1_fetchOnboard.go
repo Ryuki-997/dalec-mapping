@@ -32,7 +32,7 @@ import (
 // flattens all components (standalone and grouped), resolves tags, fetches
 // cached siblings, and populates the onboardImages slice.
 func FetchOnboardFiles(onboardImages *[]onboarding.ComponentConfig, isFirstOnboard *[]bool, templateTags *[]string, inputPath string) error {
-	log.Printf("🔍 Full onboard search path: %s\n", inputPath)
+	log.Printf("Full onboard search path: %s\n", inputPath)
 
 	onboardItems, treePaths, err := fetchRepoTree(inputPath)
 	if err != nil {
@@ -51,7 +51,7 @@ func FetchOnboardFiles(onboardImages *[]onboarding.ComponentConfig, isFirstOnboa
 		if !strings.HasSuffix(path, "onboard.yml") {
 			continue
 		}
-		log.Printf("📂 Processing onboard file: %s\n", path)
+		log.Printf("Processing onboard file: %s\n", path)
 
 		onboardParentDir, specRepository, err := getOnboardFilepath(path)
 		if err != nil {
@@ -96,7 +96,7 @@ func fetchRepoTree(inputPath string) ([]interface{}, map[string]bool, error) {
 	for _, item := range items {
 		if m, ok := item.(map[string]interface{}); ok {
 			if p, ok := m["path"].(string); ok && strings.HasPrefix(p, inputPath+"/") && strings.HasSuffix(p, "/onboard.yml") {
-				log.Printf("📋 Discovered onboard file: %s\n", p)
+				log.Printf("Discovered onboard file: %s\n", p)
 			}
 		}
 	}
@@ -169,7 +169,7 @@ func fetchCachedSiblings(onboard *onboarding.ComponentConfig, treePaths map[stri
 		}
 	}
 
-	log.Printf("📂 Found existing siblings for %s (Dockerfile=%v, Makefile=%v) — will diff in Discover\n", onboard.SpecImageName, hasDF, hasMF)
+	log.Printf("Found existing siblings for %s (Dockerfile=%v, Makefile=%v) — will diff in Discover\n", onboard.SpecImageName, hasDF, hasMF)
 	return true
 }
 
@@ -195,7 +195,7 @@ func resolveAndAppend(
 		return
 	}
 	if len(resolvedTags) == 0 {
-		log.Printf("⏭  Skipping %s: no release tags matched patterns %v\n", onboard.SpecImageName, onboard.Tag)
+		log.Printf("Skipping %s: no release tags matched patterns %v\n", onboard.SpecImageName, onboard.Tag)
 		return
 	}
 	log.Printf("✅ Resolved tags for %s: %v (from patterns: %v)\n",
@@ -207,7 +207,7 @@ func resolveAndAppend(
 		// Re-onboard: need both new tags and an existing spec as template
 		existing := semver.FilterExistingTags(resolvedTags, onboard.SpecDir(), onboard.SpecImageName, treePaths)
 		if len(newTags) == 0 || len(existing) == 0 {
-			log.Printf("⏭  Skipping %s: re-onboard but no actionable tags (new=%d, existing=%d)\n",
+			log.Printf("Skipping %s: re-onboard but no actionable tags (new=%d, existing=%d)\n",
 				onboard.SpecImageName, len(newTags), len(existing))
 			return
 		}

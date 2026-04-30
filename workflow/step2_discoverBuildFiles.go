@@ -144,13 +144,13 @@ func diffSiblings(onboard *onboarding.ComponentConfig, cachedDF, cachedMF []byte
 	changed := false
 	if cachedDF != nil && onboard.DockerfileContent != nil {
 		if !bytes.Equal(onboard.DockerfileContent, cachedDF) {
-			log.Printf("🔄 Dockerfile changed for %s\n", onboard.SpecImageName)
+			log.Printf("Dockerfile changed for %s\n", onboard.SpecImageName)
 			changed = true
 		}
 	}
 	if cachedMF != nil && onboard.MakefileContent != nil {
 		if !bytes.Equal(onboard.MakefileContent, cachedMF) {
-			log.Printf("🔄 Makefile changed for %s\n", onboard.SpecImageName)
+			log.Printf("Makefile changed for %s\n", onboard.SpecImageName)
 			changed = true
 		}
 	}
@@ -169,6 +169,6 @@ func clearResultDirectory(resultDir string) error {
 	if err := os.RemoveAll(resultDir); err != nil {
 		return fmt.Errorf("failed to clear result directory: %w", err)
 	}
-	log.Printf("🗑️  Cleared result directory: %s\n", resultDir)
+	log.Printf("Cleared result directory: %s\n", resultDir)
 	return nil
 }

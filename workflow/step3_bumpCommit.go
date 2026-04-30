@@ -40,7 +40,7 @@ func BumpCommit(templateTag string) (string, error) {
 	remotePath := semver.SpecFilePath(specDir, onboard.SpecImageName, tag)
 	templateRemotePath := semver.SpecFilePath(specDir, onboard.SpecImageName, semver.ToTag(templateTag))
 
-	log.Printf("🔄 Commit bump for %s @ %s (template: %s → new: %s)\n", onboard.SpecImageName, tag, templateRemotePath, remotePath)
+	log.Printf("Commit bump for %s @ %s (template: %s → new: %s)\n", onboard.SpecImageName, tag, templateRemotePath, remotePath)
 
 	specNode, err := fetchTemplateSpec(templateRemotePath)
 	if err != nil {

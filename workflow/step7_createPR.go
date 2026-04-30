@@ -60,13 +60,13 @@ func CreatePR(entry PREntry) (string, error) {
 	if err := createFeatureBranch(featureBranch); err != nil {
 		return "", fmt.Errorf("failed to create feature branch %s: %w", featureBranch, err)
 	}
-	log.Printf("🌿 Created feature branch %s from %s\n", featureBranch, utils.OnboardBranch)
+	log.Printf("Created feature branch %s from %s\n", featureBranch, utils.OnboardBranch)
 
 	cleanup := func(wrapped error) (string, error) {
 		if delErr := deleteRemoteBranch(featureBranch); delErr != nil {
 			log.Printf("⚠️  Failed to clean up remote branch %s: %v\n", featureBranch, delErr)
 		} else {
-			log.Printf("🧹 Cleaned up remote branch %s after failure\n", featureBranch)
+			log.Printf("Cleaned up remote branch %s after failure\n", featureBranch)
 		}
 		return "", wrapped
 	}
@@ -83,14 +83,14 @@ func CreatePR(entry PREntry) (string, error) {
 	if err != nil {
 		return cleanup(fmt.Errorf("failed to create PR: %w", err))
 	}
-	log.Printf("📝 Created PR #%d: %s\n", prNumber, prURL)
+	log.Printf("Created PR #%d: %s\n", prNumber, prURL)
 
 	// 3. Add reviewers.
 	if reviewers := collectReviewers(entry.Components); len(reviewers) > 0 {
 		if err := addReviewers(prNumber, reviewers); err != nil {
 			log.Printf("⚠️  Failed to add reviewers to PR #%d: %v\n", prNumber, err)
 		} else {
-			log.Printf("👥 Added %d reviewer(s) to PR #%d\n", len(reviewers), prNumber)
+				log.Printf("Added %d reviewer(s) to PR #%d\n", len(reviewers), prNumber)
 		}
 	}
 
@@ -266,7 +266,7 @@ func commitFileToBranch(filePath, message string, content []byte, branch string)
 	if err != nil {
 		return fmt.Errorf("failed to commit %s to branch %s: %w", filePath, branch, err)
 	}
-	log.Printf("  📄 Committed %s to %s\n", filePath, branch)
+	log.Printf("  Committed %s to %s\n", filePath, branch)
 	return err
 }
 

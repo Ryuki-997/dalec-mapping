@@ -275,7 +275,7 @@ func DetectGoModDownloads(defaultSpec *contents.DefaultSpec) []GoModDownloadInfo
 			VersionVar: versionVar,
 			GitURL:     gitURL,
 		})
-		log.Printf("📦 Detected sub-module source: %s (version: %s)\n", sourceKey, versionVar)
+		log.Printf("Detected sub-module source: %s (version: %s)\n", sourceKey, versionVar)
 	}
 	return results
 }

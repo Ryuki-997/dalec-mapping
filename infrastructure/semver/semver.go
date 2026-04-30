@@ -67,7 +67,7 @@ func resolveGithubTags(repoURL string, regexTags []string) ([]repository.TagInfo
 	for _, pattern := range regexTags {
 		for _, t := range matchRegex(allTags, pattern) {
 			if !matchedNames[t.Name] {
-				log.Printf("⏭  Skipping %s @ %s (stripped: %s): tag exists but has no associated release\n", repoURL, t.Name, ToTag(t.Name))
+				log.Printf("Skipping %s @ %s (stripped: %s): tag exists but has no associated release\n", repoURL, t.Name, ToTag(t.Name))
 			}
 		}
 	}
@@ -83,7 +83,7 @@ func FilterNewTags(tags []repository.TagInfo, specDir, specImage string, existin
 	for _, t := range tags {
 		sp := SpecFilePath(specDir, specImage, ToTag(t.Name))
 		if existingPaths[sp] {
-			log.Printf("⏭  Skipping %s @ %s: spec file already exists at %s\n", specImage, t.Name, sp)
+			log.Printf("Skipping %s @ %s: spec file already exists at %s\n", specImage, t.Name, sp)
 			continue
 		}
 		filtered = append(filtered, t)

@@ -137,7 +137,7 @@ func submitPRs(prGroups map[string]*workflow.PREntry) {
 // spec path (if pushed directly) and a PR entry (if a PR should be created).
 func processTag(onboard *onboarding.ComponentConfig, fullTag string, isFirstOnboard bool, templateTag string) (string, *workflow.ComponentSpec) {
 	tag := semver.ToTag(fullTag)
-	log.Printf("▶ Running pipeline for %s @ %s\n", onboard.Repository, fullTag)
+	log.Printf("Running pipeline for %s @ %s\n", onboard.Repository, fullTag)
 
 	pipeline.Reset()
 	pipeline.Current.Onboard = onboard
@@ -199,7 +199,7 @@ func decideAction(isFirstOnboard, contentChanged bool) pipelineAction {
 // ─── Chunk 4 · ACTIONS ──────────────────────────────────────────────────────
 
 func bumpCommit(onboard *onboarding.ComponentConfig, fullTag, tag, templateTag string) (string, *workflow.ComponentSpec) {
-	log.Printf("🔄 Content unchanged for %s @ %s — bumping commit hash\n", onboard.SpecImageName, tag)
+	log.Printf("Content unchanged for %s @ %s — bumping commit hash\n", onboard.SpecImageName, tag)
 	if _, err := workflow.BumpCommit(templateTag); err != nil {
 		log.Fatalf("❌ Revision bump failed: %v", err)
 	}
@@ -256,7 +256,7 @@ func GitPush(onboard *onboarding.ComponentConfig, remotePath, tag string, resolv
 // ─── Chunk 5 · PATCHING ─────────────────────────────────────────────────────
 
 func runPatchWorkflow() {
-	log.Println("🩹 Running patching workflow — scanning ACR images for vulnerabilities")
+	log.Println("Running patching workflow — scanning ACR images for vulnerabilities")
 
 	scanResults, err := patching.FetchAndScanACRImages()
 	if err != nil {
@@ -264,7 +264,7 @@ func runPatchWorkflow() {
 	}
 
 	if len(scanResults) == 0 {
-		log.Println("  ⏭️  No ACR images found to scan")
+		log.Println("  No ACR images found to scan")
 		return
 	}
 
@@ -282,5 +282,5 @@ func runPatchWorkflow() {
 		}
 	}
 
-	log.Println("🩹 Patching workflow complete")
+	log.Println("Patching workflow complete")
 }
