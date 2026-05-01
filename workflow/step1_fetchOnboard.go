@@ -7,8 +7,8 @@
 //
 //   Chunk 1 · MAIN          FetchOnboardFiles()
 //   Chunk 2 · TREE & CONFIG fetchRepoTree(), loadOnboardConfig(), fetchCachedSiblings()
-//   Chunk 3 · TAG LOGIC     resolveAndAppend()
-//   Chunk 4 · UTILITIES     getOnboardFilepath(), getExistingFilePaths()
+//   Chunk 3 · TAG LOGIC     resolveAndBuildStates()
+//   Chunk 4 · HELPERS       shouldProcessItem(), parseOnboardPath(), getExistingFilePaths()
 // ═══════════════════════════════════════════════════════════════════════════════
 
 package workflow
@@ -21,6 +21,7 @@ import (
 	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/infrastructure/repository"
 	"dalec-mapping/infrastructure/semver"
+	"dalec-mapping/pipeline"
 	"dalec-mapping/utils"
 
 	"gopkg.in/yaml.v3"
@@ -30,35 +31,30 @@ import (
 
 // FetchOnboardFiles reads partner-level onboard.yml files from the spec repo,
 // flattens all components (standalone and grouped), resolves tags, fetches
-// cached siblings, and populates the onboardImages slice.
-func FetchOnboardFiles(onboardImages *[]onboarding.ComponentConfig, isFirstOnboard *[]bool, templateTags *[]string, inputPath string) error {
+// cached siblings, and returns a pipeline.State per (component, tag) pair.
+func FetchOnboardFiles(inputPath string) ([]pipeline.State, error) {
 	log.Printf("Full onboard search path: %s\n", inputPath)
 
 	onboardItems, treePaths, err := fetchRepoTree(inputPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
+	var states []pipeline.State
+
 	for _, item := range onboardItems {
-		itemMap, ok := item.(map[string]interface{})
+		path, ok := shouldProcessItem(item, inputPath)
 		if !ok {
-			continue
-		}
-		path, _ := itemMap["path"].(string)
-		if !strings.HasPrefix(path, inputPath+"/") && path != inputPath {
-			continue
-		}
-		if !strings.HasSuffix(path, "onboard.yml") {
 			continue
 		}
 		log.Printf("Processing onboard file: %s\n", path)
 
-		onboardParentDir, specRepository, err := getOnboardFilepath(path)
+		onboardDir, specRepository, err := parseOnboardPath(path)
 		if err != nil {
 			continue
 		}
 
-		components, err := loadOnboardConfig(path, onboardParentDir, specRepository)
+		components, err := loadOnboardConfig(path, onboardDir, specRepository)
 		if err != nil {
 			log.Printf("⚠️  %v\n", err)
 			continue
@@ -66,11 +62,12 @@ func FetchOnboardFiles(onboardImages *[]onboarding.ComponentConfig, isFirstOnboa
 
 		for i := range components {
 			onboard := &components[i]
-			hasSiblings := fetchCachedSiblings(onboard, treePaths)
-			resolveAndAppend(onboard, hasSiblings, treePaths, onboardImages, isFirstOnboard, templateTags)
+			fetchCachedSiblings(onboard, treePaths)
+			resolved := resolveAndBuildStates(onboard, treePaths)
+			states = append(states, resolved...)
 		}
 	}
-	return nil
+	return states, nil
 }
 
 // ─── Chunk 2 · TREE & CONFIG ─────────────────────────────────────────────────
@@ -94,10 +91,16 @@ func fetchRepoTree(inputPath string) ([]interface{}, map[string]bool, error) {
 	treePaths := getExistingFilePaths(items)
 
 	for _, item := range items {
-		if m, ok := item.(map[string]interface{}); ok {
-			if p, ok := m["path"].(string); ok && strings.HasPrefix(p, inputPath+"/") && strings.HasSuffix(p, "/onboard.yml") {
-				log.Printf("Discovered onboard file: %s\n", p)
-			}
+		treeItem, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		itemPath, ok := treeItem["path"].(string)
+		if !ok {
+			continue
+		}
+		if strings.HasPrefix(itemPath, inputPath+"/") && strings.HasSuffix(itemPath, "/onboard.yml") {
+			log.Printf("Discovered onboard file: %s\n", itemPath)
 		}
 	}
 
@@ -106,7 +109,7 @@ func fetchRepoTree(inputPath string) ([]interface{}, map[string]bool, error) {
 
 // loadOnboardConfig fetches a partner-level onboard.yml, unmarshals it into
 // an OnboardFile, and flattens all components into a slice of ComponentConfig.
-func loadOnboardConfig(path, onboardParentDir, specRepository string) ([]onboarding.ComponentConfig, error) {
+func loadOnboardConfig(path, onboardDir, specRepository string) ([]onboarding.ComponentConfig, error) {
 	rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s",
 		utils.OnboardOwner, utils.OnboardRepo, utils.OnboardBranch, path)
 	content, err := repository.FetchRawContent(rawURL)
@@ -122,16 +125,16 @@ func loadOnboardConfig(path, onboardParentDir, specRepository string) ([]onboard
 		return nil, fmt.Errorf("failed to unmarshal %s: %w", path, err)
 	}
 
-	components := file.Flatten(onboardParentDir, specRepository)
+	components := file.Flatten(onboardDir, specRepository)
 	if len(components) == 0 {
 		return nil, fmt.Errorf("no components found in %s", path)
 	}
 
-	for _, c := range components {
-		if c.SpecRepository != "" {
-			log.Printf("Onboard Data: %s/%s repo=%s tags=%v\n", c.SpecRepository, c.SpecImageName, c.Repository, c.TagPatterns)
+	for _, component := range components {
+		if component.SpecRepository != "" {
+			log.Printf("Onboard Data: %s/%s repo=%s tags=%v\n", component.SpecRepository, component.SpecImageName, component.Repository, component.TagPatterns)
 		} else {
-			log.Printf("Onboard Data: %s repo=%s tags=%v\n", c.SpecImageName, c.Repository, c.TagPatterns)
+			log.Printf("Onboard Data: %s repo=%s tags=%v\n", component.SpecImageName, component.Repository, component.TagPatterns)
 		}
 	}
 	return components, nil
@@ -175,93 +178,111 @@ func fetchCachedSiblings(onboard *onboarding.ComponentConfig, treePaths map[stri
 
 // ─── Chunk 3 · TAG LOGIC ────────────────────────────────────────────────────
 
-// resolveAndAppend resolves tag patterns, filters by existing specs and commit
-// comparison, and appends the onboard entry to the output slices.
+// resolveAndBuildStates resolves tag patterns, filters by existing specs and
+// commit comparison, and returns a pipeline.State per (component, tag) pair.
 // Tags that already have an up-to-date spec are skipped.
-func resolveAndAppend(
+func resolveAndBuildStates(
 	onboard *onboarding.ComponentConfig,
-	hasSiblings bool,
 	treePaths map[string]bool,
-	onboardImages *[]onboarding.ComponentConfig,
-	isFirstOnboard *[]bool,
-	templateTags *[]string,
-) {
+) []pipeline.State {
+	// ── Defaults ──
 	if onboard.TagPatterns == nil {
 		onboard.TagPatterns = []string{"latest"}
 	}
 
+	// ── Resolve and filter tags ──
 	resolvedTags, err := semver.ResolveRepoTags(onboard.Repository, onboard.TagPatterns)
 	if err != nil {
 		log.Printf("⚠️  Failed to resolve tags for %s: %v\n", onboard.Repository, err)
-		return
+		return nil
 	}
 	if len(resolvedTags) == 0 {
 		log.Printf("Skipping %s: no tags matched patterns %v\n", onboard.SpecImageName, onboard.TagPatterns)
-		return
+		return nil
 	}
 	log.Printf("✅ Resolved tags for %s: %v (from patterns: %v)\n",
 		onboard.Repository, semver.TagNames(resolvedTags), onboard.TagPatterns)
 
 	actionableTags := semver.FilterActionableTags(resolvedTags, onboard.SpecDir(), onboard.SpecImageName, utils.OnboardOwner, utils.OnboardRepo, utils.OnboardBranch, treePaths)
-
 	if len(actionableTags) == 0 {
 		log.Printf("Skipping %s: all tags already up to date\n", onboard.SpecImageName)
-		return
+		return nil
 	}
 
-	// Populate ResolvedTags with confirmed tag sets from remote branch
-	resolvedTagSets := make([]onboarding.TagSet, len(actionableTags))
-	for i, at := range actionableTags {
-		strippedTag := semver.ToTag(at.Name)
-		resolvedTagSets[i] = onboarding.NewTagSet(at.Name, "", strippedTag, at.NextRevision)
-	}
-	onboard.ResolvedTags = resolvedTagSets
+	// ── Build resolved tag sets ──
+	tagSets := buildResolvedTagSets(actionableTags)
+	onboard.ResolvedTags = tagSets
 
-	// Determine first-onboard flag and template tag
-	isFirst := !hasSiblings
-	templateTag := ""
-	if hasSiblings {
-		// Find an existing tag with specs to use as template for bump-commit
-		upToDate := semver.FilterUpToDateTags(resolvedTags, onboard.SpecDir(), onboard.SpecImageName, treePaths)
-		if len(upToDate) > 0 {
-			templateTag = upToDate[len(upToDate)-1].Name
+	// ── Expand into one State per tag ──
+	states := make([]pipeline.State, len(tagSets))
+	for i, tagSet := range tagSets {
+		states[i] = pipeline.State{
+			Onboard: onboard,
+			Tag:     tagSet,
 		}
 	}
-
-	*onboardImages = append(*onboardImages, *onboard)
-	*isFirstOnboard = append(*isFirstOnboard, isFirst)
-	*templateTags = append(*templateTags, templateTag)
+	return states
 }
 
-// ─── Chunk 4 · UTILITIES ────────────────────────────────────────────────────
+// ─── Chunk 4 · HELPERS ──────────────────────────────────────────────────────
 
-// getOnboardFilepath extracts the parent directory and partner name from an
+// shouldProcessItem checks whether a tree item is an onboard.yml file under
+// the given inputPath. Returns the file path and true if it should be processed.
+func shouldProcessItem(item interface{}, inputPath string) (string, bool) {
+	itemMap, ok := item.(map[string]interface{})
+	if !ok {
+		return "", false
+	}
+	path, _ := itemMap["path"].(string)
+	if !strings.HasPrefix(path, inputPath+"/") && path != inputPath {
+		return "", false
+	}
+	if !strings.HasSuffix(path, "onboard.yml") {
+		return "", false
+	}
+	return path, true
+}
+
+// buildResolvedTagSets converts actionable tags into onboarding.TagSet entries.
+func buildResolvedTagSets(actionableTags []semver.ActionableTag) []onboarding.TagSet {
+	resolvedTagSets := make([]onboarding.TagSet, len(actionableTags))
+	for i, actionableTag := range actionableTags {
+		strippedTag := semver.ToTag(actionableTag.Name)
+		resolvedTagSets[i] = onboarding.NewTagSet(actionableTag.Name, "", strippedTag, actionableTag.NextRevision)
+	}
+	return resolvedTagSets
+}
+
+// parseOnboardPath extracts the onboard directory and partner name from an
 // onboard.yml path like "<prefix>/<partner>/onboard.yml".
-// Returns (parentDir, partnerName, error).
-func getOnboardFilepath(path string) (string, string, error) {
+// onboardDir maps to ComponentConfig.OnboardDir; specRepository maps to ComponentConfig.SpecRepository.
+func parseOnboardPath(path string) (onboardDir, specRepository string, err error) {
 	parts := strings.Split(path, "/")
-	n := len(parts)
-	if parts[n-1] != "onboard.yml" {
+	segmentCount := len(parts)
+	if parts[segmentCount-1] != "onboard.yml" {
 		return "", "", fmt.Errorf("not an onboard file: %s", path)
 	}
-	// Need at least <prefix>/<partner>/onboard.yml (3+ segments)
-	if n < 3 {
+	if segmentCount < 3 {
 		return "", "", fmt.Errorf("unexpected file path format: %s (expected <prefix>/<partner>/onboard.yml)", path)
 	}
-	parentDir := strings.Join(parts[:n-1], "/") // e.g. "specs/containernetworking"
-	partnerName := parts[n-2]                   // e.g. "containernetworking"
-	return parentDir, partnerName, nil
+	onboardDir = strings.Join(parts[:segmentCount-1], "/") // e.g. "specs/containernetworking"
+	specRepository = parts[segmentCount-2]                  // e.g. "containernetworking"
+	return onboardDir, specRepository, nil
 }
 
 // getExistingFilePaths builds a lookup set of all file paths in the repo tree.
 func getExistingFilePaths(items []interface{}) map[string]bool {
 	treePaths := make(map[string]bool)
 	for _, item := range items {
-		if m, ok := item.(map[string]interface{}); ok {
-			if p, ok := m["path"].(string); ok {
-				treePaths[p] = true
-			}
+		treeItem, ok := item.(map[string]interface{})
+		if !ok {
+			continue
 		}
+		itemPath, ok := treeItem["path"].(string)
+		if !ok {
+			continue
+		}
+		treePaths[itemPath] = true
 	}
 	return treePaths
 }

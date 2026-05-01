@@ -8,7 +8,8 @@
 //
 //   Chunk 1 · MAIN      CreatePR()
 //   Chunk 2 · STEPS     deriveFeatureBranch(), commitComponentFiles(),
-//                        buildPRDescription(), collectReviewers()
+//                        commitSiblingFiles(), buildPRDescription(),
+//                        collectReviewers(), commitTestFiles()
 //   Chunk 3 · GIT       createFeatureBranch(), commitFileToBranch(),
 //                        createPullRequest(), addReviewers(),
 //                        deleteRemoteBranch()
@@ -90,7 +91,7 @@ func CreatePR(entry PREntry) (string, error) {
 		if err := addReviewers(prNumber, reviewers); err != nil {
 			log.Printf("⚠️  Failed to add reviewers to PR #%d: %v\n", prNumber, err)
 		} else {
-				log.Printf("Added %d reviewer(s) to PR #%d\n", len(reviewers), prNumber)
+			log.Printf("Added %d reviewer(s) to PR #%d\n", len(reviewers), prNumber)
 		}
 	}
 
@@ -131,34 +132,49 @@ func commitComponentFiles(components []ComponentSpec, branch string) ([]string, 
 			return nil, fmt.Errorf("failed to commit spec file for %s: %w", specImageName, err)
 		}
 
-		if !comp.SpecOnly && len(onboard.DockerfileContent) > 0 {
-			if err := commitFileToBranch(
-				fmt.Sprintf("%s/Dockerfile", dir),
-				fmt.Sprintf("Add Dockerfile for %s", specImageName),
-				onboard.DockerfileContent,
-				branch,
-			); err != nil {
-				return nil, fmt.Errorf("failed to commit Dockerfile for %s: %w", specImageName, err)
-			}
+		if err := commitSiblingFiles(comp, dir, specImageName, branch); err != nil {
+			return nil, err
 		}
 
-		if !comp.SpecOnly && len(onboard.MakefileContent) > 0 {
-			if err := commitFileToBranch(
-				fmt.Sprintf("%s/Makefile", dir),
-				fmt.Sprintf("Add Makefile for %s", specImageName),
-				onboard.MakefileContent,
-				branch,
-			); err != nil {
-				return nil, fmt.Errorf("failed to commit Makefile for %s: %w", specImageName, err)
-			}
-		}
-
-		// Copy tests/ directory from OnboardBranch if it exists.
 		if err := commitTestFiles(dir, specImageName, branch); err != nil {
 			return nil, fmt.Errorf("failed to commit test files for %s: %w", specImageName, err)
 		}
 	}
 	return names, nil
+}
+
+// commitSiblingFiles commits the Dockerfile and Makefile for a component to the
+// given branch when not in spec-only mode.
+func commitSiblingFiles(comp ComponentSpec, dir, specImageName, branch string) error {
+	if comp.SpecOnly {
+		return nil
+	}
+
+	onboard := comp.Onboard
+
+	if len(onboard.DockerfileContent) > 0 {
+		if err := commitFileToBranch(
+			fmt.Sprintf("%s/Dockerfile", dir),
+			fmt.Sprintf("Add Dockerfile for %s", specImageName),
+			onboard.DockerfileContent,
+			branch,
+		); err != nil {
+			return fmt.Errorf("failed to commit Dockerfile for %s: %w", specImageName, err)
+		}
+	}
+
+	if len(onboard.MakefileContent) > 0 {
+		if err := commitFileToBranch(
+			fmt.Sprintf("%s/Makefile", dir),
+			fmt.Sprintf("Add Makefile for %s", specImageName),
+			onboard.MakefileContent,
+			branch,
+		); err != nil {
+			return fmt.Errorf("failed to commit Makefile for %s: %w", specImageName, err)
+		}
+	}
+
+	return nil
 }
 
 // buildPRDescription returns the title and body for the pull request,
@@ -183,11 +199,12 @@ func collectReviewers(components []ComponentSpec) []string {
 	seen := make(map[string]bool)
 	var reviewers []string
 	for _, comp := range components {
-		for _, r := range comp.Onboard.Reviewers {
-			if !seen[r] {
-				seen[r] = true
-				reviewers = append(reviewers, r)
+		for _, reviewer := range comp.Onboard.Reviewers {
+			if seen[reviewer] {
+				continue
 			}
+			seen[reviewer] = true
+			reviewers = append(reviewers, reviewer)
 		}
 	}
 	return reviewers
@@ -211,11 +228,8 @@ func commitTestFiles(dir, specImageName, branch string) error {
 		itemType, _ := item["type"].(string)
 		name, _ := item["name"].(string)
 		downloadURL, _ := item["download_url"].(string)
-		if name == "" || downloadURL == "" {
-			continue
-		}
-		if itemType == "dir" {
-			// Only handle top-level test files; skip subdirectories
+
+		if name == "" || downloadURL == "" || itemType == "dir" {
 			continue
 		}
 
@@ -267,7 +281,7 @@ func commitFileToBranch(filePath, message string, content []byte, branch string)
 		return fmt.Errorf("failed to commit %s to branch %s: %w", filePath, branch, err)
 	}
 	log.Printf("  Committed %s to %s\n", filePath, branch)
-	return err
+	return nil
 }
 
 // createFeatureBranch creates a new branch from the tip of OnboardBranch.
@@ -278,8 +292,8 @@ func createFeatureBranch(branchName string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get ref for %s: %w", utils.OnboardBranch, err)
 	}
-	obj, _ := ref["object"].(map[string]interface{})
-	sha, _ := obj["sha"].(string)
+	refObject, _ := ref["object"].(map[string]interface{})
+	sha, _ := refObject["sha"].(string)
 	if sha == "" {
 		return fmt.Errorf("could not resolve SHA for %s", utils.OnboardBranch)
 	}

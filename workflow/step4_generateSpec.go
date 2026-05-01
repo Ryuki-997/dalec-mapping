@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// Step 5 — Generate
+// Step 4 — Generate
 //
 //   Parses the Dockerfile and Makefile, then transforms them into a DALEC spec
 //   YAML file written to the result directory.
@@ -11,8 +11,8 @@
 package workflow
 
 import (
+	"fmt"
 	"log"
-	"os"
 
 	"dalec-mapping/infrastructure/parser"
 	"dalec-mapping/infrastructure/repository"
@@ -27,14 +27,16 @@ import (
 // Dockerfile analysis. Returns the resolved build target strings for downstream
 // use (e.g. image test).
 func GenerateSpec() ([]string, error) {
-	if err := fetchRepoMetadata(); err != nil {
-		log.Printf("❌ Error fetching repository info: %v\n", err)
-		os.Exit(1)
+	// ── State ──
+	onboard := pipeline.Current.Onboard
+	tag := pipeline.Current.Tag.Full
+
+	if err := fetchRepoMetadata(onboard.Repository, tag); err != nil {
+		return nil, fmt.Errorf("fetching repository info: %w", err)
 	}
 
-	if err := parseAndExtract(); err != nil {
-		log.Printf("❌ Error parsing optional files: %v\n", err)
-		os.Exit(1)
+	if err := parseAndExtract(onboard.DockerfileContent, onboard.MakefileContent); err != nil {
+		return nil, fmt.Errorf("parsing build files: %w", err)
 	}
 
 	resolvedTargets, err := buildAndWriteSpec()
@@ -49,24 +51,24 @@ func GenerateSpec() ([]string, error) {
 
 // fetchRepoMetadata fetches repository metadata from GitHub or ADO based on the repo URL.
 // Stores the result in pipeline.Current.RepoInfo.
-func fetchRepoMetadata() error {
-	onboard := pipeline.Current.Onboard
-	tag := pipeline.Current.Tag.Full
-
+func fetchRepoMetadata(repoURL, tag string) error {
 	var err error
-	if repository.IsADORepo(onboard.Repository) {
-		pipeline.Current.RepoInfo, err = repository.FetchADORepoInfo(onboard.Repository, tag)
+	if repository.IsADORepo(repoURL) {
+		pipeline.Current.RepoInfo, err = repository.FetchADORepoInfo(repoURL, tag)
 	} else {
-		pipeline.Current.RepoInfo, err = repository.FetchRepoInfo(onboard.Repository, tag)
+		pipeline.Current.RepoInfo, err = repository.FetchRepoInfo(repoURL, tag)
 	}
 	return err
 }
 
 // parseAndExtract parses Dockerfile/Makefile content and runs static extraction.
-func parseAndExtract() error {
-	onboard := pipeline.Current.Onboard
+func parseAndExtract(dockerfileContent, makefileContent []byte) error {
+	if dockerfileContent == nil && makefileContent == nil {
+		log.Println("⚠️  No Dockerfile or Makefile content to parse, proceeding with defaults")
+		return nil
+	}
 
-	parser.ParseOptionalFileInfo(onboard.DockerfileContent, onboard.MakefileContent)
+	parser.ParseOptionalFileInfo(dockerfileContent, makefileContent)
 
 	if parser.ExtractStaticBuildValues() != nil {
 		log.Println("✅ Using static Dockerfile extraction")
@@ -83,20 +85,27 @@ func buildAndWriteSpec() ([]string, error) {
 		return nil, err
 	}
 
-	resolvedTargets := make([]string, len(pipeline.Current.BuildTargets))
-	for i, buildTarget := range pipeline.Current.BuildTargets {
-		resolvedTargets[i] = string(buildTarget)
-	}
+	resolvedTargets := collectResolvedTargets()
 
 	parser.PrintDockerfileInfo()
 
 	dalecSpec := transformer.TransformToDalec()
 
 	if err := parser.WriteOutput(dalecSpec); err != nil {
-		log.Printf("❌ Error writing output YAML file: %v\n", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("writing output YAML file: %w", err)
 	}
 
 	log.Printf("✅ Successfully generated %s\n\n", utils.ResultDir)
 	return resolvedTargets, nil
+}
+
+// ─── Chunk 3 · HELPERS ──────────────────────────────────────────────────────
+
+// collectResolvedTargets converts pipeline.Current.BuildTargets to a string slice.
+func collectResolvedTargets() []string {
+	resolvedTargets := make([]string, len(pipeline.Current.BuildTargets))
+	for i, buildTarget := range pipeline.Current.BuildTargets {
+		resolvedTargets[i] = string(buildTarget)
+	}
+	return resolvedTargets
 }

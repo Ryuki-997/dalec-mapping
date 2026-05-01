@@ -63,9 +63,9 @@ func (f *OnboardFile) UnmarshalYAML(value *yaml.Node) error {
 
 // Flatten converts an OnboardFile into a slice of ComponentConfig structs
 // ready for the pipeline.
-//   - onboardParentDir: parent directory of the onboard.yml (e.g. "specs/containernetworking")
+//   - onboardDir: parent directory of the onboard.yml (e.g. "specs/containernetworking")
 //   - specRepository: partner name used in specfile content (e.g. "containernetworking")
-func (f *OnboardFile) Flatten(onboardParentDir, specRepository string) []ComponentConfig {
+func (f *OnboardFile) Flatten(onboardDir, specRepository string) []ComponentConfig {
 	var results []ComponentConfig
 
 	// When the onboard file has a single standalone component whose name
@@ -77,10 +77,10 @@ func (f *OnboardFile) Flatten(onboardParentDir, specRepository string) []Compone
 		cfg.SpecImageName = name
 		if singleStandalone && name == specRepository {
 			cfg.SpecRepository = ""
-			cfg.OnboardDir = onboardParentDir
+			cfg.OnboardDir = onboardDir
 		} else {
 			cfg.SpecRepository = specRepository
-			cfg.OnboardDir = fmt.Sprintf("%s/%s", onboardParentDir, name)
+			cfg.OnboardDir = fmt.Sprintf("%s/%s", onboardDir, name)
 		}
 		results = append(results, cfg)
 	}
@@ -89,7 +89,7 @@ func (f *OnboardFile) Flatten(onboardParentDir, specRepository string) []Compone
 		for name, cfg := range group {
 			cfg.SpecImageName = name
 			cfg.SpecRepository = specRepository
-			cfg.OnboardDir = fmt.Sprintf("%s/%s", onboardParentDir, name)
+			cfg.OnboardDir = fmt.Sprintf("%s/%s", onboardDir, name)
 			cfg.GroupName = groupName
 			results = append(results, cfg)
 		}
@@ -153,7 +153,7 @@ type ComponentConfig struct {
 	MakefileContent   []byte `yaml:"-"`
 
 	// ResolvedTags holds fully-resolved tag sets confirmed against the remote branch.
-	// Populated in resolveAndAppend after filtering actionable tags.
+	// Populated in resolveAndBuildStates after filtering actionable tags.
 	ResolvedTags []TagSet `yaml:"-"`
 }
 

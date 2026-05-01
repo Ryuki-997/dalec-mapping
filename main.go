@@ -17,6 +17,7 @@ import (
 	"github.com/joho/godotenv"
 )
 
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Main — Dalec Spec Pipeline
 //
@@ -39,8 +40,8 @@ func main() {
 		return
 	}
 
-	onboardFiles, firstOnboardFlags, templateTags := fetchOnboardFiles(inputPath)
-	prGroups := processOnboardFiles(onboardFiles, firstOnboardFlags, templateTags)
+	states := fetchOnboardStates(inputPath)
+	prGroups := processOnboardStates(states)
 	log.Printf("Pipeline complete for all components and tags — preparing PRs\n")
 	for groupKey, entry := range prGroups {
 		log.Printf("Group: %s, Components: %d\n", groupKey, len(entry.Components))
@@ -69,49 +70,46 @@ func loadEnv() {
 	}
 }
 
-func fetchOnboardFiles(inputPath string) ([]onboarding.ComponentConfig, []bool, []string) {
-	var onboardFiles []onboarding.ComponentConfig
-	var firstOnboardFlags []bool
-	var templateTags []string
-
-	if err := workflow.FetchOnboardFiles(&onboardFiles, &firstOnboardFlags, &templateTags, inputPath); err != nil {
+func fetchOnboardStates(inputPath string) []pipeline.State {
+	states, err := workflow.FetchOnboardFiles(inputPath)
+	if err != nil {
 		log.Fatalf("❌ Failed to fetch onboard data: %v", err)
 	}
 
-	if len(onboardFiles) == 0 {
+	if len(states) == 0 {
 		log.Fatalf("❌ Potentially No onboarding files found at path: %s", inputPath)
 	}
 
-	return onboardFiles, firstOnboardFlags, templateTags
+	return states
 }
 
 // ─── Chunk 2 · ORCHESTRATION ─────────────────────────────────────────────────
 
-// processOnboardFiles iterates all onboard configs and their tags, running the
-// pipeline for each and collecting PR entries keyed by group name.
-func processOnboardFiles(onboardFiles []onboarding.ComponentConfig, firstOnboardFlags []bool, templateTags []string) map[string]*workflow.PREntry {
+// processOnboardStates iterates all pre-expanded states, running the pipeline
+// for each and collecting PR entries keyed by group name.
+func processOnboardStates(states []pipeline.State) map[string]*workflow.PREntry {
 	prGroups := make(map[string]*workflow.PREntry)
 
-	for i, onboard := range onboardFiles {
-		log.Printf("Onboard Documents: %v %v %v\n", onboard.Repository, onboard.SpecImageName, onboard.ResolvedTags)
-		for _, tagSet := range onboard.ResolvedTags {
-			remotePath, comp := processTag(&onboard, tagSet, firstOnboardFlags[i], templateTags[i])
-			if comp == nil {
-				continue
-			}
+	for _, state := range states {
+		onboard := state.Onboard
+		log.Printf("Processing: %s %s @ %s\n", onboard.Repository, onboard.SpecImageName, state.Tag.Full)
 
-			groupKey := onboard.SpecImageName
-			groupName := ""
-			if onboard.GroupName != "" {
-				groupKey = onboard.GroupName
-				groupName = onboard.GroupName
-			}
-			if prGroups[groupKey] == nil {
-				prGroups[groupKey] = &workflow.PREntry{GroupName: groupName}
-			}
-			comp.RemotePath = remotePath
-			prGroups[groupKey].Components = append(prGroups[groupKey].Components, *comp)
+		remotePath, comp := processTag(state)
+		if comp == nil {
+			continue
 		}
+
+		groupKey := onboard.SpecImageName
+		groupName := ""
+		if onboard.GroupName != "" {
+			groupKey = onboard.GroupName
+			groupName = onboard.GroupName
+		}
+		if prGroups[groupKey] == nil {
+			prGroups[groupKey] = &workflow.PREntry{GroupName: groupName}
+		}
+		comp.RemotePath = remotePath
+		prGroups[groupKey].Components = append(prGroups[groupKey].Components, *comp)
 	}
 
 	return prGroups
@@ -139,7 +137,10 @@ func submitPRs(prGroups map[string]*workflow.PREntry) {
 
 // processTag runs the full pipeline for a single tag and returns the remote
 // spec path (if pushed directly) and a PR entry (if a PR should be created).
-func processTag(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet, isFirstOnboard bool, templateTag string) (string, *workflow.ComponentSpec) {
+func processTag(state pipeline.State) (string, *workflow.ComponentSpec) {
+	onboard := state.Onboard
+	tagSet := state.Tag
+
 	log.Printf("Running pipeline for %s @ %s (R%d)\n", onboard.Repository, tagSet.Full, tagSet.Revision)
 
 	pipeline.Reset()
@@ -151,18 +152,19 @@ func processTag(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet, i
 		log.Fatalf("❌ DiscoverBuildFiles failed: %v", err)
 	}
 
+	isFirstOnboard := onboard.DockerfileContent == nil && onboard.MakefileContent == nil
 	action := decideAction(isFirstOnboard, contentChanged)
 
-	// If bump-commit is chosen but there's no prior revision and no template tag,
-	// there's nothing to copy from — fall back to full generation.
-	if action == actionBumpCommit && tagSet.Revision <= 1 && templateTag == "" {
-		log.Printf("No prior revision (R0) exists for %s @ %s and no template tag — falling back to generate\n", onboard.SpecImageName, tagSet.Stripped)
+	// If bump-commit is chosen but there's no prior revision, there's nothing
+	// to copy from — fall back to full generation.
+	if action == actionBumpCommit && tagSet.Revision <= 1 {
+		log.Printf("No prior revision (R0) exists for %s @ %s — falling back to generate\n", onboard.SpecImageName, tagSet.Stripped)
 		action = actionGenerate
 	}
 
 	switch action {
 	case actionBumpCommit:
-		return bumpCommit(onboard, tagSet, templateTag)
+		return bumpCommit(onboard, tagSet)
 	case actionGenerate:
 		remotePath, specContent, err := generateWork(onboard, tagSet)
 		if err != nil {
@@ -208,17 +210,12 @@ func decideAction(isFirstOnboard, contentChanged bool) pipelineAction {
 
 // ─── Chunk 4 · ACTIONS ──────────────────────────────────────────────────────
 
-func bumpCommit(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet, templateTag string) (string, *workflow.ComponentSpec) {
+func bumpCommit(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet) (string, *workflow.ComponentSpec) {
 	log.Printf("Content unchanged for %s @ %s — bumping commit hash\n", onboard.SpecImageName, tagSet.Stripped)
 
-	// Template is the previous revision of the same tag (or of the templateTag if provided)
 	templateRevision := tagSet.Revision - 1
-	effectiveTemplateTag := tagSet.Full
-	if templateTag != "" {
-		effectiveTemplateTag = templateTag
-	}
 
-	if _, err := workflow.BumpCommit(effectiveTemplateTag, templateRevision); err != nil {
+	if _, err := workflow.BumpCommit(tagSet.Full, templateRevision); err != nil {
 		log.Fatalf("❌ Revision bump failed: %v", err)
 	}
 

@@ -29,29 +29,27 @@ import (
 // DiscoverBuildFiles fetches the Dockerfile and Makefile from the source repo at the
 // given tag, diffs them against cached siblings, and returns whether content changed.
 func DiscoverBuildFiles() (bool, error) {
+	// ── State ──
 	onboard := pipeline.Current.Onboard
 	tag := pipeline.Current.Tag.Full
+	repoURL := onboard.Repository
 
 	if err := clearResultDirectory(utils.ResultDir); err != nil {
 		log.Printf("⚠️  Warning: %v\n", err)
 	}
 
-	_, componentPath := repository.SplitComponent(onboard.Repository)
+	// ── Resolve file paths ──
+	_, componentPath := repository.SplitComponent(repoURL)
 	dockerfilePath := repository.ResolveFilePath(componentPath, onboard.DockerfileDir)
 	makefilePath := repository.ResolveFilePath(componentPath, onboard.MakefileDir)
 
-	var dockerfileContent, makefileContent []byte
-	var err error
-
-	if repository.IsADORepo(onboard.Repository) {
-		dockerfileContent, makefileContent, err = fetchBuildFilesFromADO(onboard.Repository, dockerfilePath, makefilePath, tag)
-	} else {
-		dockerfileContent, makefileContent, err = fetchBuildFilesFromGitHub(onboard.Repository, dockerfilePath, makefilePath, tag)
-	}
+	// ── Fetch build files ──
+	dockerfileContent, makefileContent, err := fetchBuildFiles(repoURL, dockerfilePath, makefilePath, tag)
 	if err != nil {
 		return false, err
 	}
 
+	// ── Diff against cached siblings ──
 	cachedDF := onboard.DockerfileContent
 	cachedMF := onboard.MakefileContent
 	onboard.DockerfileContent = dockerfileContent
@@ -62,6 +60,14 @@ func DiscoverBuildFiles() (bool, error) {
 }
 
 // ─── Chunk 2 · FETCH ─────────────────────────────────────────────────────────
+
+// fetchBuildFiles dispatches to the ADO or GitHub fetcher based on the repo URL.
+func fetchBuildFiles(repoURL, dockerfilePath, makefilePath, tag string) ([]byte, []byte, error) {
+	if repository.IsADORepo(repoURL) {
+		return fetchBuildFilesFromADO(repoURL, dockerfilePath, makefilePath, tag)
+	}
+	return fetchBuildFilesFromGitHub(repoURL, dockerfilePath, makefilePath, tag)
+}
 
 // fetchBuildFilesFromADO fetches Dockerfile and Makefile from an ADO repository.
 func fetchBuildFilesFromADO(repoURL, dockerfilePath, makefilePath, tag string) ([]byte, []byte, error) {

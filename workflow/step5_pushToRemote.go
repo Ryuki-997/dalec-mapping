@@ -27,6 +27,7 @@ import (
 // PushToRemote commits the spec file to the onboard repo's base branch.
 // When specOnly is false, sibling Dockerfile/Makefile are also committed.
 func PushToRemote(tag string, specOnly bool) error {
+	// ── State ──
 	onboard := pipeline.Current.Onboard
 	dir := onboard.SpecDir()
 	specImageName := onboard.SpecImageName
