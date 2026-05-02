@@ -7,9 +7,9 @@
 //     shortTag = "0.4.0"              (semver without leading "v")
 //     regexTag = "v0\.4\.\d+"         (onboard pattern that matches a family)
 //
-//   Chunk 1 · TAG RESOLVING  ResolveRepoTags(), resolveADOTags(), resolveGithubTags()
-//   Chunk 2 · TAG FILTERING  FilterNewTags(), FilterExistingTags(), SpecFilePath()
-//   Chunk 3 · PATTERN MATCH  matchPatterns(), matchRegex(), matchAll(), matchLargest()
+//   Chunk 1 · TAG RESOLVING  FetchRepoTags(), MatchTagSets()
+//   Chunk 2 · TAG FILTERING  SpecFilePath(), FindLatestRevision()
+//   Chunk 3 · PATTERN MATCH  matchPatternsFromMap(), matchRegexFromMap(), matchAllFromMap(), matchLargestFromMap()
 //   Chunk 4 · SEMVER PARSE   ToTag(), parseSemver(), compareVersions()
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -29,100 +29,67 @@ var semverRegex = regexp.MustCompile(`v(\d+)\.(\d+)\.(\d+)`)
 
 // ─── Chunk 1 · TAG RESOLVING ────────────────────────────────────────────────
 
-// ResolveRepoTags fetches tags (with commit SHAs) from the appropriate source
-// and resolves regexTag patterns against them.
-func ResolveRepoTags(repoURL string, regexTags []string) ([]repository.TagInfo, error) {
+// FetchRepoTags fetches all tags from the repository and returns them as a
+// map[tagName]commitHash for O(1) existence check and hash lookup.
+// Tags are fetched once per repo and the map is reused for all components
+// sharing the same repository URL.
+func FetchRepoTags(repoURL string) (map[string]string, error) {
+	var tags []repository.TagInfo
+	var err error
+
 	if repository.IsADORepo(repoURL) {
-		return resolveADOTags(repoURL, regexTags)
+		tags, err = repository.FetchAllADOTags(repoURL)
+	} else {
+		owner, repoName, _ := repository.FetchRepositorySegments(repoURL)
+		tags, err = repository.FetchAllGithubTags(owner, repoName)
 	}
-	return resolveGithubTags(repoURL, regexTags)
-}
-
-// resolveADOTags fetches all ADO tags (all are treated as release tags) and
-// matches the given patterns against them.
-func resolveADOTags(repoURL string, regexTags []string) ([]repository.TagInfo, error) {
-	tags, err := repository.FetchAllADOTags(repoURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch tags for %s: %w", repoURL, err)
-	}
-	return matchPatterns(tags, regexTags), nil
-}
-
-// resolveGithubTags fetches all git tags from GitHub and matches patterns against them.
-func resolveGithubTags(repoURL string, regexTags []string) ([]repository.TagInfo, error) {
-	owner, repoName, _ := repository.FetchRepositorySegments(repoURL)
-	allTags, err := repository.FetchAllGithubTags(owner, repoName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch tags for %s: %w", repoURL, err)
 	}
 
-	return matchPatterns(allTags, regexTags), nil
+	tagMap := make(map[string]string, len(tags))
+	for _, tagInfo := range tags {
+		tagMap[tagInfo.Name] = tagInfo.Commit
+	}
+	return tagMap, nil
+}
+
+// MatchTagSets matches regex patterns against pre-fetched tags and determines
+// the next revision for each match. Returns actionable tags ready to become
+// TagSet entries. The caller constructs TagSets from the returned data.
+func MatchTagSets(tagsByName map[string]string, regexPatterns []string, specDir, specImage string, treePaths map[string]bool) []ActionableTag {
+	matchedNames := matchPatternsFromMap(tagsByName, regexPatterns)
+	if len(matchedNames) == 0 {
+		return nil
+	}
+
+	var actionable []ActionableTag
+	for _, tagName := range matchedNames {
+		commitHash := tagsByName[tagName]
+		strippedTag := ToTag(tagName)
+		latestRevision, found := FindLatestRevision(specDir, specImage, strippedTag, treePaths)
+
+		nextRevision := 1
+		if found {
+			nextRevision = latestRevision + 1
+		}
+
+		actionable = append(actionable, ActionableTag{
+			Name:         tagName,
+			Commit:       commitHash,
+			NextRevision: nextRevision,
+		})
+	}
+	return actionable
 }
 
 // ─── Chunk 2 · TAG FILTERING ────────────────────────────────────────────────
 
 // ActionableTag represents a tag that needs processing, with its next revision number.
 type ActionableTag struct {
-	repository.TagInfo
-	NextRevision int // The revision number to create (e.g. 1 for new, 2 for second revision)
-}
-
-// FilterActionableTags returns tags that need processing: either they have no
-// existing revisions, or their latest revision's commit differs from the tag's
-// current commit SHA. Each returned tag carries the next revision number to use.
-func FilterActionableTags(tags []repository.TagInfo, specDir, specImage, owner, repo, branch string, treePaths map[string]bool) []ActionableTag {
-	var actionable []ActionableTag
-	for _, tagInfo := range tags {
-		tag := ToTag(tagInfo.Name)
-		latestRevision, found := FindLatestRevision(specDir, specImage, tag, treePaths)
-
-		if !found {
-			// No existing spec — first revision
-			actionable = append(actionable, ActionableTag{
-				TagInfo:      tagInfo,
-				NextRevision: 1,
-			})
-			continue
-		}
-
-		// Check if the latest revision's commit matches the tag's current commit
-		latestSpecPath := SpecFilePath(specDir, specImage, tag, latestRevision)
-		existingCommit, err := repository.FetchRemoteSpecCommit(latestSpecPath, owner, repo, branch)
-		if err != nil {
-			log.Printf("⚠️  Could not read commit from %s: %v — treating as actionable\n", latestSpecPath, err)
-			actionable = append(actionable, ActionableTag{
-				TagInfo:      tagInfo,
-				NextRevision: latestRevision + 1,
-			})
-			continue
-		}
-
-		if existingCommit != tagInfo.Commit {
-			log.Printf("Tag %s commit changed (%s → %s) — scheduling R%d\n",
-				tagInfo.Name, existingCommit[:8], tagInfo.Commit[:8], latestRevision+1)
-			actionable = append(actionable, ActionableTag{
-				TagInfo:      tagInfo,
-				NextRevision: latestRevision + 1,
-			})
-		} else {
-			log.Printf("Skipping %s @ %s: spec R%d already up to date\n", specImage, tagInfo.Name, latestRevision)
-		}
-	}
-	return actionable
-}
-
-// FilterUpToDateTags returns tags whose latest revision's commit matches the
-// tag's current commit (i.e. no work needed). Used to find template specs.
-func FilterUpToDateTags(tags []repository.TagInfo, specDir, specImage string, treePaths map[string]bool) []repository.TagInfo {
-	var upToDate []repository.TagInfo
-	for _, tagInfo := range tags {
-		tag := ToTag(tagInfo.Name)
-		_, found := FindLatestRevision(specDir, specImage, tag, treePaths)
-		if found {
-			upToDate = append(upToDate, tagInfo)
-		}
-	}
-	return upToDate
+	Name         string // Full tag name (e.g. "azure-ipam/v0.4.0")
+	Commit       string // Commit SHA the tag points to
+	NextRevision int    // The revision number to create (e.g. 1 for new, 2 for second revision)
 }
 
 // SpecFilePath returns the remote path for a spec file at the given revision.
@@ -161,41 +128,33 @@ func FindLatestRevision(specDir, specImage, tag string, treePaths map[string]boo
 	return highest, found
 }
 
-// TagNames extracts the Name field from a slice of TagInfo.
-func TagNames(tags []repository.TagInfo) []string {
-	names := make([]string, len(tags))
-	for i, t := range tags {
-		names[i] = t.Name
-	}
-	return names
-}
-
 // ─── Chunk 3 · PATTERN MATCH ────────────────────────────────────────────────
 
-// matchPatterns resolves multiple regexTag patterns against a tag list, deduplicating results.
-func matchPatterns(tags []repository.TagInfo, regexTags []string) []repository.TagInfo {
+// matchPatternsFromMap resolves multiple regexTag patterns against a tag map,
+// deduplicating results. Returns matched tag names in deterministic order.
+func matchPatternsFromMap(tagsByName map[string]string, regexPatterns []string) []string {
 	seen := make(map[string]bool)
-	var result []repository.TagInfo
-	for _, pattern := range regexTags {
-		for _, t := range matchRegex(tags, pattern) {
-			if !seen[t.Name] {
-				seen[t.Name] = true
-				result = append(result, t)
+	var result []string
+	for _, pattern := range regexPatterns {
+		for _, name := range matchRegexFromMap(tagsByName, pattern) {
+			if !seen[name] {
+				seen[name] = true
+				result = append(result, name)
 			}
 		}
 	}
 	return result
 }
 
-// matchRegex resolves a single regexTag against a list of tags:
+// matchRegexFromMap resolves a single regexTag against a tag map:
 //   - "latest": the single largest semver tag overall
 //   - direct (e.g. v1.6.2): the tag itself if it exists
 //   - regex  (e.g. v1\.6\.\d-main-\d+): all matching tags
-func matchRegex(tags []repository.TagInfo, pattern string) []repository.TagInfo {
+func matchRegexFromMap(tagsByName map[string]string, pattern string) []string {
 	if pattern == "latest" {
 		re := regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
-		if t := matchLargest(tags, re); t != nil {
-			return []repository.TagInfo{*t}
+		if name := matchLargestFromMap(tagsByName, re); name != "" {
+			return []string{name}
 		}
 		return nil
 	}
@@ -205,42 +164,40 @@ func matchRegex(tags []repository.TagInfo, pattern string) []repository.TagInfo 
 		log.Printf("⚠️  Invalid regex pattern %q, skipping: %v", pattern, err)
 		return nil
 	}
-	return matchAll(tags, re)
+	return matchAllFromMap(tagsByName, re)
 }
 
-// matchAll returns all tags that match the regex.
-// Checks the original name first, then falls back to the stripped tag
-// (to support plain "v0\.4\.\d+" patterns against prefixed names like "azure-ipam/v0.4.0").
-func matchAll(tags []repository.TagInfo, re *regexp.Regexp) []repository.TagInfo {
-	var matches []repository.TagInfo
-	for _, t := range tags {
-		if re.MatchString(t.Name) || re.MatchString(ToTag(t.Name)) {
-			matches = append(matches, t)
+// matchAllFromMap returns all tag names from the map that match the regex.
+// Checks the original name first, then falls back to the stripped tag.
+func matchAllFromMap(tagsByName map[string]string, re *regexp.Regexp) []string {
+	var matches []string
+	for name := range tagsByName {
+		if re.MatchString(name) || re.MatchString(ToTag(name)) {
+			matches = append(matches, name)
 		}
 	}
 	return matches
 }
 
-// matchLargest returns the largest tag that matches the regex.
-func matchLargest(tags []repository.TagInfo, re *regexp.Regexp) *repository.TagInfo {
-	var largest *repository.TagInfo
+// matchLargestFromMap returns the name of the largest semver tag matching the regex.
+func matchLargestFromMap(tagsByName map[string]string, re *regexp.Regexp) string {
+	var largestName string
 	var largestNums []int
 
-	for _, t := range tags {
-		if !re.MatchString(t.Name) && !re.MatchString(ToTag(t.Name)) {
+	for name := range tagsByName {
+		if !re.MatchString(name) && !re.MatchString(ToTag(name)) {
 			continue
 		}
-		nums := parseSemver(t.Name)
+		nums := parseSemver(name)
 		if nums == nil {
 			continue
 		}
 		if largestNums == nil || compareVersions(nums, largestNums) > 0 {
-			t := t
-			largest = &t
+			largestName = name
 			largestNums = nums
 		}
 	}
-	return largest
+	return largestName
 }
 
 // ─── Chunk 4 · SEMVER PARSE ─────────────────────────────────────────────────

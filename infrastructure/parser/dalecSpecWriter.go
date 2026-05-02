@@ -3,7 +3,6 @@ package parser
 import (
 	"bytes"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 
@@ -53,7 +52,6 @@ func (w *DalecSpecWriter) WriteYAML(spec DalecSpec, outputPath string) (string, 
 	for _, key := range fieldOrder {
 		value, ok := spec[key]
 		if !ok {
-			log.Printf("Key %s not found, skipping\n", key)
 			continue
 		}
 

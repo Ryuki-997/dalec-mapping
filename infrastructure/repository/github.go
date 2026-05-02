@@ -166,8 +166,6 @@ func FetchRepoInfo(repoPath, tag string) (*repository.RepoInfo, error) {
 	baseRef, componentPath := SplitComponent(repoPath)
 	owner, repo, branch := FetchRepositorySegments(baseRef)
 
-	log.Printf("Parsed - Owner: %s, Repo: %s, Branch: %s, ComponentPath: %s\n", owner, repo, branch, componentPath)
-
 	info := &repository.RepoInfo{
 		Owner:         owner,
 		Repo:          repo,

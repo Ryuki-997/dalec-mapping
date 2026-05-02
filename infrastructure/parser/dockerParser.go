@@ -287,32 +287,7 @@ func parseKeyValue(node *parser.Node) (string, string) {
 	return fullValue, ""
 }
 
-func PrintDockerfileInfo() {
-	log.Println("Parsed Dockerfile Stages:")
-	log.Println("")
 
-	for _, stage := range pipeline.Current.Dockerfile.Stages {
-		log.Printf("Stage: %s (From: %s)\n", stage.Name, stage.From)
-		log.Println("  Env:")
-		for key, value := range stage.Env {
-			log.Printf("    %s=%s\n", key, value)
-		}
-		log.Println("  Runs:")
-		for _, run := range stage.Runs {
-			log.Printf("    %s\n", run)
-		}
-		log.Println("  Copies:")
-		for _, copy := range stage.Copies {
-			log.Printf("    From: %s, Source: %v, Dest: %s\n", copy.From, copy.Source, copy.Dest)
-		}
-		log.Println("")
-	}
-
-	for key, value := range pipeline.Current.Dockerfile.Args {
-		log.Printf("Build Arg: %s=%s\n", key, value)
-	}
-	log.Println("")
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DOCKERFILE ANALYSIS — Analyses multi-stage Dockerfiles for patterns
@@ -517,8 +492,7 @@ func ExtractIntermediateRuntimeDeps(stages []contents.Stage) []IntermediateRunti
 			SelectiveCopy: copyFromSelective[stageRef],
 		})
 
-		log.Printf("Intermediate stage %q installs packages: %v (selective=%v)\n",
-			stageRef, packages, copyFromSelective[stageRef])
+
 	}
 
 	return results

@@ -27,7 +27,6 @@ package transformer
 import (
 	"dalec-mapping/pipeline"
 	"fmt"
-	"log"
 	"regexp"
 	"sort"
 	"strings"
@@ -380,7 +379,6 @@ func rawBuildCommands(goModDownloads []GoModDownloadInfo) []string {
 
 		if cmd != "" {
 			cmds = append(cmds, cmd)
-			log.Printf("Build step: %v\n", cmd)
 		}
 	}
 	return cmds

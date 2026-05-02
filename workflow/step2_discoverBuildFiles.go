@@ -2,12 +2,17 @@
 // Step 2 — Discover
 //
 //   Fetches the source Dockerfile and Makefile for the given tag, compares them
-//   against cached siblings from a previous onboard, and sets
-//   onboard.ContentChanged accordingly.
+//   against cached siblings from a previous onboard, and returns whether
+//   content has changed.
 //
-//   Chunk 1 · MAIN    DiscoverBuildFiles()
-//   Chunk 2 · FETCH   fetchBuildFilesFromADO(), fetchBuildFilesFromGitHub()
-//   Chunk 3 · HELPERS diffSiblings(), clearResultDirectory()
+//   Functions are ordered by call sequence:
+//     DiscoverBuildFiles()
+//       → loadCachedBuildFiles()
+//       → fetchBuildFiles()
+//           → fetchBuildFilesFromADO()
+//           → fetchBuildFilesFromGitHub()
+//       → diffSiblings()
+//       → clearResultDirectory()
 // ═══════════════════════════════════════════════════════════════════════════════
 
 package workflow
@@ -24,32 +29,35 @@ import (
 	"dalec-mapping/utils"
 )
 
-// ─── Chunk 1 · MAIN ─────────────────────────────────────────────────────────
-
 // DiscoverBuildFiles fetches the Dockerfile and Makefile from the source repo at the
 // given tag, diffs them against cached siblings, and returns whether content changed.
 func DiscoverBuildFiles() (bool, error) {
-	// ── State ──
 	onboard := pipeline.Current.Onboard
 	tag := pipeline.Current.Tag.Full
 	repoURL := onboard.Repository
+
+	log.Println()
+	log.Printf("── Discover: %s @ %s ──\n", onboard.SpecImageName, tag)
+	log.Printf("  Repository: %s\n", repoURL)
 
 	if err := clearResultDirectory(utils.ResultDir); err != nil {
 		log.Printf("⚠️  Warning: %v\n", err)
 	}
 
-	// ── Resolve file paths ──
+	loadCachedBuildFiles(onboard)
+
 	_, componentPath := repository.SplitComponent(repoURL)
 	dockerfilePath := repository.ResolveFilePath(componentPath, onboard.DockerfileDir)
 	makefilePath := repository.ResolveFilePath(componentPath, onboard.MakefileDir)
 
-	// ── Fetch build files ──
+	log.Printf("  Dockerfile path: %s\n", dockerfilePath)
+	log.Printf("  Makefile path:   %s\n", makefilePath)
+
 	dockerfileContent, makefileContent, err := fetchBuildFiles(repoURL, dockerfilePath, makefilePath, tag)
 	if err != nil {
 		return false, err
 	}
 
-	// ── Diff against cached siblings ──
 	cachedDF := onboard.DockerfileContent
 	cachedMF := onboard.MakefileContent
 	onboard.DockerfileContent = dockerfileContent
@@ -59,7 +67,33 @@ func DiscoverBuildFiles() (bool, error) {
 	return contentChanged, nil
 }
 
-// ─── Chunk 2 · FETCH ─────────────────────────────────────────────────────────
+// loadCachedBuildFiles fetches the previously-committed Dockerfile/Makefile
+// from the spec repo's onboard directory. These cached files are used to
+// detect content changes during the diff step.
+func loadCachedBuildFiles(component *onboarding.ComponentConfig) {
+	rawBaseURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s",
+		utils.OnboardOwner, utils.OnboardRepo, utils.OnboardBranch)
+
+	dockerfilePath := component.OnboardDir + "/Dockerfile"
+	dockerfileContent, err := repository.FetchRawContent(rawBaseURL + "/" + dockerfilePath)
+	if err == nil {
+		component.DockerfileContent = dockerfileContent
+	}
+
+	makefilePath := component.OnboardDir + "/Makefile"
+	makefileContent, err := repository.FetchRawContent(rawBaseURL + "/" + makefilePath)
+	if err == nil {
+		component.MakefileContent = makefileContent
+	}
+
+	hasDockerfile := component.DockerfileContent != nil
+	hasMakefile := component.MakefileContent != nil
+	if !hasDockerfile && !hasMakefile {
+		log.Printf("No sibling Dockerfile/Makefile found for %s — treating as first-time onboard\n", component.SpecImageName)
+		return
+	}
+	log.Printf("Found existing siblings for %s (Dockerfile=%v, Makefile=%v) — will diff\n", component.SpecImageName, hasDockerfile, hasMakefile)
+}
 
 // fetchBuildFiles dispatches to the ADO or GitHub fetcher based on the repo URL.
 func fetchBuildFiles(repoURL, dockerfilePath, makefilePath, tag string) ([]byte, []byte, error) {
@@ -136,8 +170,6 @@ func fetchBuildFilesFromGitHub(repoURL, dockerfilePath, makefilePath, tag string
 
 	return dockerfileContent, makefileContent, nil
 }
-
-// ─── Chunk 3 · HELPERS ──────────────────────────────────────────────────────
 
 // diffSiblings compares fresh Dockerfile/Makefile against cached versions and
 // returns true if content has changed. Only compares files that have both a

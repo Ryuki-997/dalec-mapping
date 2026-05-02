@@ -12,16 +12,14 @@ import (
 	"log"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/joho/godotenv"
 )
 
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // Main — Dalec Spec Pipeline
 //
-//   Chunk 1 · ENTRY       main(), parseFlags(), loadEnv(), fetchOnboardFiles()
+//   Chunk 1 · ENTRY       main(), parseFlags(), loadEnv(), fetchOnboardStates()
 //   Chunk 2 · ORCHESTRATION processOnboardFiles(), submitPRs()
 //   Chunk 3 · PIPELINE    processTag(), decideAction()
 //   Chunk 4 · ACTIONS     bumpCommit(), generateWork(), GitPush()
@@ -42,11 +40,10 @@ func main() {
 
 	states := fetchOnboardStates(inputPath)
 	prGroups := processOnboardStates(states)
-	log.Printf("Pipeline complete for all components and tags — preparing PRs\n")
 	for groupKey, entry := range prGroups {
 		log.Printf("Group: %s, Components: %d\n", groupKey, len(entry.Components))
 	}
-	// submitPRs(prGroups)
+	submitPRs(prGroups)
 }
 
 // parseFlags registers and parses CLI flags, returning the resolved values.
@@ -71,7 +68,7 @@ func loadEnv() {
 }
 
 func fetchOnboardStates(inputPath string) []pipeline.State {
-	states, err := workflow.FetchOnboardFiles(inputPath)
+	states, err := workflow.FetchOnboardStates(inputPath)
 	if err != nil {
 		log.Fatalf("❌ Failed to fetch onboard data: %v", err)
 	}
@@ -179,6 +176,7 @@ func processTag(state pipeline.State) (string, *workflow.ComponentSpec) {
 		return remotePath, &workflow.ComponentSpec{
 			Onboard:     onboard,
 			Tag:         tagSet.Stripped,
+			Revision:    tagSet.Revision,
 			SpecContent: specContent,
 			SpecOnly:    false,
 		}
@@ -229,15 +227,13 @@ func bumpCommit(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet) (
 	return remotePath, &workflow.ComponentSpec{
 		Onboard:     onboard,
 		Tag:         tagSet.Stripped,
+		Revision:    tagSet.Revision,
 		SpecContent: specContent,
 		SpecOnly:    true,
 	}
 }
 
 func generateWork(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet) (string, []byte, error) {
-	log.Println("Dalec Spec Generator - Scheduled Job")
-	log.Printf("Started at: %s", time.Now().Format(time.RFC3339))
-
 	_, err := workflow.GenerateSpec()
 	if err != nil {
 		return "", nil, err

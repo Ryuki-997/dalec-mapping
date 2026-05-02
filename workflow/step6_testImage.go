@@ -10,9 +10,14 @@
 //   test run (BuildKit needs an ADO_TOKEN secret for private ADO git sources,
 //   which is handled by test.sh / the pipeline YAML, not here).
 //
-//   Chunk 1 · MAIN    TestImage()
-//   Chunk 2 · STEPS   resolveTestTargets(), buildAllTargets(), verifyContainerRuns()
-//   Chunk 3 · DOCKER  clearDockerImages(), buildDockerImage(), runDockerImage()
+//   Functions are ordered by call sequence:
+//     TestImage()
+//       → clearDockerImages()
+//       → resolveTestTargets()
+//       → buildAllTargets()
+//           → buildDockerImage()
+//       → verifyContainerRuns()
+//           → runDockerImage()
 // ═══════════════════════════════════════════════════════════════════════════════
 
 package workflow
@@ -27,8 +32,6 @@ import (
 	"dalec-mapping/domain/contents"
 	"dalec-mapping/utils"
 )
-
-// ─── Chunk 1 · MAIN ─────────────────────────────────────────────────────────
 
 // TestImage builds and runs the container from the spec, then applies any test scripts.
 func TestImage(specPath, imageName, tag string, targets []string) error {
@@ -58,7 +61,17 @@ func TestImage(specPath, imageName, tag string, targets []string) error {
 	return nil
 }
 
-// ─── Chunk 2 · STEPS ────────────────────────────────────────────────────────
+// clearDockerImages does a full docker system prune to ensure a clean slate.
+func clearDockerImages() error {
+	cmd := exec.Command("docker", "system", "prune", "-a", "--volumes", "-f")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("docker system prune failed: %w", err)
+	}
+	log.Println("    Pruned all docker images, containers, and volumes")
+	return nil
+}
 
 // resolveTestTargets returns the given targets or falls back to default targets.
 func resolveTestTargets(targets []string) []string {
@@ -84,31 +97,6 @@ func buildAllTargets(targets []string, imageTag string) error {
 	return nil
 }
 
-// verifyContainerRuns runs the azlinux3-container image with no args to confirm
-// the binary is present and executable.
-func verifyContainerRuns(imageTag string) error {
-	containerImageTag := fmt.Sprintf("%s-%s", imageTag, "azlinux3-container")
-	log.Printf("    Running %s (no args)...", containerImageTag)
-	if err := runDockerImage(containerImageTag, contents.AzLinux3Container.Platform()); err != nil {
-		return fmt.Errorf("failed to run docker image: %w", err)
-	}
-	return nil
-}
-
-// ─── Chunk 3 · DOCKER ────────────────────────────────────────────────────────
-
-// clearDockerImages does a full docker system prune to ensure a clean slate.
-func clearDockerImages() error {
-	cmd := exec.Command("docker", "system", "prune", "-a", "--volumes", "-f")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("docker system prune failed: %w", err)
-	}
-	log.Println("    Pruned all docker images, containers, and volumes")
-	return nil
-}
-
 // buildDockerImage builds a container/artifact using the Dalec spec via docker build.
 func buildDockerImage(imageTag, target, platform string) error {
 	cmd := exec.Command("docker", "build",
@@ -122,6 +110,17 @@ func buildDockerImage(imageTag, target, platform string) error {
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("docker build failed: %w", err)
+	}
+	return nil
+}
+
+// verifyContainerRuns runs the azlinux3-container image with no args to confirm
+// the binary is present and executable.
+func verifyContainerRuns(imageTag string) error {
+	containerImageTag := fmt.Sprintf("%s-%s", imageTag, "azlinux3-container")
+	log.Printf("    Running %s (no args)...", containerImageTag)
+	if err := runDockerImage(containerImageTag, contents.AzLinux3Container.Platform()); err != nil {
+		return fmt.Errorf("failed to run docker image: %w", err)
 	}
 	return nil
 }

@@ -50,7 +50,6 @@ func TransformToDalec() parser.DalecSpec {
 	// Detect pinned Go toolchain image from Dockerfile stages and store version.
 	if pin := parser.DetectGoToolchainPin(pipeline.Current.Dockerfile.Stages); pin != nil {
 		pipeline.Current.GoVersion = pin.GoVersion()
-		log.Printf("Go toolchain pin detected: %s (version: %s)\n", pin.ImageRef, pipeline.Current.GoVersion)
 	}
 
 	// Detect go mod download patterns once — shared across build, sources, and args.

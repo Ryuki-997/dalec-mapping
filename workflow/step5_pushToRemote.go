@@ -1,11 +1,12 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// Step 6 — Push to Remote
+// Step 5 — Push to Remote
 //
 //   Commits the generated spec file and sibling Dockerfile/Makefile to the
 //   onboard repo via the GitHub Contents API.
 //
-//   Chunk 1 · MAIN   PushToRemote()
-//   Chunk 2 · HELPER commitFile()
+//   Functions are ordered by call sequence:
+//     PushToRemote()
+//       → commitFile()
 // ═══════════════════════════════════════════════════════════════════════════════
 
 package workflow
@@ -22,12 +23,9 @@ import (
 	"dalec-mapping/utils"
 )
 
-// ─── Chunk 1 · MAIN ─────────────────────────────────────────────────────────
-
 // PushToRemote commits the spec file to the onboard repo's base branch.
 // When specOnly is false, sibling Dockerfile/Makefile are also committed.
 func PushToRemote(tag string, specOnly bool) error {
-	// ── State ──
 	onboard := pipeline.Current.Onboard
 	dir := onboard.SpecDir()
 	specImageName := onboard.SpecImageName
@@ -73,8 +71,6 @@ func PushToRemote(tag string, specOnly bool) error {
 
 	return nil
 }
-
-// ─── Chunk 2 · HELPER ───────────────────────────────────────────────────────
 
 // commitFile pushes a single file to the onboard repo via the GitHub Contents API.
 // If the file already exists, its SHA is included to perform an update.

@@ -24,8 +24,8 @@ package transformer
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import (
-	"dalec-mapping/pipeline"
 	"dalec-mapping/domain/contents"
+	"dalec-mapping/pipeline"
 	"log"
 	"os"
 	"strings"
@@ -135,7 +135,6 @@ func mergeDockerfileArgs(args map[string]interface{}, makefileInfo *contents.Mak
 			continue
 		}
 		args[k] = value
-		log.Printf("key: %s, value: %v\n", k, value)
 	}
 	return args
 }
@@ -153,7 +152,6 @@ func mergeMakefileVars(args map[string]interface{}, makefileInfo *contents.Makef
 		if rawValue, exists := makefileInfo.Variables[varName]; exists {
 			resolved := expandVarRefs(makefileInfo, rawValue)
 			args[varName] = resolved
-			log.Printf("key (from Makefile): %s, value: %v\n", varName, resolved)
 		}
 	}
 	return args
@@ -182,7 +180,6 @@ func mergeSubmoduleVars(args map[string]interface{}, makefileInfo *contents.Make
 		}
 		value = expandVarRefs(makefileInfo, value)
 		args[varName] = value
-		log.Printf("key (from submodule): %s, value: %v\n", varName, value)
 	}
 	return args
 }
@@ -203,8 +200,6 @@ type varRef struct {
 // using Makefile variables and Dockerfile ARGs. Make built-in function calls
 // (e.g. $(shell ...)) are stripped rather than expanded.
 func expandVarRefs(makefileInfo *contents.MakefileInfo, value string) string {
-	log.Printf("Before: %s\n", value)
-
 	for {
 		ref, ok := parseNextVarRef(value)
 		if !ok || ref.escaped {
@@ -219,7 +214,6 @@ func expandVarRefs(makefileInfo *contents.MakefileInfo, value string) string {
 		value = substituteVar(value, ref, makefileInfo)
 	}
 
-	log.Printf("After: %s\n", value)
 	return value
 }
 
@@ -255,7 +249,6 @@ func parseNextVarRef(value string) (varRef, bool) {
 // stripMakeFuncCall removes a Make built-in function call (e.g. $(shell ...))
 // from value and trims any resulting leading slashes or whitespace.
 func stripMakeFuncCall(value string, ref varRef) string {
-	log.Printf("Skipping Make function: %s%s%s\n", ref.openTok, ref.key, ref.closeTok)
 	value = value[:ref.pos] + value[ref.pos+ref.span:]
 	value = strings.TrimLeft(value, "/")
 	return strings.TrimSpace(value)
@@ -265,8 +258,6 @@ func stripMakeFuncCall(value string, ref varRef) string {
 // with its resolved value from Makefile variables or Dockerfile ARGs.
 // Exits if the variable cannot be resolved.
 func substituteVar(value string, ref varRef, makefileInfo *contents.MakefileInfo) string {
-	log.Printf("Nested replacement found at index: %d (pattern: %s)\n", ref.pos, ref.openTok)
-
 	replacement, ok := resolveVarRef(ref.key, makefileInfo)
 	if !ok {
 		log.Printf("Undefined makefile variable %s referenced in value: %s\n", ref.key, value)
@@ -274,7 +265,6 @@ func substituteVar(value string, ref varRef, makefileInfo *contents.MakefileInfo
 	}
 
 	value = strings.ReplaceAll(value, ref.openTok+ref.key+ref.closeTok, replacement)
-	log.Printf("Value after nested replacement: %s\n", value)
 	return value
 }
 

@@ -23,7 +23,6 @@ package transformer
 import (
 	"dalec-mapping/domain/contents"
 	"dalec-mapping/pipeline"
-	"log"
 
 	"path/filepath"
 	"regexp"
@@ -59,7 +58,6 @@ func computeArtifactPaths() map[string]interface{} {
 	if pipeline.Current.Spec != nil && len(pipeline.Current.Spec.PipelineSteps) > 0 {
 		if wrapperPath := lastGoBuildOutputInPipeline(pipeline.Current.Spec.PipelineSteps); wrapperPath != "" {
 			paths[filepath.ToSlash(wrapperPath)] = struct{}{}
-			log.Printf("ARTIFACTS: %v\n", wrapperPath)
 			return paths
 		}
 	}
@@ -75,14 +73,12 @@ func computeArtifactPaths() map[string]interface{} {
 			}
 			artifact := filepath.ToSlash(p)
 			paths[artifact] = struct{}{}
-			log.Printf("ARTIFACTS: %v\n", artifact)
 		}
 		return paths
 	}
 
 	// Fallback.
 	paths["/go/bin/"+pipeline.Current.RepoInfo.Repo] = struct{}{}
-	log.Printf("ARTIFACTS: /go/bin/%s\n", pipeline.Current.RepoInfo.Repo)
 	return paths
 }
 

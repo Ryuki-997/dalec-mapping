@@ -151,10 +151,6 @@ type ComponentConfig struct {
 	// Dockerfile/Makefile content (cached from onboard repo in step1, then overwritten with fresh content in step2).
 	DockerfileContent []byte `yaml:"-"`
 	MakefileContent   []byte `yaml:"-"`
-
-	// ResolvedTags holds fully-resolved tag sets confirmed against the remote branch.
-	// Populated in resolveAndBuildStates after filtering actionable tags.
-	ResolvedTags []TagSet `yaml:"-"`
 }
 
 // SpecDir returns the component's directory path in the onboard repo.
