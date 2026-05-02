@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// Step 2 — Discover
+// Step 3 — Discover
 //
 //   Fetches the source Dockerfile and Makefile for the given tag, compares them
 //   against cached siblings from a previous onboard, and returns whether

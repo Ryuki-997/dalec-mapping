@@ -10,6 +10,8 @@ package pipeline
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import (
+	"fmt"
+
 	"dalec-mapping/domain/contents"
 	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/domain/repository"
@@ -30,12 +32,6 @@ type State struct {
 	// RepoInfo is the resolved repository metadata for the current component.
 	RepoInfo *repository.RepoInfo
 
-	// BuildTargets is the resolved set of build targets from onboard.yml.
-	BuildTargets []contents.BuildTarget
-
-	// GoVersion is the Go toolchain version detected from the Dockerfile (e.g. "1.24").
-	GoVersion string
-
 	// Dockerfile holds the parsed AST result of the project's Dockerfile.
 	Dockerfile contents.DockerfileInfo
 
@@ -48,6 +44,30 @@ type State struct {
 
 // Current is the singleton pipeline state for the active (component, tag) iteration.
 var Current State
+
+// TagCache maps repoURL → tagName → commitSHA.
+// Populated once during step 1 tag fetching, then read by later steps
+// (e.g. step 3 bump-commit) to avoid redundant API calls.
+var TagCache map[string]map[string]string
+
+// InitTagCache creates an empty tag cache. Call once before step 1.
+func InitTagCache() {
+	TagCache = make(map[string]map[string]string)
+}
+
+// LookupTagCommit returns the cached commit SHA for the given repo URL and tag.
+// Returns an error if the repo or tag is not in the cache.
+func LookupTagCommit(repoURL, fullTag string) (string, error) {
+	repoTags, ok := TagCache[repoURL]
+	if !ok {
+		return "", fmt.Errorf("no cached tags for repo %s", repoURL)
+	}
+	commitSHA, ok := repoTags[fullTag]
+	if !ok {
+		return "", fmt.Errorf("tag %s not found in cache for repo %s", fullTag, repoURL)
+	}
+	return commitSHA, nil
+}
 
 // Reset zeroes all fields in preparation for a new (component, tag) iteration.
 func Reset() {

@@ -1,17 +1,13 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// Step 3 — Bump Commit
+// Step 4 — Bump Commit
 //
 //   Fast-path for re-onboards where the Dockerfile/Makefile haven't changed.
 //   Copies a previous tag's spec (templateTag), updates args.COMMIT and
 //   args.VERSION for the new tag, and writes a new spec file locally for push.
 //
-//   Functions are ordered by call sequence:
-//     BumpCommit()
-//       → fetchTemplateSpec()
-//       → resolveNewCommit()
-//       → updateSpecArgs()
-//           → findMapValue()
-//       → writeSpecFile()
+//   Chunk 1 · MAIN    BumpCommit()
+//   Chunk 2 · STEPS   fetchTemplateSpec(), resolveNewCommit(), updateSpecArgs(), writeSpecFile()
+//   Chunk 3 · HELPER  findMapValue()
 // ═══════════════════════════════════════════════════════════════════════════════
 
 package workflow
@@ -31,6 +27,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ─── Chunk 1 · MAIN ─────────────────────────────────────────────────────────
+
 // BumpCommit copies a previous tag's spec (templateTag), updates args.COMMIT
 // and args.VERSION for the new tag, and writes the result to utils.SpecPath.
 func BumpCommit(templateTag string, templateRevision int) (string, error) {
@@ -48,10 +46,11 @@ func BumpCommit(templateTag string, templateRevision int) (string, error) {
 		return "", err
 	}
 
-	newCommit, err := resolveNewCommit(onboard.Repository, tagSet.Full)
+	newCommit, err := pipeline.LookupTagCommit(onboard.Repository, tagSet.Full)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to resolve commit for tag %s: %w", tagSet.Full, err)
 	}
+	log.Printf("   Commit SHA (from cache): %s\n", newCommit)
 
 	if err := updateSpecArgs(specNode, tagSet.Stripped, newCommit); err != nil {
 		return "", err
@@ -64,6 +63,8 @@ func BumpCommit(templateTag string, templateRevision int) (string, error) {
 	log.Printf("✅ Commit bump complete — written to %s\n", utils.SpecPath)
 	return remotePath, nil
 }
+
+// ─── Chunk 2 · STEPS ─────────────────────────────────────────────────────────
 
 // fetchTemplateSpec fetches and decodes a previous tag's spec from the onboard repo.
 func fetchTemplateSpec(templateRemotePath string) (*yaml.Node, error) {
@@ -89,25 +90,6 @@ func fetchTemplateSpec(templateRemotePath string) (*yaml.Node, error) {
 	}
 
 	return &specNode, nil
-}
-
-// resolveNewCommit fetches the commit SHA for the given tag from the source repo.
-func resolveNewCommit(repoURL, fullTag string) (string, error) {
-	var newCommit string
-	var err error
-
-	if repository.IsADORepo(repoURL) {
-		newCommit, err = repository.FetchADOTagCommit(repoURL, fullTag)
-	} else {
-		owner, repoName, _ := repository.FetchRepositorySegments(repoURL)
-		newCommit, err = repository.FetchTagCommit(owner, repoName, fullTag)
-	}
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve commit for tag %s: %w", fullTag, err)
-	}
-
-	log.Printf("   New commit SHA: %s\n", newCommit)
-	return newCommit, nil
 }
 
 // updateSpecArgs updates args.COMMIT and args.VERSION in the parsed YAML node.
@@ -148,6 +130,8 @@ func writeSpecFile(specNode *yaml.Node) error {
 	}
 	return nil
 }
+
+// ─── Chunk 3 · HELPER ───────────────────────────────────────────────────────
 
 // findMapValue searches a YAML node tree for a mapping key and returns its value node.
 func findMapValue(root *yaml.Node, key string) *yaml.Node {

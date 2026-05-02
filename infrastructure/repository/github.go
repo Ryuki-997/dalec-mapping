@@ -409,7 +409,9 @@ func FetchTagCommit(owner, repo, tagRef string) (string, error) {
 }
 
 // FetchAllGithubTags fetches all git tags for a repository.
-// Each TagInfo carries the tag name and its commit SHA.
+// Each TagInfo carries the tag name and its dereferenced commit SHA.
+// Annotated tags (object.type == "tag") are resolved to the underlying commit
+// via the commits API; lightweight tags already point directly at a commit.
 func FetchAllGithubTags(owner, repo string) ([]TagInfo, error) {
 	tagData, err := FetchJSONArray(fmt.Sprintf("repos/%s/%s/git/refs/tags", owner, repo))
 	if err != nil {
@@ -424,9 +426,23 @@ func FetchAllGithubTags(owner, repo string) ([]TagInfo, error) {
 		}
 		name := strings.TrimPrefix(ref, "refs/tags/")
 
-		var sha string
-		if obj, ok := item["object"].(map[string]interface{}); ok {
-			sha, _ = obj["sha"].(string)
+		obj, ok := item["object"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		sha, _ := obj["sha"].(string)
+		objType, _ := obj["type"].(string)
+
+		// Annotated tags point at a tag object, not a commit.
+		// Dereference to the actual commit SHA.
+		if objType == "tag" {
+			commitSHA, err := FetchTagCommit(owner, repo, name)
+			if err != nil {
+				log.Printf("⚠️  Failed to dereference annotated tag %s: %v\n", name, err)
+				continue
+			}
+			sha = commitSHA
 		}
 
 		tags = append(tags, TagInfo{Name: name, Commit: sha})

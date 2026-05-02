@@ -10,16 +10,22 @@ import (
 	"strings"
 )
 
-// ResolveBuildTargets validates the targets list from onboard.yml and stores
-// the result in pipeline.Current.BuildTargets. Returns an error if no valid
-// targets are found.
+// ResolveBuildTargets validates the targets list from onboard.yml and replaces
+// pipeline.Current.Onboard.Targets with only the valid entries. Returns an
+// error if no valid targets remain.
 func ResolveBuildTargets() error {
 	onboardInfo := pipeline.Current.Onboard
 
-	pipeline.Current.BuildTargets = resolveOnboardTargets(onboardInfo.Targets)
-	if len(pipeline.Current.BuildTargets) == 0 {
+	resolved := resolveOnboardTargets(onboardInfo.Targets)
+	if len(resolved) == 0 {
 		return fmt.Errorf("no valid targets in onboard.yml for %s", onboardInfo.SpecImageName)
 	}
+
+	validated := make([]string, len(resolved))
+	for i, bt := range resolved {
+		validated[i] = string(bt)
+	}
+	onboardInfo.Targets = validated
 
 	return nil
 }
@@ -39,6 +45,16 @@ func resolveOnboardTargets(targets []string) []contents.BuildTarget {
 	return resolved
 }
 
+// onboardBuildTargets returns the resolved build targets from the current
+// onboard config as typed BuildTarget values.
+func onboardBuildTargets() []contents.BuildTarget {
+	targets := make([]contents.BuildTarget, len(pipeline.Current.Onboard.Targets))
+	for i, t := range pipeline.Current.Onboard.Targets {
+		targets[i] = contents.BuildTarget(t)
+	}
+	return targets
+}
+
 // TransformToDalec converts parsed Dockerfile info to Dalec spec format.
 // Reads all inputs from pipeline.Current.
 func TransformToDalec() parser.DalecSpec {
@@ -49,7 +65,7 @@ func TransformToDalec() parser.DalecSpec {
 
 	// Detect pinned Go toolchain image from Dockerfile stages and store version.
 	if pin := parser.DetectGoToolchainPin(pipeline.Current.Dockerfile.Stages); pin != nil {
-		pipeline.Current.GoVersion = pin.GoVersion()
+		pipeline.Current.RepoInfo.GoVersion = pin.GoVersion()
 	}
 
 	// Detect go mod download patterns once — shared across build, sources, and args.

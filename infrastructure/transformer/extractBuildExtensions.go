@@ -9,17 +9,18 @@ import (
 // overrides (e.g. windows/amd64 for the windowscross target).
 func extractBuildExtensions() map[string]interface{} {
 	onboard := pipeline.Current.Onboard
+	buildTargets := onboardBuildTargets()
 
 	ext := map[string]interface{}{
 		"image-name":    onboard.SpecImageName,
-		"build-targets": pipeline.Current.BuildTargets,
+		"build-targets": buildTargets,
 	}
 
 	if onboard.SpecRepository != "" {
 		ext["repository"] = onboard.SpecRepository
 	}
 
-	for _, bt := range pipeline.Current.BuildTargets {
+	for _, bt := range buildTargets {
 		if bt.IsWindows() {
 			ext["per-target"] = map[string]interface{}{
 				bt.OS(): map[string]interface{}{

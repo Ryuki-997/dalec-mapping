@@ -54,7 +54,7 @@ func extractTargetsSection() map[string]interface{} {
 	targets := make(map[string]interface{})
 	seen := make(map[string]bool)
 
-	for _, buildTarget := range pipeline.Current.BuildTargets {
+	for _, buildTarget := range onboardBuildTargets() {
 		osName := buildTarget.OS()
 		if seen[osName] {
 			continue
@@ -150,7 +150,7 @@ func linuxDeps(osName string, intermediateDeps []parser.IntermediateRuntimeDeps)
 	switch osName {
 	case "azlinux3":
 		if repoInfo.Generator == repository.GoModGenerator {
-			buildDeps["msft-golang"] = goToolchainDep(pipeline.Current.GoVersion)
+			buildDeps["msft-golang"] = goToolchainDep(pipeline.Current.RepoInfo.GoVersion)
 		}
 		for _, pkg := range []string{"SymCrypt", "SymCrypt-OpenSSL", "openssl-libs"} {
 			buildDeps[pkg] = map[string]interface{}{}
@@ -159,7 +159,7 @@ func linuxDeps(osName string, intermediateDeps []parser.IntermediateRuntimeDeps)
 
 	case "bookworm", "bullseye", "noble", "jammy", "focal", "bionic":
 		if repoInfo.Generator == repository.GoModGenerator {
-			buildDeps["msft-golang"] = goToolchainDep(pipeline.Current.GoVersion)
+			buildDeps["msft-golang"] = goToolchainDep(pipeline.Current.RepoInfo.GoVersion)
 			buildDeps["gcc"] = map[string]interface{}{}
 		}
 	}
@@ -228,7 +228,7 @@ func windowsDeps() map[string]interface{} {
 
 	buildDeps := map[string]interface{}{}
 	if repoInfo.Generator == repository.GoModGenerator {
-		buildDeps["msft-golang"] = goToolchainDep(pipeline.Current.GoVersion)
+		buildDeps["msft-golang"] = goToolchainDep(pipeline.Current.RepoInfo.GoVersion)
 	}
 	return map[string]interface{}{
 		"build":       buildDeps,

@@ -20,5 +20,6 @@ type RepoInfo struct {
 	Version       string
 	License       string
 	LatestCommit  string
+	GoVersion     string // Go toolchain version detected from the Dockerfile (e.g. "1.24")
 	Generator     SourceGenerator
 }

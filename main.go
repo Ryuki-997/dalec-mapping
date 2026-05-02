@@ -38,7 +38,8 @@ func main() {
 		return
 	}
 
-	states := fetchOnboardStates(inputPath)
+	componentStates, existingPaths := fetchOnboardStates(inputPath)
+	states := resolveTagCache(componentStates, existingPaths)
 	prGroups := processOnboardStates(states)
 	for groupKey, entry := range prGroups {
 		log.Printf("Group: %s, Components: %d\n", groupKey, len(entry.Components))
@@ -67,14 +68,27 @@ func loadEnv() {
 	}
 }
 
-func fetchOnboardStates(inputPath string) []pipeline.State {
-	states, err := workflow.FetchOnboardStates(inputPath)
+func fetchOnboardStates(inputPath string) ([]pipeline.State, map[string]bool) {
+	states, existingPaths, err := workflow.FetchOnboardStates(inputPath)
 	if err != nil {
 		log.Fatalf("❌ Failed to fetch onboard data: %v", err)
 	}
 
 	if len(states) == 0 {
 		log.Fatalf("❌ Potentially No onboarding files found at path: %s", inputPath)
+	}
+
+	return states, existingPaths
+}
+
+func resolveTagCache(componentStates []pipeline.State, existingPaths map[string]bool) []pipeline.State {
+	states, err := workflow.ResolveTagCache(componentStates, existingPaths)
+	if err != nil {
+		log.Fatalf("❌ Failed to resolve tag cache: %v", err)
+	}
+
+	if len(states) == 0 {
+		log.Fatalf("❌ No actionable tags found for any component")
 	}
 
 	return states

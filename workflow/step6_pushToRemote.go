@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// Step 5 — Push to Remote
+// Step 6 — Push to Remote
 //
 //   Commits the generated spec file and sibling Dockerfile/Makefile to the
 //   onboard repo via the GitHub Contents API.

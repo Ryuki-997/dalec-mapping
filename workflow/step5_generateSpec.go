@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// Step 4 — Generate
+// Step 5 — Generate
 //
 //   Parses the Dockerfile and Makefile, then transforms them into a DALEC spec
 //   YAML file written to the result directory.
@@ -9,7 +9,6 @@
 //       → fetchRepoMetadata()
 //       → parseAndExtract()
 //       → buildAndWriteSpec()
-//           → collectResolvedTargets()
 // ═══════════════════════════════════════════════════════════════════════════════
 
 package workflow
@@ -80,9 +79,6 @@ func buildAndWriteSpec() ([]string, error) {
 		return nil, err
 	}
 
-	resolvedTargets := collectResolvedTargets()
-
-
 	dalecSpec := transformer.TransformToDalec()
 
 	if err := parser.WriteOutput(dalecSpec); err != nil {
@@ -90,14 +86,5 @@ func buildAndWriteSpec() ([]string, error) {
 	}
 
 	log.Printf("✅ Successfully generated %s\n\n", utils.ResultDir)
-	return resolvedTargets, nil
-}
-
-// collectResolvedTargets converts pipeline.Current.BuildTargets to a string slice.
-func collectResolvedTargets() []string {
-	resolvedTargets := make([]string, len(pipeline.Current.BuildTargets))
-	for i, buildTarget := range pipeline.Current.BuildTargets {
-		resolvedTargets[i] = string(buildTarget)
-	}
-	return resolvedTargets
+	return pipeline.Current.Onboard.Targets, nil
 }
