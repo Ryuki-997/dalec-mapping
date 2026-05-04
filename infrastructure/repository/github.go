@@ -48,7 +48,7 @@ const (
 // All public Fetch* functions delegate here.
 func makeGitHubRequest(request repository.GithubRequest, returnType GithubReturnType) (interface{}, error) {
 	var bodyReader io.Reader
-	if request.Payload != nil && (request.Method == repository.POST || request.Method == repository.PUT) {
+	if request.Payload != nil && (request.Method == repository.POST || request.Method == repository.PUT || request.Method == repository.PATCH) {
 		jsonBody, err := json.Marshal(request.Payload)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal request body: %w", err)

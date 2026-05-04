@@ -39,6 +39,7 @@ func ResolveTagCache(componentStates []pipeline.State, existingPaths map[string]
 		states = append(states, matchTagPatterns(component, repoTags, existingPaths)...)
 	}
 
+	log.Printf("Step 2 output: %d (component, tag) states resolved, %d repos cached\n", len(states), len(pipeline.TagCache))
 	log.Println()
 	return states, nil
 }
@@ -51,6 +52,7 @@ func fetchComponentTags(repoURL string) map[string]string {
 		return repoTags
 	}
 
+	log.Printf("Fetching tags for %s...\n", repoURL)
 	repoTags, err := semver.FetchRepoTags(repoURL)
 	if err != nil {
 		log.Printf("⚠️  Failed to fetch tags for %s: %v\n", repoURL, err)

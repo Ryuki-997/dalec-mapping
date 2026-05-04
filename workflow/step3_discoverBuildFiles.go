@@ -64,6 +64,8 @@ func DiscoverBuildFiles() (bool, error) {
 	onboard.MakefileContent = makefileContent
 
 	contentChanged := diffSiblings(onboard, cachedDF, cachedMF)
+
+	log.Printf("Step 3 output: contentChanged=%v\n", contentChanged)
 	return contentChanged, nil
 }
 

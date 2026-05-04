@@ -44,6 +44,7 @@ func GenerateSpec() ([]string, error) {
 		return nil, err
 	}
 
+	log.Printf("Step 5 output: targets=%v\n", resolvedTargets)
 	return resolvedTargets, nil
 }
 

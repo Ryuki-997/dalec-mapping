@@ -46,6 +46,7 @@ func FetchOnboardStates(inputPath string) ([]pipeline.State, map[string]bool, er
 		return nil, nil, err
 	}
 
+	log.Printf("Step 1 output: %d components loaded, %d existing paths indexed\n", len(states), len(existingPaths))
 	return states, existingPaths, nil
 }
 

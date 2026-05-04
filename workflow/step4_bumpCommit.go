@@ -60,6 +60,7 @@ func BumpCommit(templateTag string, templateRevision int) (string, error) {
 		return "", err
 	}
 
+	log.Printf("Step 4 output: %s\n", remotePath)
 	log.Printf("✅ Commit bump complete — written to %s\n", utils.SpecPath)
 	return remotePath, nil
 }
