@@ -7,14 +7,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ReviewMode controls how generated specs are delivered.
-type ReviewMode string
-
-const (
-	ManualReview ReviewMode = "ManualReview" // Generate spec → test → create PR for approval (default)
-	AutoReview   ReviewMode = "AutoReview"   // Generate spec → test → push directly to remote (no PR)
-)
-
 // ─── YAML-level types (partner-level onboard.yml) ────────────────────────────
 
 // OnboardFile is the top-level structure of a partner's onboard.yml.
@@ -137,9 +129,8 @@ type ComponentConfig struct {
 	Repository    string     `yaml:"repository"`
 	TagPatterns   []string   `yaml:"tags"`
 	Targets       []string   `yaml:"targets"`
-	Reviewers     []string   `yaml:"reviewers,omitempty"`
-	ReviewMode    ReviewMode `yaml:"reviewMode,omitempty"`
-	DockerfileDir string     `yaml:"dockerfile"`
+	Reviewers     []string `yaml:"reviewers,omitempty"`
+	DockerfileDir string   `yaml:"dockerfile"`
 	MakefileDir   string     `yaml:"makefile"`
 
 	// Runtime fields (set during Flatten / pipeline, not from YAML).

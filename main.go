@@ -22,7 +22,7 @@ import (
 //   Chunk 1 · ENTRY       main(), parseFlags(), loadEnv(), fetchOnboardStates()
 //   Chunk 2 · ORCHESTRATION processOnboardFiles(), submitPRs()
 //   Chunk 3 · PIPELINE    processTag(), decideAction()
-//   Chunk 4 · ACTIONS     bumpCommit(), generateWork(), GitPush()
+//   Chunk 4 · ACTIONS     bumpCommit(), generateWork()
 //   Chunk 5 · PATCHING    runPatchWorkflow()
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -147,7 +147,7 @@ func submitPRs(prGroups map[string]*workflow.PREntry) {
 // ─── Chunk 3 · PIPELINE ─────────────────────────────────────────────────────
 
 // processTag runs the full pipeline for a single tag and returns the remote
-// spec path (if pushed directly) and a PR entry (if a PR should be created).
+// spec path and a ComponentSpec queued for PR creation.
 func processTag(state pipeline.State) (string, *workflow.ComponentSpec) {
 	onboard := state.Onboard
 	tagSet := state.Tag
@@ -182,11 +182,6 @@ func processTag(state pipeline.State) (string, *workflow.ComponentSpec) {
 			log.Printf("⚠️  Skipping %s @ %s: %v\n", onboard.SpecImageName, tagSet.Full, err)
 			return "", nil
 		}
-		if onboard.ReviewMode == onboarding.AutoReview {
-			GitPush(onboard, remotePath, tagSet.Stripped, nil)
-			return remotePath, nil
-		}
-		// Defer PR creation — return component spec to be grouped.
 		return remotePath, &workflow.ComponentSpec{
 			Onboard:     onboard,
 			Tag:         tagSet.Stripped,
@@ -210,9 +205,7 @@ const (
 //
 //	First time onboard                → generate (full pipeline)
 //	Re-onboard + content changed      → generate (full pipeline)
-//	Re-onboard + content unchanged    → bump commit (update tag/hash, direct push)
-//
-// ReviewMode determines delivery: ManualReview → PR, AutoReview → direct push.
+//	Re-onboard + content unchanged    → bump commit (update tag/hash only)
 func decideAction(isFirstOnboard, contentChanged bool) pipelineAction {
 	if isFirstOnboard || contentChanged {
 		return actionGenerate
@@ -267,13 +260,6 @@ func generateWork(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet)
 
 	remotePath := semver.SpecFilePath(onboard.SpecDir(), onboard.SpecImageName, tagSet.Stripped, tagSet.Revision)
 	return remotePath, specContent, nil
-}
-
-func GitPush(onboard *onboarding.ComponentConfig, remotePath, tag string, resolvedTargets []string) {
-	if err := workflow.PushToRemote(tag, false); err != nil {
-		log.Fatalf("❌ Push failed for %s @ %s: %v", onboard.SpecImageName, tag, err)
-	}
-	log.Printf("✅ Spec pushed for %s @ %s\n", onboard.SpecImageName, tag)
 }
 
 // ─── Chunk 5 · PATCHING ─────────────────────────────────────────────────────

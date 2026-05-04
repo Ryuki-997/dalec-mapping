@@ -82,7 +82,7 @@ func extractBuildSection(goModDownloads []GoModDownloadInfo) (map[string]interfa
 // directly in each binary's build command — no global LDFLAGS env entry.
 func buildEnv() map[string]interface{} {
 	return map[string]interface{}{
-		"GOPROXY":      "direct",
+		"GOPROXY":      "${GOPROXY}",
 		"GOEXPERIMENT": "systemcrypto",
 		"CGO_ENABLED":  "1", // required by GOEXPERIMENT=systemcrypto (FIPS)
 		"VERSION":      "${VERSION}",

@@ -92,6 +92,7 @@ func extractArgs(referencedVars map[string]bool, goModDownloads []GoModDownloadI
 		"REVISION": pipeline.Current.Tag.Revision,
 		"VERSION":  repoInfo.Version,
 		"COMMIT":   repoInfo.LatestCommit,
+		"GOPROXY":  "direct",
 		// Emitted as blank — BuildKit injects actual values at build time.
 		"TARGETOS":   "",
 		"TARGETARCH": "",
