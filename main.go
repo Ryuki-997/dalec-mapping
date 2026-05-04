@@ -44,7 +44,7 @@ func main() {
 	for groupKey, entry := range prGroups {
 		log.Printf("Group: %s, Components: %d\n", groupKey, len(entry.Components))
 	}
-	// submitPRs(prGroups)
+	submitPRs(prGroups)
 }
 
 // parseFlags registers and parses CLI flags, returning the resolved values.
@@ -110,14 +110,13 @@ func processOnboardStates(states []pipeline.State) map[string]*workflow.PREntry 
 			continue
 		}
 
-		groupKey := onboard.SpecImageName
-		groupName := ""
+		groupName := onboard.SpecImageName
 		if onboard.GroupName != "" {
-			groupKey = onboard.GroupName
 			groupName = onboard.GroupName
 		}
+		groupKey := fmt.Sprintf("%s@%s", groupName, state.Tag.Stripped)
 		if prGroups[groupKey] == nil {
-			prGroups[groupKey] = &workflow.PREntry{GroupName: groupName}
+			prGroups[groupKey] = &workflow.PREntry{GroupName: onboard.GroupName}
 		}
 		comp.RemotePath = remotePath
 		prGroups[groupKey].Components = append(prGroups[groupKey].Components, *comp)

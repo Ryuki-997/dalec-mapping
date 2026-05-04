@@ -408,46 +408,40 @@ func FetchTagCommit(owner, repo, tagRef string) (string, error) {
 	return "", fmt.Errorf("failed to extract commit SHA from tag %q", tagRef)
 }
 
-// FetchAllGithubTags fetches all git tags for a repository.
-// Each TagInfo carries the tag name and its dereferenced commit SHA.
-// Annotated tags (object.type == "tag") are resolved to the underlying commit
-// via the commits API; lightweight tags already point directly at a commit.
+// FetchAllGithubTags fetches all git tags for a repository using the high-level
+// tags API, which returns the dereferenced commit SHA directly without additional
+// per-tag round-trips. Fetches all pages (100 tags per page).
 func FetchAllGithubTags(owner, repo string) ([]TagInfo, error) {
-	tagData, err := FetchJSONArray(fmt.Sprintf("repos/%s/%s/git/refs/tags", owner, repo))
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch tags for %s/%s: %w", owner, repo, err)
-	}
-
-	var tags []TagInfo
-	for _, item := range tagData {
-		ref, ok := item["ref"].(string)
-		if !ok {
-			continue
+	var allTags []TagInfo
+	page := 1
+	for {
+		pageData, err := FetchJSONArray(fmt.Sprintf("repos/%s/%s/tags?per_page=100&page=%d", owner, repo, page))
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch tags for %s/%s (page %d): %w", owner, repo, page, err)
 		}
-		name := strings.TrimPrefix(ref, "refs/tags/")
-
-		obj, ok := item["object"].(map[string]interface{})
-		if !ok {
-			continue
+		if len(pageData) == 0 {
+			break
 		}
 
-		sha, _ := obj["sha"].(string)
-		objType, _ := obj["type"].(string)
-
-		// Annotated tags point at a tag object, not a commit.
-		// Dereference to the actual commit SHA.
-		if objType == "tag" {
-			commitSHA, err := FetchTagCommit(owner, repo, name)
-			if err != nil {
-				log.Printf("⚠️  Failed to dereference annotated tag %s: %v\n", name, err)
+		for _, item := range pageData {
+			name, ok := item["name"].(string)
+			if !ok {
 				continue
 			}
-			sha = commitSHA
+			commit, ok := item["commit"].(map[string]interface{})
+			if !ok {
+				continue
+			}
+			sha, _ := commit["sha"].(string)
+			allTags = append(allTags, TagInfo{Name: name, Commit: sha})
 		}
 
-		tags = append(tags, TagInfo{Name: name, Commit: sha})
+		if len(pageData) < 100 {
+			break
+		}
+		page++
 	}
-	return tags, nil
+	return allTags, nil
 }
 
 // FetchRemoteSpecCommit fetches a spec file from the given repo/branch and parses
