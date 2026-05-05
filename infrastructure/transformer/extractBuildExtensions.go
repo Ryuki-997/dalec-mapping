@@ -12,7 +12,6 @@ func extractBuildExtensions() map[string]interface{} {
 	buildTargets := onboardBuildTargets()
 
 	ext := map[string]interface{}{
-		"image-name":    onboard.SpecImageName,
 		"build-targets": buildTargets,
 	}
 

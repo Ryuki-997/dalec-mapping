@@ -20,6 +20,7 @@ import (
 	"log"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"dalec-mapping/infrastructure/repository"
 )
@@ -93,20 +94,24 @@ type ActionableTag struct {
 }
 
 // SpecFilePath returns the remote path for a spec file at the given revision.
-// Format: {specDir}/{specImage}-{tag}-R{revision}-specfile.yml
-func SpecFilePath(specDir, specImage, tag string, revision int) string {
-	return fmt.Sprintf("%s/%s-%s-R%d-specfile.yml", specDir, specImage, tag, revision)
+// Format: {specDir}/{specImage}-{version}-{revision}-specfile.yml
+// version may be supplied with or without a leading "v" — it is stripped internally.
+func SpecFilePath(specDir, specImage, version string, revision int) string {
+	version = strings.TrimPrefix(version, "v")
+	return fmt.Sprintf("%s/%s-%s-%d-specfile.yml", specDir, specImage, version, revision)
 }
 
 // FindLatestRevision scans the tree paths for the highest revision number
-// of a spec file matching {specImage}-{tag}-R{n}-specfile.yml.
+// of a spec file matching {specImage}-{version}-{n}-specfile.yml.
+// version may be supplied with or without a leading "v" — it is stripped internally.
 // Returns (0, false) when no matching revision exists.
-func FindLatestRevision(specDir, specImage, tag string, treePaths map[string]bool) (int, bool) {
+func FindLatestRevision(specDir, specImage, version string, treePaths map[string]bool) (int, bool) {
+	version = strings.TrimPrefix(version, "v")
 	pattern := regexp.MustCompile(
-		fmt.Sprintf(`^%s/%s-%s-R(\d+)-specfile\.yml$`,
+		fmt.Sprintf(`^%s/%s-%s-(\d+)-specfile\.yml$`,
 			regexp.QuoteMeta(specDir),
 			regexp.QuoteMeta(specImage),
-			regexp.QuoteMeta(tag)),
+			regexp.QuoteMeta(version)),
 	)
 
 	highest := 0

@@ -69,8 +69,9 @@ func extractDefaultsSection(referencedVars map[string]bool, goModDownloads []GoM
 // extractMetadata writes the fixed metadata fields into the spec map.
 func extractMetadata(spec map[string]interface{}) {
 	repoInfo := pipeline.Current.RepoInfo
+	onboard := pipeline.Current.Onboard
 
-	spec["name"] = strings.ToLower(repoInfo.Repo)
+	spec["name"] = strings.ToLower(onboard.SpecImageName)
 	spec["packager"] = "Azure Container Upstream"
 	spec["vendor"] = "Microsoft Corporation"
 	spec["license"] = repoInfo.License

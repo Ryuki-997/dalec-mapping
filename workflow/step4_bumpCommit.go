@@ -38,7 +38,7 @@ func BumpCommit(templateTag string, templateRevision int) (string, error) {
 	tagSet := pipeline.Current.Tag
 
 	specDir := onboard.SpecDir()
-	remotePath := semver.SpecFilePath(specDir, onboard.SpecImageName, tagSet.Stripped, tagSet.Revision)
+	remotePath := semver.SpecFilePath(specDir, onboard.SpecImageName, tagSet.Version, tagSet.Revision)
 	templateRemotePath := semver.SpecFilePath(specDir, onboard.SpecImageName, semver.ToTag(templateTag), templateRevision)
 
 	log.Printf("Commit bump for %s @ %s R%d (template: %s)\n", onboard.SpecImageName, tagSet.Stripped, tagSet.Revision, templateRemotePath)

@@ -234,7 +234,7 @@ func bumpCommit(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet) (
 		log.Fatalf("❌ Failed to read bumped spec for %s @ %s: %v", onboard.SpecImageName, tagSet.Stripped, err)
 	}
 
-	remotePath := semver.SpecFilePath(onboard.SpecDir(), onboard.SpecImageName, tagSet.Stripped, tagSet.Revision)
+	remotePath := semver.SpecFilePath(onboard.SpecDir(), onboard.SpecImageName, tagSet.Version, tagSet.Revision)
 	log.Printf("✅ Step 4 complete: revision bump done for %s @ %s R%d — queued for PR\n", onboard.SpecImageName, tagSet.Stripped, tagSet.Revision)
 	return remotePath, &workflow.ComponentSpec{
 		Onboard:     onboard,
@@ -263,7 +263,7 @@ func generateWork(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet)
 		return "", nil, fmt.Errorf("failed to read generated spec: %w", err)
 	}
 
-	remotePath := semver.SpecFilePath(onboard.SpecDir(), onboard.SpecImageName, tagSet.Stripped, tagSet.Revision)
+	remotePath := semver.SpecFilePath(onboard.SpecDir(), onboard.SpecImageName, tagSet.Version, tagSet.Revision)
 	return remotePath, specContent, nil
 }
 

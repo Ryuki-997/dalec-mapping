@@ -136,7 +136,8 @@ func deriveFeatureBranch(entry PREntry, prID string) string {
 		componentName = entry.GroupName
 	}
 
-	return fmt.Sprintf("dalec/%s/%s/%s-R%d/%s", first.Onboard.SpecRepository, componentName, first.Tag, first.Revision, prID)
+	version := strings.TrimPrefix(first.Tag, "v")
+	return fmt.Sprintf("dalec/%s/%s/%s-%d/%s", first.Onboard.SpecRepository, componentName, version, first.Revision, prID)
 }
 
 // createFeatureBranch creates a new branch from the tip of OnboardBranch.
@@ -325,15 +326,17 @@ func updateBranchRef(repoPath, branch, commitSHA string) error {
 // adapting for single vs multi-component entries.
 func buildPRDescription(entry PREntry, componentNames []string, prID string) (title, body string) {
 	first := entry.Components[0]
+	version := strings.TrimPrefix(first.Tag, "v")
+	versionRevision := fmt.Sprintf("%s-%d", version, first.Revision)
 	if len(entry.Components) == 1 {
 		onboard := first.Onboard
-		title = fmt.Sprintf("[Dalec][%s] %s @ %s", prID, onboard.SpecImageName, first.Tag)
+		title = fmt.Sprintf("[Dalec][%s] %s @ %s", prID, onboard.SpecImageName, versionRevision)
 		body = fmt.Sprintf("Auto-generated Dalec spec for **%s** @ `%s`.\n\nRepository: %s\n\nRun ID: `%s`\n\nRequires 1 reviewer approval before merge.",
-			onboard.SpecImageName, first.Tag, onboard.Repository, prID)
+			onboard.SpecImageName, versionRevision, onboard.Repository, prID)
 	} else {
-		title = fmt.Sprintf("[Dalec][%s] %s @ %s", prID, entry.GroupName, first.Tag)
+		title = fmt.Sprintf("[Dalec][%s] %s @ %s", prID, entry.GroupName, versionRevision)
 		body = fmt.Sprintf("Auto-generated Dalec specs for group **%s** @ `%s`.\n\nComponents: %s\n\nRun ID: `%s`\n\nRequires 1 reviewer approval before merge.",
-			entry.GroupName, first.Tag, strings.Join(componentNames, ", "), prID)
+			entry.GroupName, versionRevision, strings.Join(componentNames, ", "), prID)
 	}
 	return title, body
 }
