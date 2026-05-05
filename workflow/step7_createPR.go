@@ -137,7 +137,12 @@ func deriveFeatureBranch(entry PREntry, prID string) string {
 	}
 
 	version := strings.TrimPrefix(first.Tag, "v")
-	return fmt.Sprintf("dalec/%s/%s/%s-%d/%s", first.Onboard.SpecRepository, componentName, version, first.Revision, prID)
+	versionRevision := fmt.Sprintf("%s-%d", version, first.Revision)
+
+	if first.Onboard.SpecRepository != "" {
+		return fmt.Sprintf("dalec/%s/%s/%s/%s", first.Onboard.SpecRepository, componentName, versionRevision, prID)
+	}
+	return fmt.Sprintf("dalec/%s/%s/%s", componentName, versionRevision, prID)
 }
 
 // createFeatureBranch creates a new branch from the tip of OnboardBranch.
@@ -182,7 +187,8 @@ func collectFiles(components []ComponentSpec) ([]string, []fileEntry, error) {
 		specImageName := onboard.SpecImageName
 		names = append(names, specImageName)
 
-		specFile := fmt.Sprintf("%s-%s-specfile.yml", specImageName, comp.Tag)
+		version := strings.TrimPrefix(comp.Tag, "v")
+		specFile := fmt.Sprintf("%s-%s-%d-specfile.yml", specImageName, version, comp.Revision)
 		files = append(files, fileEntry{
 			Path:    fmt.Sprintf("%s/%s", dir, specFile),
 			Content: comp.SpecContent,
