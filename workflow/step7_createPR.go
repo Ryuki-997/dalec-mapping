@@ -12,7 +12,6 @@
 //       → createFeatureBranch()
 //       → collectFiles()
 //           → collectSiblingFiles()
-//           → collectTestFiles()
 //       → commitAllFiles()
 //           → createBlob()
 //           → createTree()
@@ -189,12 +188,6 @@ func collectFiles(components []ComponentSpec) ([]string, []fileEntry, error) {
 		})
 
 		files = append(files, collectSiblingFiles(comp, dir)...)
-
-		testFiles, err := collectTestFiles(dir)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to collect test files for %s: %w", specImageName, err)
-		}
-		files = append(files, testFiles...)
 	}
 	return names, files, nil
 }
@@ -219,40 +212,6 @@ func collectSiblingFiles(comp ComponentSpec, dir string) []fileEntry {
 		})
 	}
 	return files
-}
-
-// collectTestFiles fetches test files from the spec repo's tests/ directory.
-// Returns an empty slice if no tests/ directory exists.
-func collectTestFiles(dir string) ([]fileEntry, error) {
-	testsDir := dir + "/tests"
-	contentsPath := fmt.Sprintf("repos/%s/%s/contents/%s?ref=%s",
-		utils.OnboardOwner, utils.OnboardRepo, testsDir, utils.OnboardBranch)
-
-	items, err := repository.FetchJSONArray(contentsPath)
-	if err != nil {
-		return nil, nil
-	}
-
-	var files []fileEntry
-	for _, item := range items {
-		itemType, _ := item["type"].(string)
-		name, _ := item["name"].(string)
-		downloadURL, _ := item["download_url"].(string)
-
-		if name == "" || downloadURL == "" || itemType == "dir" {
-			continue
-		}
-
-		content, err := repository.FetchRawContent(downloadURL)
-		if err != nil {
-			return nil, fmt.Errorf("failed to fetch test file %s: %w", name, err)
-		}
-		files = append(files, fileEntry{
-			Path:    fmt.Sprintf("%s/tests/%s", dir, name),
-			Content: content,
-		})
-	}
-	return files, nil
 }
 
 // commitAllFiles creates a single commit containing all files on the given branch
