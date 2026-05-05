@@ -10,27 +10,24 @@ import (
 	"strings"
 )
 
-func InitDefaultSpec() (*contents.DefaultSpec, error) {
+// ResolveBuildTargets validates the targets list from onboard.yml and replaces
+// pipeline.Current.Onboard.Targets with only the valid entries. Returns an
+// error if no valid targets remain.
+func ResolveBuildTargets() error {
 	onboardInfo := pipeline.Current.Onboard
-	repoInfo := pipeline.Current.RepoInfo
 
-	// Initialize & Populate Source of Truth Attributes from onboarding and repository info
-	defaultSpec := &contents.DefaultSpec{}
-	defaultSpec.RepoInfo = *repoInfo
-
-	defaultSpec.ComponentConfig = *onboardInfo
-
-	defaultSpec.DockerfileInfo = pipeline.Current.Dockerfile
-
-	defaultSpec.Revision = 1
-
-	// Resolve build targets from onboard.yml (required field).
-	defaultSpec.BuildTargets = resolveOnboardTargets(onboardInfo.Targets)
-	if len(defaultSpec.BuildTargets) == 0 {
-		return nil, fmt.Errorf("no valid targets in onboard.yml for %s", onboardInfo.SpecImageName)
+	resolved := resolveOnboardTargets(onboardInfo.Targets)
+	if len(resolved) == 0 {
+		return fmt.Errorf("no valid targets in onboard.yml for %s", onboardInfo.SpecImageName)
 	}
 
-	return defaultSpec, nil
+	validated := make([]string, len(resolved))
+	for i, bt := range resolved {
+		validated[i] = string(bt)
+	}
+	onboardInfo.Targets = validated
+
+	return nil
 }
 
 // resolveOnboardTargets validates the targets list from onboard.yml and returns
@@ -42,45 +39,55 @@ func resolveOnboardTargets(targets []string) []contents.BuildTarget {
 		if bt, ok := contents.IsValidTarget(t); ok {
 			resolved = append(resolved, bt)
 		} else {
-			log.Printf("\u26a0\ufe0f  Ignoring unsupported onboard target: %s\n", t)
+			log.Printf("⚠️  Ignoring unsupported onboard target: %s\n", t)
 		}
 	}
 	return resolved
 }
 
-// TransformToDalec converts parsed Dockerfile info to Dalec spec format
-func TransformToDalec(defaultSpec *contents.DefaultSpec) parser.DalecSpec {
+// onboardBuildTargets returns the resolved build targets from the current
+// onboard config as typed BuildTarget values.
+func onboardBuildTargets() []contents.BuildTarget {
+	targets := make([]contents.BuildTarget, len(pipeline.Current.Onboard.Targets))
+	for i, t := range pipeline.Current.Onboard.Targets {
+		targets[i] = contents.BuildTarget(t)
+	}
+	return targets
+}
+
+// TransformToDalec converts parsed Dockerfile info to Dalec spec format.
+// Reads all inputs from pipeline.Current.
+func TransformToDalec() parser.DalecSpec {
 	spec := make(parser.DalecSpec)
 
 	// Add syntax header (special comment format)
 	spec["# syntax"] = "ghcr.io/project-dalec/dalec/frontend:0.20"
 
 	// Detect pinned Go toolchain image from Dockerfile stages and store version.
-	if pin := parser.DetectGoToolchainPin(defaultSpec.Stages); pin != nil {
-		defaultSpec.GoVersion = pin.GoVersion()
-		log.Printf("Go toolchain pin detected: %s (version: %s)\n", pin.ImageRef, defaultSpec.GoVersion)
+	if pin := parser.DetectGoToolchainPin(pipeline.Current.Dockerfile.Stages); pin != nil {
+		pipeline.Current.RepoInfo.GoVersion = pin.GoVersion()
 	}
 
 	// Detect go mod download patterns once — shared across build, sources, and args.
-	goModDownloads := DetectGoModDownloads(defaultSpec)
+	goModDownloads := DetectGoModDownloads()
 
 	// Compute build section first to discover which variables are referenced
-	buildSection, referencedVars := extractBuildSection(defaultSpec, goModDownloads)
+	buildSection, referencedVars := extractBuildSection(goModDownloads)
 	spec["build"] = buildSection
 
 	// Initialize args + metadata — only include Makefile vars that are actually used
-	args := extractDefaultsSection(defaultSpec, referencedVars, goModDownloads, spec)
+	args := extractDefaultsSection(referencedVars, goModDownloads, spec)
 	spec["args"] = args
 
 	// Build extensions section
-	spec["x-build-extensions"] = extractBuildExtensions(defaultSpec)
+	spec["x-build-extensions"] = extractBuildExtensions()
 
 	// Transform Dockerfile content to Dalec sections
-	spec["sources"] = extractSourcesSection(defaultSpec, goModDownloads)
+	spec["sources"] = extractSourcesSection(goModDownloads)
 
 	spec["dependencies"] = extractDependencies()
-	spec["artifacts"] = extractArtifactsSection(defaultSpec)
-	spec["targets"] = extractTargetsSection(defaultSpec)
+	spec["artifacts"] = extractArtifactsSection()
+	spec["targets"] = extractTargetsSection()
 	spec["tests"] = extractTests()
 
 	return spec

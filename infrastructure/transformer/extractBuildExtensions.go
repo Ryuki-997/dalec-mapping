@@ -1,21 +1,25 @@
 package transformer
 
-import "dalec-mapping/domain/contents"
+import (
+	"dalec-mapping/pipeline"
+)
 
 // extractBuildExtensions builds the `x-build-extensions:` map.
 // It declares the image name, repository, build targets, and per-target platform
 // overrides (e.g. windows/amd64 for the windowscross target).
-func extractBuildExtensions(defaultSpec *contents.DefaultSpec) map[string]interface{} {
+func extractBuildExtensions() map[string]interface{} {
+	onboard := pipeline.Current.Onboard
+	buildTargets := onboardBuildTargets()
+
 	ext := map[string]interface{}{
-		"image-name":    defaultSpec.SpecImageName,
-		"build-targets": defaultSpec.BuildTargets,
+		"build-targets": buildTargets,
 	}
 
-	if defaultSpec.SpecRepository != "" {
-		ext["repository"] = defaultSpec.SpecRepository
+	if onboard.SpecRepository != "" {
+		ext["repository"] = onboard.SpecRepository
 	}
 
-	for _, bt := range defaultSpec.BuildTargets {
+	for _, bt := range buildTargets {
 		if bt.IsWindows() {
 			ext["per-target"] = map[string]interface{}{
 				bt.OS(): map[string]interface{}{

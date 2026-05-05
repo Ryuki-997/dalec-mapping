@@ -15,7 +15,7 @@ package transformer
 //     Merges per-binary build commands and pipeline steps into one shell script.
 //     Order: preamble → normal binary builds → pipeline steps → deferred sub-module builds.
 //     Calls → rawBuildCommands(), extractCdDir(), rewriteGoModCdPaths(),
-//             injectAllBinSuffixVars(), binSuffixPreamble()
+//             injectArtifactBinSuffix(), binSuffixPreamble()
 //     extractOutputFlag()       — extracts -o path from a go build command
 //     extractCdDir()            — splits "cd X && rest" into (X, rest)
 //     stripGoModDownloadPrefix()— removes go mod download prefix handled as source
@@ -27,7 +27,6 @@ package transformer
 import (
 	"dalec-mapping/pipeline"
 	"fmt"
-	"log"
 	"regexp"
 	"sort"
 	"strings"
@@ -47,13 +46,13 @@ var binOutRe = regexp.MustCompile(`-o (/go/bin/[^${}\s]+)`)
 // extractBuildSection assembles the top-level `build:` map for a Dalec spec.
 // Returns the build map and the set of ${VAR} names referenced inside it,
 // so the caller can forward them as top-level args.
-func extractBuildSection(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloadInfo) (map[string]interface{}, map[string]bool) {
+func extractBuildSection(goModDownloads []GoModDownloadInfo) (map[string]interface{}, map[string]bool) {
 	build := make(map[string]interface{})
 
 	env := buildEnv()
 	build["env"] = env
 
-	steps, scanText := buildSteps(defaultSpec, goModDownloads)
+	steps, scanText := buildSteps(goModDownloads)
 	build["steps"] = steps
 
 	referencedVars := scanVarReferences(scanText)
@@ -83,7 +82,7 @@ func extractBuildSection(defaultSpec *contents.DefaultSpec, goModDownloads []GoM
 // directly in each binary's build command — no global LDFLAGS env entry.
 func buildEnv() map[string]interface{} {
 	return map[string]interface{}{
-		"GOPROXY":      "direct",
+		"GOPROXY":      "${GOPROXY}",
 		"GOEXPERIMENT": "systemcrypto",
 		"CGO_ENABLED":  "1", // required by GOEXPERIMENT=systemcrypto (FIPS)
 		"VERSION":      "${VERSION}",
@@ -99,10 +98,13 @@ func buildEnv() map[string]interface{} {
 // Also returns the combined command text for var scanning.
 // The first step after the preamble is always `cd <baseDir>` where baseDir is
 // repo (or repo/componentPath when a component is set).
-func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloadInfo) ([]map[string]interface{}, string) {
-	baseDir := defaultSpec.Repo
-	if defaultSpec.ComponentPath != "" {
-		baseDir = defaultSpec.Repo + "/" + defaultSpec.ComponentPath
+func buildSteps(goModDownloads []GoModDownloadInfo) ([]map[string]interface{}, string) {
+	repoInfo := pipeline.Current.RepoInfo
+	onboard := pipeline.Current.Onboard
+
+	baseDir := repoInfo.Repo
+	if repoInfo.ComponentPath != "" {
+		baseDir = repoInfo.Repo + "/" + repoInfo.ComponentPath
 	}
 
 	rawCmds := rawBuildCommands(goModDownloads)
@@ -111,18 +113,18 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 	// When ComponentPath is set, go.mod is at the component root — no extra subdir needed.
 	// Otherwise: Priority: gomod subpath → makefile location → dockerfile location.
 	goModSubdir := ""
-	if defaultSpec.ComponentPath == "" {
-		if subpaths := collectGoModSubpaths(defaultSpec, pipeline.Current.Spec); len(subpaths) > 0 {
+	if repoInfo.ComponentPath == "" {
+		if subpaths := collectGoModSubpaths(pipeline.Current.Spec); len(subpaths) > 0 {
 			goModSubdir = subpaths[0]
 		}
-		if goModSubdir == "" && defaultSpec.MakefileDir != "" {
-			dir := strings.TrimSuffix(defaultSpec.MakefileDir, "/")
+		if goModSubdir == "" && onboard.MakefileDir != "" {
+			dir := strings.TrimSuffix(onboard.MakefileDir, "/")
 			if idx := strings.LastIndex(dir, "/"); idx >= 0 {
 				goModSubdir = dir[:idx]
 			}
 		}
-		if goModSubdir == "" && defaultSpec.DockerfileDir != "" {
-			d := strings.TrimSuffix(defaultSpec.DockerfileDir, "/")
+		if goModSubdir == "" && onboard.DockerfileDir != "" {
+			d := strings.TrimSuffix(onboard.DockerfileDir, "/")
 			if idx := strings.LastIndex(d, "/"); idx >= 0 {
 				goModSubdir = d[:idx]
 			}
@@ -130,7 +132,7 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 	}
 	// Source file paths in rawCmds are relative to the repo root (e.g. cni/network/plugin/main.go).
 	if len(rawCmds) == 0 {
-		fallbackName := defaultSpec.Repo
+		fallbackName := repoInfo.Repo
 		if pipeline.Current.Spec != nil && len(pipeline.Current.Spec.Binaries) > 0 && pipeline.Current.Spec.Binaries[0].Name != "" {
 			fallbackName = pipeline.Current.Spec.Binaries[0].Name
 		}
@@ -190,7 +192,7 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 	}
 
 	if len(buildLines) == 0 {
-		fallbackName := defaultSpec.Repo
+		fallbackName := repoInfo.Repo
 		if pipeline.Current.Spec != nil && len(pipeline.Current.Spec.Binaries) > 0 && pipeline.Current.Spec.Binaries[0].Name != "" {
 			fallbackName = pipeline.Current.Spec.Binaries[0].Name
 		}
@@ -227,17 +229,17 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 
 	// Collect cross-stage copies for Go builder submodule stages (e.g. dropgz).
 	// Used both inside the pipeline step loop and when emitting deferred builds.
-	submodCopies := submoduleStageCopies(defaultSpec.Stages)
+	submodCopies := submoduleStageCopies(pipeline.Current.Dockerfile.Stages)
 
 	// Append pipeline steps (intermediate + wrapper stages) after the primary builds.
 	// Pipeline steps handle their own directory navigation, so no automatic cd-back
 	// is inserted here.
 	if pipeline.Current.Spec != nil && len(pipeline.Current.Spec.PipelineSteps) > 0 {
-		if mkdirs := stageWorkdirs(defaultSpec.Stages, pipeline.Current.Spec.PipelineSteps, baseDir); len(mkdirs) > 0 {
+		if mkdirs := stageWorkdirs(pipeline.Current.Dockerfile.Stages, pipeline.Current.Spec.PipelineSteps, baseDir); len(mkdirs) > 0 {
 			parts = append(parts, "mkdir -p "+strings.Join(mkdirs, " "))
 		}
 
-		workdirCopies := intermediateStageCopies(defaultSpec.Stages, baseDir)
+		workdirCopies := intermediateStageCopies(pipeline.Current.Dockerfile.Stages, baseDir)
 		for dir := range workdirCopies {
 			for _, raw := range pipeline.Current.Spec.PipelineSteps {
 				raw = strings.TrimSpace(raw)
@@ -326,7 +328,7 @@ func buildSteps(defaultSpec *contents.DefaultSpec, goModDownloads []GoModDownloa
 	// came from a normal line, pipeline step, or deferred line.
 	stepCmd := strings.Join(parts, "\n")
 	stepCmd = strings.ReplaceAll(stepCmd, "'", "")
-	stepCmd = injectLastBinSuffix(stepCmd)
+	stepCmd = injectArtifactBinSuffix(stepCmd)
 	return []map[string]interface{}{{"command": stepCmd}}, stepCmd
 }
 
@@ -377,7 +379,6 @@ func rawBuildCommands(goModDownloads []GoModDownloadInfo) []string {
 
 		if cmd != "" {
 			cmds = append(cmds, cmd)
-			log.Printf("Build step: %v\n", cmd)
 		}
 	}
 	return cmds
@@ -396,12 +397,22 @@ if [ "${GOOS}" = "windows" ]; then
 fi`
 }
 
-// injectLastBinSuffix rewrites ALL `-o /go/bin/<name>` occurrences in a
-// multi-line command block, appending `${BIN_SUFFIX}` to each output path.
-// This ensures every built binary receives the platform-appropriate extension
-// (e.g. .exe on Windows) so artifact paths match the actual output files.
-func injectLastBinSuffix(text string) string {
-	return binOutRe.ReplaceAllString(text, "-o ${1}$${BIN_SUFFIX}")
+// injectArtifactBinSuffix rewrites only `-o /go/bin/<name>` occurrences where
+// `<name>` matches a known artifact binary path from computeArtifactPaths().
+// This is semantically correct regardless of build order: intermediate helper
+// binaries (compressors, sub-modules) are never artifact paths and are skipped.
+func injectArtifactBinSuffix(text string) string {
+	artifactPaths := computeArtifactPaths()
+	return binOutRe.ReplaceAllStringFunc(text, func(match string) string {
+		sub := binOutRe.FindStringSubmatch(match)
+		if sub == nil {
+			return match
+		}
+		if _, isArtifact := artifactPaths[sub[1]]; isArtifact {
+			return "-o " + sub[1] + "${BIN_SUFFIX}"
+		}
+		return match
+	})
 }
 
 // scanVarReferences finds all ${VAR}/$(VAR) references in the merged command text.

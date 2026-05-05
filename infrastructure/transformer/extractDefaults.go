@@ -24,8 +24,8 @@ package transformer
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import (
-	"dalec-mapping/pipeline"
 	"dalec-mapping/domain/contents"
+	"dalec-mapping/pipeline"
 	"log"
 	"os"
 	"strings"
@@ -58,22 +58,25 @@ var makeFunctions = []string{
 // ─── Chunk 1 · ORCHESTRATION ─────────────────────────────────────────────────
 
 // extractDefaultsSection writes metadata into the spec and returns the resolved args map.
-func extractDefaultsSection(defaultSpec *contents.DefaultSpec, referencedVars map[string]bool, goModDownloads []GoModDownloadInfo, spec map[string]interface{}) map[string]interface{} {
-	extractMetadata(defaultSpec, spec)
-	args := extractArgs(defaultSpec, referencedVars, goModDownloads)
+func extractDefaultsSection(referencedVars map[string]bool, goModDownloads []GoModDownloadInfo, spec map[string]interface{}) map[string]interface{} {
+	extractMetadata(spec)
+	args := extractArgs(referencedVars, goModDownloads)
 	return args
 }
 
 // ─── Chunk 2 · METADATA ─────────────────────────────────────────────────────
 
 // extractMetadata writes the fixed metadata fields into the spec map.
-func extractMetadata(defaultSpec *contents.DefaultSpec, spec map[string]interface{}) {
-	spec["name"] = strings.ToLower(defaultSpec.Repo)
+func extractMetadata(spec map[string]interface{}) {
+	repoInfo := pipeline.Current.RepoInfo
+	onboard := pipeline.Current.Onboard
+
+	spec["name"] = strings.ToLower(onboard.SpecImageName)
 	spec["packager"] = "Azure Container Upstream"
 	spec["vendor"] = "Microsoft Corporation"
-	spec["license"] = defaultSpec.License
-	spec["website"] = defaultSpec.GitURL
-	spec["description"] = defaultSpec.Description
+	spec["license"] = repoInfo.License
+	spec["website"] = repoInfo.GitURL
+	spec["description"] = repoInfo.Description
 	spec["version"] = "${VERSION}"
 	spec["revision"] = "${REVISION}"
 }
@@ -83,20 +86,23 @@ func extractMetadata(defaultSpec *contents.DefaultSpec, spec map[string]interfac
 // extractArgs builds the top-level args map.
 // referencedVars is the set of variable names actually used in build commands/ldflags;
 // only Makefile variables in this set are promoted to args with their resolved values.
-func extractArgs(defaultSpec *contents.DefaultSpec, referencedVars map[string]bool, goModDownloads []GoModDownloadInfo) map[string]interface{} {
+func extractArgs(referencedVars map[string]bool, goModDownloads []GoModDownloadInfo) map[string]interface{} {
+	repoInfo := pipeline.Current.RepoInfo
+
 	args := map[string]interface{}{
-		"REVISION": defaultSpec.Revision,
-		"VERSION":  defaultSpec.Version,
-		"COMMIT":   defaultSpec.LatestCommit,
+		"REVISION": pipeline.Current.Tag.Revision,
+		"VERSION":  repoInfo.Version,
+		"COMMIT":   repoInfo.LatestCommit,
+		"GOPROXY":  "direct",
 		// Emitted as blank — BuildKit injects actual values at build time.
 		"TARGETOS":   "",
 		"TARGETARCH": "",
 	}
 
 	mi := initializeMakefile()
-	args = mergeDockerfileArgs(args, defaultSpec, mi)
-	args = mergeMakefileVars(args, mi, referencedVars, defaultSpec)
-	args = mergeSubmoduleVars(args, defaultSpec, mi, goModDownloads)
+	args = mergeDockerfileArgs(args, mi)
+	args = mergeMakefileVars(args, mi, referencedVars)
+	args = mergeSubmoduleVars(args, mi, goModDownloads)
 
 	return args
 }
@@ -117,8 +123,8 @@ func initializeMakefile() *contents.MakefileInfo {
 
 // mergeDockerfileArgs folds Dockerfile ARG values into args, resolving any
 // nested Makefile variable references. Empty-after-resolution values are dropped.
-func mergeDockerfileArgs(args map[string]interface{}, defaultSpec *contents.DefaultSpec, makefileInfo *contents.MakefileInfo) map[string]interface{} {
-	for k, v := range defaultSpec.Args {
+func mergeDockerfileArgs(args map[string]interface{}, makefileInfo *contents.MakefileInfo) map[string]interface{} {
+	for k, v := range pipeline.Current.Dockerfile.Args {
 		if selfHandledArgs[k] {
 			continue
 		}
@@ -126,19 +132,18 @@ func mergeDockerfileArgs(args map[string]interface{}, defaultSpec *contents.Defa
 		if value == "" {
 			value = makefileInfo.Variables[k]
 		}
-		value = expandVarRefs(defaultSpec, makefileInfo, value)
+		value = expandVarRefs(makefileInfo, value)
 		if value == "" {
 			continue
 		}
 		args[k] = value
-		log.Printf("key: %s, value: %v\n", k, value)
 	}
 	return args
 }
 
 // mergeMakefileVars promotes Makefile variables that are actually referenced in
 // build commands into args, resolving their values.
-func mergeMakefileVars(args map[string]interface{}, makefileInfo *contents.MakefileInfo, referencedVars map[string]bool, defaultSpec *contents.DefaultSpec) map[string]interface{} {
+func mergeMakefileVars(args map[string]interface{}, makefileInfo *contents.MakefileInfo, referencedVars map[string]bool) map[string]interface{} {
 	for varName := range referencedVars {
 		if selfHandledArgs[varName] {
 			continue
@@ -147,9 +152,8 @@ func mergeMakefileVars(args map[string]interface{}, makefileInfo *contents.Makef
 			continue
 		}
 		if rawValue, exists := makefileInfo.Variables[varName]; exists {
-			resolved := expandVarRefs(defaultSpec, makefileInfo, rawValue)
+			resolved := expandVarRefs(makefileInfo, rawValue)
 			args[varName] = resolved
-			log.Printf("key (from Makefile): %s, value: %v\n", varName, resolved)
 		}
 	}
 	return args
@@ -159,7 +163,7 @@ func mergeMakefileVars(args map[string]interface{}, makefileInfo *contents.Makef
 // go mod download submodules. These are "used" variables — their presence
 // in a source commit field means they must appear in args.
 // Resolves from Dockerfile ARGs first, then Makefile variables.
-func mergeSubmoduleVars(args map[string]interface{}, defaultSpec *contents.DefaultSpec, makefileInfo *contents.MakefileInfo, goModDownloads []GoModDownloadInfo) map[string]interface{} {
+func mergeSubmoduleVars(args map[string]interface{}, makefileInfo *contents.MakefileInfo, goModDownloads []GoModDownloadInfo) map[string]interface{} {
 	for _, dl := range goModDownloads {
 		varName := strings.Trim(dl.VersionVar, "${}()")
 		if varName == "" {
@@ -169,16 +173,15 @@ func mergeSubmoduleVars(args map[string]interface{}, defaultSpec *contents.Defau
 			continue
 		}
 		// Resolve from Dockerfile ARGs first, then Makefile variables.
-		value, found := defaultSpec.Args[varName]
+		value, found := pipeline.Current.Dockerfile.Args[varName]
 		if !found {
 			value, found = makefileInfo.Variables[varName]
 		}
 		if !found {
 			continue
 		}
-		value = expandVarRefs(defaultSpec, makefileInfo, value)
+		value = expandVarRefs(makefileInfo, value)
 		args[varName] = value
-		log.Printf("key (from submodule): %s, value: %v\n", varName, value)
 	}
 	return args
 }
@@ -198,9 +201,7 @@ type varRef struct {
 // expandVarRefs iteratively expands all $(VAR)/${VAR} references in value
 // using Makefile variables and Dockerfile ARGs. Make built-in function calls
 // (e.g. $(shell ...)) are stripped rather than expanded.
-func expandVarRefs(defaultSpec *contents.DefaultSpec, makefileInfo *contents.MakefileInfo, value string) string {
-	log.Printf("Before: %s\n", value)
-
+func expandVarRefs(makefileInfo *contents.MakefileInfo, value string) string {
 	for {
 		ref, ok := parseNextVarRef(value)
 		if !ok || ref.escaped {
@@ -212,10 +213,9 @@ func expandVarRefs(defaultSpec *contents.DefaultSpec, makefileInfo *contents.Mak
 			continue
 		}
 
-		value = substituteVar(value, ref, makefileInfo, defaultSpec)
+		value = substituteVar(value, ref, makefileInfo)
 	}
 
-	log.Printf("After: %s\n", value)
 	return value
 }
 
@@ -251,7 +251,6 @@ func parseNextVarRef(value string) (varRef, bool) {
 // stripMakeFuncCall removes a Make built-in function call (e.g. $(shell ...))
 // from value and trims any resulting leading slashes or whitespace.
 func stripMakeFuncCall(value string, ref varRef) string {
-	log.Printf("Skipping Make function: %s%s%s\n", ref.openTok, ref.key, ref.closeTok)
 	value = value[:ref.pos] + value[ref.pos+ref.span:]
 	value = strings.TrimLeft(value, "/")
 	return strings.TrimSpace(value)
@@ -260,17 +259,14 @@ func stripMakeFuncCall(value string, ref varRef) string {
 // substituteVar replaces every occurrence of the variable reference in value
 // with its resolved value from Makefile variables or Dockerfile ARGs.
 // Exits if the variable cannot be resolved.
-func substituteVar(value string, ref varRef, makefileInfo *contents.MakefileInfo, defaultSpec *contents.DefaultSpec) string {
-	log.Printf("Nested replacement found at index: %d (pattern: %s)\n", ref.pos, ref.openTok)
-
-	replacement, ok := resolveVarRef(ref.key, makefileInfo, defaultSpec)
+func substituteVar(value string, ref varRef, makefileInfo *contents.MakefileInfo) string {
+	replacement, ok := resolveVarRef(ref.key, makefileInfo)
 	if !ok {
 		log.Printf("Undefined makefile variable %s referenced in value: %s\n", ref.key, value)
 		os.Exit(1)
 	}
 
 	value = strings.ReplaceAll(value, ref.openTok+ref.key+ref.closeTok, replacement)
-	log.Printf("Value after nested replacement: %s\n", value)
 	return value
 }
 
@@ -299,12 +295,12 @@ func isMakeFunction(key string) bool {
 	return false
 }
 
-// resolveVarRef looks up key first in makefileInfo.Variables, then in defaultSpec.Args.
-func resolveVarRef(key string, makefileInfo *contents.MakefileInfo, defaultSpec *contents.DefaultSpec) (string, bool) {
+// resolveVarRef looks up key first in makefileInfo.Variables, then in Dockerfile Args.
+func resolveVarRef(key string, makefileInfo *contents.MakefileInfo) (string, bool) {
 	if v, ok := makefileInfo.Variables[key]; ok {
 		return v, true
 	}
-	if v, ok := defaultSpec.Args[key]; ok {
+	if v, ok := pipeline.Current.Dockerfile.Args[key]; ok {
 		return v, true
 	}
 	return "", false

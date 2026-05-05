@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// Step 6 — Test Image (GitHub repos only)
+// Step 7 — Test Image (GitHub repos only)
 //
 //   Builds the container from the generated DALEC spec, runs it to verify the
 //   binary is present, runs FIPS compliance checks, and optionally executes
@@ -10,11 +10,14 @@
 //   test run (BuildKit needs an ADO_TOKEN secret for private ADO git sources,
 //   which is handled by test.sh / the pipeline YAML, not here).
 //
-//   Chunk 1 · MAIN    TestImage()
-//   Chunk 2 · DOCKER  clearDockerImages(), buildDockerImage(), runDockerImage()
-//
-//   Chunk 3 · FIPS    runFipsChecker()
-//   Chunk 4 · SCRIPTS fetchTestScripts(), runTestScript(), readSpecArgs()
+//   Functions are ordered by call sequence:
+//     TestImage()
+//       → clearDockerImages()
+//       → resolveTestTargets()
+//       → buildAllTargets()
+//           → buildDockerImage()
+//       → verifyContainerRuns()
+//           → runDockerImage()
 // ═══════════════════════════════════════════════════════════════════════════════
 
 package workflow
@@ -30,48 +33,33 @@ import (
 	"dalec-mapping/utils"
 )
 
-// ─── Chunk 1 · MAIN ─────────────────────────────────────────────────────────
-
 // TestImage builds and runs the container from the spec, then applies any test scripts.
 func TestImage(specPath, imageName, tag string, targets []string) error {
-	// Derive the tests directory from the spec path
-	path := strings.Split(specPath, "/")
-	path[len(path)-1] = "tests"
+	if specPath == "" {
+		return fmt.Errorf("specPath is empty — cannot run image tests")
+	}
 
-	// Clear all existing docker images for a clean slate
-	log.Println("  [1/5] Clearing existing docker images...")
+	log.Println("  [1/3] Clearing existing docker images...")
 	if err := clearDockerImages(); err != nil {
 		return fmt.Errorf("failed to clear docker images: %w", err)
 	}
 
-	// Build container from spec for all targets
-	if len(targets) == 0 {
-		targets = []string{string(contents.AzLinux3Container), string(contents.WindowsCrossContainer)}
-	}
 	imageTag := fmt.Sprintf("%s:%s", imageName, tag)
-	for i, target := range targets {
-		bt := contents.BuildTarget(target)
-		targetImageTag := fmt.Sprintf("%s-%s", imageTag, strings.ReplaceAll(target, "/", "-"))
-		platform := bt.Platform()
-		log.Printf("  [1/2] Building target %d/%d: %s (image: %s, platform: %s)...", i+1, len(targets), target, targetImageTag, platform)
-		if err := buildDockerImage(targetImageTag, target, platform); err != nil {
-			return fmt.Errorf("failed to build docker image for target %s: %w", target, err)
-		}
-		log.Printf("    ✅ %s built successfully", target)
+	resolvedTargets := resolveTestTargets(targets)
+
+	log.Println("  [2/3] Building all targets...")
+	if err := buildAllTargets(resolvedTargets, imageTag); err != nil {
+		return err
 	}
 
-	// Run the container image with no args to verify the binary executes
-	containerImageTag := fmt.Sprintf("%s-%s", imageTag, "azlinux3-container")
-	log.Printf("  [2/2] Running %s (no args)...", containerImageTag)
-	if err := runDockerImage(containerImageTag, contents.AzLinux3Container.Platform()); err != nil {
-		return fmt.Errorf("failed to run docker image: %w", err)
+	log.Println("  [3/3] Verifying container runs...")
+	if err := verifyContainerRuns(imageTag); err != nil {
+		return err
 	}
 
 	log.Println("  ✅ All image tests passed")
 	return nil
 }
-
-// ─── Chunk 2 · DOCKER ────────────────────────────────────────────────────────
 
 // clearDockerImages does a full docker system prune to ensure a clean slate.
 func clearDockerImages() error {
@@ -82,6 +70,30 @@ func clearDockerImages() error {
 		return fmt.Errorf("docker system prune failed: %w", err)
 	}
 	log.Println("    Pruned all docker images, containers, and volumes")
+	return nil
+}
+
+// resolveTestTargets returns the given targets or falls back to default targets.
+func resolveTestTargets(targets []string) []string {
+	if len(targets) == 0 {
+		return []string{string(contents.AzLinux3Container), string(contents.WindowsCrossContainer)}
+	}
+	return targets
+}
+
+// buildAllTargets builds the container image for each target in sequence.
+func buildAllTargets(targets []string, imageTag string) error {
+	for i, target := range targets {
+		buildTarget := contents.BuildTarget(target)
+		targetImageTag := fmt.Sprintf("%s-%s", imageTag, strings.ReplaceAll(target, "/", "-"))
+		platform := buildTarget.Platform()
+
+		log.Printf("    Building target %d/%d: %s (image: %s, platform: %s)...", i+1, len(targets), target, targetImageTag, platform)
+		if err := buildDockerImage(targetImageTag, target, platform); err != nil {
+			return fmt.Errorf("failed to build docker image for target %s: %w", target, err)
+		}
+		log.Printf("    ✅ %s built successfully", target)
+	}
 	return nil
 }
 
@@ -98,6 +110,17 @@ func buildDockerImage(imageTag, target, platform string) error {
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("docker build failed: %w", err)
+	}
+	return nil
+}
+
+// verifyContainerRuns runs the azlinux3-container image with no args to confirm
+// the binary is present and executable.
+func verifyContainerRuns(imageTag string) error {
+	containerImageTag := fmt.Sprintf("%s-%s", imageTag, "azlinux3-container")
+	log.Printf("    Running %s (no args)...", containerImageTag)
+	if err := runDockerImage(containerImageTag, contents.AzLinux3Container.Platform()); err != nil {
+		return fmt.Errorf("failed to run docker image: %w", err)
 	}
 	return nil
 }

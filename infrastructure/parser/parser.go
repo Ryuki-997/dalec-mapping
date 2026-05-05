@@ -2,47 +2,15 @@ package parser
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 
-	"dalec-mapping/domain/contents"
 	"dalec-mapping/pipeline"
 )
 
-func ParseOptionalFileInfo(dockerfile, makefile []byte, specFilePath string) (contents.PreviousDalecSpec, error) {
+func ParseOptionalFileInfo(dockerfile, makefile []byte) {
 	ParseDockerfile(dockerfile, &pipeline.Current.Dockerfile)
 	ParseMakefile(makefile, &pipeline.Current.Makefile)
-
-	previousDalecSpecInfo, err := fetchPreviousYAMLInfo(specFilePath)
-	if err != nil {
-		return contents.PreviousDalecSpec{}, err
-	}
-
-	return previousDalecSpecInfo, nil
-}
-
-func fetchPreviousYAMLInfo(filepath string) (contents.PreviousDalecSpec, error) {
-	log.Println("=== READING PREVIOUS YAML FILE ===")
-
-	if filepath == "" {
-		log.Println("⚠️  No previous YAML path provided to read previous spec.")
-		return contents.PreviousDalecSpec{}, nil
-	}
-
-	writer := &DalecSpecWriter{}
-	yamlInfo, err := writer.ReadYAML(filepath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			log.Println("⚠️  No previous YAML file found, proceeding without it.")
-			return contents.PreviousDalecSpec{}, nil
-		}
-		log.Printf("❌ Error reading previous YAML file: %v\n", err)
-		return contents.PreviousDalecSpec{}, err
-	}
-
-	log.Println("✅ Successfully read previous YAML file.")
-	return yamlInfo, nil
 }
 
 func WriteOutput(dalecSpec DalecSpec) error {

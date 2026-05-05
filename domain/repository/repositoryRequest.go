@@ -6,6 +6,7 @@ const (
 	GET    CRUDRequest = "GET"
 	POST   CRUDRequest = "POST"
 	PUT    CRUDRequest = "PUT"
+	PATCH  CRUDRequest = "PATCH"
 	DELETE CRUDRequest = "DELETE"
 )
 

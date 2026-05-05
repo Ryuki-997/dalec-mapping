@@ -82,8 +82,8 @@ func ParseDockerfile(dockerfile []byte, info *contents.DockerfileInfo) (*content
 			}
 
 			// Collect arguments
-			for n := node.Next; n != nil; n = n.Next {
-				rawInst.Args = append(rawInst.Args, n.Value)
+			for currentNode := node.Next; currentNode != nil; currentNode = currentNode.Next {
+				rawInst.Args = append(rawInst.Args, currentNode.Value)
 			}
 
 			// Collect flags
@@ -195,9 +195,9 @@ func parseFromInstruction(node *parser.Node) *contents.Stage {
 		stage.From = node.Next.Value
 
 		// Check for "AS <name>" clause
-		n := node.Next.Next
-		if n != nil && strings.ToUpper(n.Value) == "AS" && n.Next != nil {
-			stage.Name = n.Next.Value
+		nextArg := node.Next.Next
+		if nextArg != nil && strings.ToUpper(nextArg.Value) == "AS" && nextArg.Next != nil {
+			stage.Name = nextArg.Next.Value
 		}
 	}
 
@@ -241,16 +241,16 @@ func parseCommandArray(node *parser.Node) []string {
 	// Check if buildkit detected JSON format (e.g., ["cmd", "arg1", "arg2"])
 	if node.Attributes != nil && node.Attributes["json"] {
 		var result []string
-		for n := node.Next; n != nil; n = n.Next {
-			result = append(result, n.Value)
+		for currentNode := node.Next; currentNode != nil; currentNode = currentNode.Next {
+			result = append(result, currentNode.Value)
 		}
 		return result
 	}
 
 	// Shell format - wrap in shell
-	cmd := reconstructCommand(node.Next)
-	if cmd != "" {
-		return []string{"/bin/sh", "-c", cmd}
+	command := reconstructCommand(node.Next)
+	if command != "" {
+		return []string{"/bin/sh", "-c", command}
 	}
 	return nil
 }
@@ -258,8 +258,8 @@ func parseCommandArray(node *parser.Node) []string {
 // reconstructCommand joins node values back into a single command string
 func reconstructCommand(node *parser.Node) string {
 	var parts []string
-	for n := node; n != nil; n = n.Next {
-		parts = append(parts, n.Value)
+	for currentNode := node; currentNode != nil; currentNode = currentNode.Next {
+		parts = append(parts, currentNode.Value)
 	}
 	return strings.Join(parts, " ")
 }
@@ -287,32 +287,7 @@ func parseKeyValue(node *parser.Node) (string, string) {
 	return fullValue, ""
 }
 
-func PrintDockerfileInfo(defaultSpec *contents.DefaultSpec) {
-	log.Println("Parsed Dockerfile Stages:")
-	log.Println("")
 
-	for _, stage := range defaultSpec.Stages {
-		log.Printf("Stage: %s (From: %s)\n", stage.Name, stage.From)
-		log.Println("  Env:")
-		for k, v := range stage.Env {
-			log.Printf("    %s=%s\n", k, v)
-		}
-		log.Println("  Runs:")
-		for _, run := range stage.Runs {
-			log.Printf("    %s\n", run)
-		}
-		log.Println("  Copies:")
-		for _, copy := range stage.Copies {
-			log.Printf("    From: %s, Source: %v, Dest: %s\n", copy.From, copy.Source, copy.Dest)
-		}
-		log.Println("")
-	}
-
-	for k, v := range defaultSpec.Args {
-		log.Printf("Build Arg: %s=%s\n", k, v)
-	}
-	log.Println("")
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DOCKERFILE ANALYSIS — Analyses multi-stage Dockerfiles for patterns
@@ -429,11 +404,11 @@ func (p *GoToolchainPin) GoVersion() string {
 	if p.Tag != "" {
 		// Tag format: "1.24-azurelinux3.0" or "1.24.1" or "1.24"
 		// Extract the version prefix before any distro suffix.
-		ver := p.Tag
-		if idx := strings.Index(ver, "-"); idx >= 0 {
-			ver = ver[:idx]
+		version := p.Tag
+		if idx := strings.Index(version, "-"); idx >= 0 {
+			version = version[:idx]
 		}
-		return ver
+		return version
 	}
 	return ""
 }
@@ -461,18 +436,18 @@ func ExtractIntermediateRuntimeDeps(stages []contents.Stage) []IntermediateRunti
 	copyFromSelective := make(map[string]bool)
 
 	for _, stage := range stages {
-		for _, cp := range stage.Copies {
-			if cp.From == "" {
+		for _, copyInstruction := range stage.Copies {
+			if copyInstruction.From == "" {
 				continue
 			}
-			copyFromTargets[cp.From] = true
+			copyFromTargets[copyInstruction.From] = true
 
 			// Heuristic: if the source is a specific file path (not / or a top-level dir),
 			// consider it selective. Patterns like /usr/sbin/*tables* or /usr/lib are selective.
-			for _, src := range cp.Source {
-				src = strings.TrimSpace(src)
-				if src != "/" && src != "." {
-					copyFromSelective[cp.From] = true
+			for _, sourcePath := range copyInstruction.Source {
+				sourcePath = strings.TrimSpace(sourcePath)
+				if sourcePath != "/" && sourcePath != "." {
+					copyFromSelective[copyInstruction.From] = true
 				}
 			}
 		}
@@ -517,8 +492,7 @@ func ExtractIntermediateRuntimeDeps(stages []contents.Stage) []IntermediateRunti
 			SelectiveCopy: copyFromSelective[stageRef],
 		})
 
-		log.Printf("Intermediate stage %q installs packages: %v (selective=%v)\n",
-			stageRef, packages, copyFromSelective[stageRef])
+
 	}
 
 	return results
@@ -535,22 +509,22 @@ func extractPackagesFromRuns(runs []string) []string {
 		normalized := strings.ReplaceAll(run, "\\\n", " ")
 		cmds := splitShellCommands(normalized)
 
-		for _, cmd := range cmds {
-			cmd = strings.TrimSpace(cmd)
-			m := pkgInstallRe.FindStringSubmatch(cmd)
-			if m == nil {
+		for _, command := range cmds {
+			command = strings.TrimSpace(command)
+			match := pkgInstallRe.FindStringSubmatch(command)
+			if match == nil {
 				continue
 			}
-			// m[1] is the package list portion after flags.
-			for _, token := range strings.Fields(m[1]) {
+			// match[1] is the package list portion after flags.
+			for _, token := range strings.Fields(match[1]) {
 				// Skip flags and shell operators.
 				if strings.HasPrefix(token, "-") || token == "&&" || token == "||" || token == ";" {
 					continue
 				}
-				pkg := strings.TrimSpace(token)
-				if pkg != "" && !seen[pkg] {
-					seen[pkg] = true
-					packages = append(packages, pkg)
+				packageName := strings.TrimSpace(token)
+				if packageName != "" && !seen[packageName] {
+					seen[packageName] = true
+					packages = append(packages, packageName)
 				}
 			}
 		}
@@ -559,15 +533,15 @@ func extractPackagesFromRuns(runs []string) []string {
 }
 
 // splitShellCommands splits a shell line on && and ; delimiters.
-func splitShellCommands(s string) []string {
+func splitShellCommands(shellLine string) []string {
 	// Replace ; with && so we can split on one delimiter.
-	s = strings.ReplaceAll(s, ";", "&&")
-	parts := strings.Split(s, "&&")
+	shellLine = strings.ReplaceAll(shellLine, ";", "&&")
+	parts := strings.Split(shellLine, "&&")
 	var result []string
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			result = append(result, p)
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			result = append(result, part)
 		}
 	}
 	return result
@@ -587,9 +561,9 @@ func DetectFinalLinuxBase(stages []contents.Stage) string {
 	// or via FROM (multi-stage base). These are intermediates, not the final image.
 	referencedStages := make(map[string]bool)
 	for i, stage := range stages {
-		for _, cp := range stage.Copies {
-			if cp.From != "" {
-				referencedStages[cp.From] = true
+		for _, copyInstruction := range stage.Copies {
+			if copyInstruction.From != "" {
+				referencedStages[copyInstruction.From] = true
 			}
 		}
 		// A FROM that references an earlier stage name/index makes that
@@ -652,8 +626,8 @@ func DetectFinalLinuxBase(stages []contents.Stage) string {
 // IsWindowsImage returns true if the image reference contains Windows indicators.
 func IsWindowsImage(ref string) bool {
 	lower := strings.ToLower(ref)
-	for _, ind := range windowsImageIndicators {
-		if strings.Contains(lower, ind) {
+	for _, indicator := range windowsImageIndicators {
+		if strings.Contains(lower, indicator) {
 			return true
 		}
 	}
@@ -765,14 +739,14 @@ func extractGoBinaries(builder contents.Stage, globalArgs map[string]string) []c
 
 	// Merge global args with stage args and env for variable substitution.
 	vars := make(map[string]string)
-	for k, v := range globalArgs {
-		vars[k] = v
+	for key, value := range globalArgs {
+		vars[key] = value
 	}
-	for k, v := range builder.Args {
-		vars[k] = v
+	for key, value := range builder.Args {
+		vars[key] = value
 	}
-	for k, v := range builder.Env {
-		vars[k] = v
+	for key, value := range builder.Env {
+		vars[key] = value
 	}
 
 	for _, run := range builder.Runs {
@@ -799,26 +773,26 @@ func extractGoBinaries(builder contents.Stage, globalArgs map[string]string) []c
 
 // parseGoBuildCommand parses a single `go build ...` command into a SpecBinary.
 func parseGoBuildCommand(cmd string) contents.SpecBinary {
-	bin := contents.SpecBinary{
+	binary := contents.SpecBinary{
 		BuildCommand: cleanStaticBuildCommand(cmd),
 	}
 
 	// Extract -o <path>
-	if m := goBuildOutputFlagRe.FindStringSubmatch(cmd); m != nil {
-		outputPath := m[1]
-		bin.OutputPath = outputPath
-		bin.Name = path.Base(strings.TrimSuffix(outputPath, "${BIN_SUFFIX}"))
+	if match := goBuildOutputFlagRe.FindStringSubmatch(cmd); match != nil {
+		outputPath := match[1]
+		binary.OutputPath = outputPath
+		binary.Name = path.Base(strings.TrimSuffix(outputPath, "${BIN_SUFFIX}"))
 	}
 
 	// Extract -ldflags "..."
-	if m := goLdflagsRe.FindStringSubmatch(cmd); m != nil {
-		bin.LdFlags = m[1]
-	} else if m := goLdflagsVarRe.FindStringSubmatch(cmd); m != nil {
-		bin.LdFlags = m[1]
+	if match := goLdflagsRe.FindStringSubmatch(cmd); match != nil {
+		binary.LdFlags = match[1]
+	} else if match := goLdflagsVarRe.FindStringSubmatch(cmd); match != nil {
+		binary.LdFlags = match[1]
 	}
 
 	// If no -o flag, try to derive name from the last argument (package path).
-	if bin.Name == "" {
+	if binary.Name == "" {
 		fields := strings.Fields(cmd)
 		if len(fields) > 0 {
 			lastArg := fields[len(fields)-1]
@@ -827,13 +801,13 @@ func parseGoBuildCommand(cmd string) contents.SpecBinary {
 			if strings.HasPrefix(lastArg, "./") || strings.HasPrefix(lastArg, "/") {
 				base := path.Base(lastArg)
 				if base != "." && base != "main.go" {
-					bin.Name = strings.TrimSuffix(base, ".go")
+					binary.Name = strings.TrimSuffix(base, ".go")
 				}
 			}
 		}
 	}
 
-	return bin
+	return binary
 }
 
 // cleanStaticBuildCommand strips env assignments and unnecessary prefixes.
@@ -897,18 +871,18 @@ func resolveEntrypoint(stages []contents.Stage, binaries []contents.SpecBinary) 
 
 	// Check ENTRYPOINT instruction.
 	if len(final.Entrypoint) > 0 {
-		ep := final.Entrypoint[0]
-		if strings.HasPrefix(ep, "/") {
-			entrypoint = ep
+		entrypointValue := final.Entrypoint[0]
+		if strings.HasPrefix(entrypointValue, "/") {
+			entrypoint = entrypointValue
 		}
 	}
 
 	// Look at COPY --from destinations to find installed binary paths.
-	for _, cp := range final.Copies {
-		if cp.From == "" {
+	for _, copyInstruction := range final.Copies {
+		if copyInstruction.From == "" {
 			continue
 		}
-		dest := cp.Dest
+		dest := copyInstruction.Dest
 		// Normalize relative paths from scratch-stage copies (e.g. "dropgz" → "/dropgz").
 		if !strings.HasPrefix(dest, "/") {
 			dest = "/" + dest
@@ -1003,9 +977,9 @@ func findFinalStage(stages []contents.Stage) int {
 
 	referenced := make(map[string]bool)
 	for i, stage := range stages {
-		for _, cp := range stage.Copies {
-			if cp.From != "" {
-				referenced[cp.From] = true
+		for _, copyInstruction := range stage.Copies {
+			if copyInstruction.From != "" {
+				referenced[copyInstruction.From] = true
 			}
 		}
 		for j := 0; j < i; j++ {
@@ -1017,11 +991,11 @@ func findFinalStage(stages []contents.Stage) int {
 
 	for i := len(stages) - 1; i >= 0; i-- {
 		stage := stages[i]
-		ref := stage.Name
-		if ref == "" {
-			ref = fmt.Sprintf("%d", i)
+		stageRef := stage.Name
+		if stageRef == "" {
+			stageRef = fmt.Sprintf("%d", i)
 		}
-		if referenced[ref] {
+		if referenced[stageRef] {
 			continue
 		}
 		if IsGoImage(stage.From) {
@@ -1048,9 +1022,9 @@ func findFinalStage(stages []contents.Stage) int {
 // detect Windows base images when intermediate aliases hide the origin.
 func resolveStageFrom(from string, stages []contents.Stage) string {
 	for i := 0; i < len(stages); i++ {
-		for _, s := range stages {
-			if strings.EqualFold(s.Name, from) {
-				from = s.From
+		for _, stage := range stages {
+			if strings.EqualFold(stage.Name, from) {
+				from = stage.From
 				break
 			}
 		}

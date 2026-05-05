@@ -35,6 +35,7 @@ import (
 	"dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/parser"
 	"dalec-mapping/infrastructure/test"
+	"dalec-mapping/pipeline"
 	"log"
 
 	"fmt"
@@ -45,37 +46,37 @@ import (
 
 // extractTargetsSection builds the `targets:` map for every build target in the spec.
 // Each unique OS (azlinux3, windowscross, jammy, …) gets exactly one entry.
-func extractTargetsSection(defaultSpec *contents.DefaultSpec) map[string]interface{} {
+func extractTargetsSection() map[string]interface{} {
 	// Analyse Dockerfile stages for intermediate runtime deps and final Linux base.
-	intermediateDeps := parser.ExtractIntermediateRuntimeDeps(defaultSpec.Stages)
-	finalLinuxBase := parser.DetectFinalLinuxBase(defaultSpec.Stages)
+	intermediateDeps := parser.ExtractIntermediateRuntimeDeps(pipeline.Current.Dockerfile.Stages)
+	finalLinuxBase := parser.DetectFinalLinuxBase(pipeline.Current.Dockerfile.Stages)
 
 	targets := make(map[string]interface{})
 	seen := make(map[string]bool)
 
-	for _, buildTarget := range defaultSpec.BuildTargets {
+	for _, buildTarget := range onboardBuildTargets() {
 		osName := buildTarget.OS()
 		if seen[osName] {
 			continue
 		}
 		seen[osName] = true
 		isContainer := buildTarget.IsContainer()
-		tp := resolveTestPaths(osName, isContainer, defaultSpec)
-		targets[osName] = buildTargetEntry(osName, isContainer, tp, defaultSpec, intermediateDeps, finalLinuxBase)
+		tp := resolveTestPaths(osName, isContainer)
+		targets[osName] = buildTargetEntry(osName, isContainer, tp, intermediateDeps, finalLinuxBase)
 	}
 	return targets
 }
 
 // buildTargetEntry assembles the full target map for one OS.
-func buildTargetEntry(osName string, isContainer bool, tp testPaths, defaultSpec *contents.DefaultSpec, intermediateDeps []parser.IntermediateRuntimeDeps, finalLinuxBase string) map[string]interface{} {
+func buildTargetEntry(osName string, isContainer bool, tp testPaths, intermediateDeps []parser.IntermediateRuntimeDeps, finalLinuxBase string) map[string]interface{} {
 	target := make(map[string]interface{})
 
 	if osName == "windowscross" {
-		target["dependencies"] = windowsDeps(defaultSpec)
-		target["artifacts"] = windowsArtifacts(defaultSpec)
-		target["image"] = windowsImageConfig(tp.binaryName, defaultSpec)
+		target["dependencies"] = windowsDeps()
+		target["artifacts"] = windowsArtifacts()
+		target["image"] = windowsImageConfig(tp.binaryName)
 	} else {
-		target["dependencies"] = linuxDeps(osName, defaultSpec, intermediateDeps)
+		target["dependencies"] = linuxDeps(osName, intermediateDeps)
 		if isContainer {
 			target["image"] = linuxImageConfig(tp.binaryName, finalLinuxBase)
 		}
@@ -105,19 +106,21 @@ type testPaths struct {
 //	symlinkPath = /usr/local/bin/<name> (symlink, existence-only)
 //
 // For package targets (deb/rpm): binaryPath = /usr/bin/<name>, symlinkPath = "" (no symlink)
-func resolveTestPaths(osName string, isContainer bool, defaultSpec *contents.DefaultSpec) testPaths {
+func resolveTestPaths(osName string, isContainer bool) testPaths {
+	onboard := pipeline.Current.Onboard
+
 	tp := testPaths{
-		binaryName: defaultSpec.SpecImageName,
-		binaryPath: "/usr/bin/" + defaultSpec.SpecImageName,
+		binaryName: onboard.SpecImageName,
+		binaryPath: "/usr/bin/" + onboard.SpecImageName,
 	}
 	if isContainer {
-		tp.symlinkPath = "/usr/local/bin/" + defaultSpec.SpecImageName
+		tp.symlinkPath = "/usr/local/bin/" + onboard.SpecImageName
 	}
 
 	// Derive the binary name from the parsed artifact paths (same source used
 	// by extractArtifacts). computeArtifactPaths reads pipeline.Current.Spec which is
 	// populated by the Dockerfile AST parser.
-	for artifactPath := range computeArtifactPaths(defaultSpec) {
+	for artifactPath := range computeArtifactPaths() {
 		if base := canonicalBase(artifactPath); base != "" {
 			tp.binaryName = base
 			if osName == "windowscross" {
@@ -138,14 +141,16 @@ func resolveTestPaths(osName string, isContainer bool, defaultSpec *contents.Def
 // ─── Chunk 3 · LINUX TARGETS ────────────────────────────────────────────────
 
 // linuxDeps builds the dependencies map for a Linux target.
-func linuxDeps(osName string, defaultSpec *contents.DefaultSpec, intermediateDeps []parser.IntermediateRuntimeDeps) map[string]interface{} {
+func linuxDeps(osName string, intermediateDeps []parser.IntermediateRuntimeDeps) map[string]interface{} {
+	repoInfo := pipeline.Current.RepoInfo
+
 	buildDeps := map[string]interface{}{}
 	runtimeDeps := map[string]interface{}{}
 
 	switch osName {
 	case "azlinux3":
-		if defaultSpec.Generator == repository.GoModGenerator {
-			buildDeps["msft-golang"] = goToolchainDep(defaultSpec.GoVersion)
+		if repoInfo.Generator == repository.GoModGenerator {
+			buildDeps["msft-golang"] = goToolchainDep(pipeline.Current.RepoInfo.GoVersion)
 		}
 		for _, pkg := range []string{"SymCrypt", "SymCrypt-OpenSSL", "openssl-libs"} {
 			buildDeps[pkg] = map[string]interface{}{}
@@ -153,8 +158,8 @@ func linuxDeps(osName string, defaultSpec *contents.DefaultSpec, intermediateDep
 		}
 
 	case "bookworm", "bullseye", "noble", "jammy", "focal", "bionic":
-		if defaultSpec.Generator == repository.GoModGenerator {
-			buildDeps["msft-golang"] = goToolchainDep(defaultSpec.GoVersion)
+		if repoInfo.Generator == repository.GoModGenerator {
+			buildDeps["msft-golang"] = goToolchainDep(pipeline.Current.RepoInfo.GoVersion)
 			buildDeps["gcc"] = map[string]interface{}{}
 		}
 	}
@@ -218,10 +223,12 @@ func linuxImageConfig(binaryName, finalLinuxBase string) map[string]interface{} 
 
 // windowsDeps builds the dependencies map for the windowscross target.
 // Runtime deps are never allowed on windowscross — Dalec rejects them.
-func windowsDeps(defaultSpec *contents.DefaultSpec) map[string]interface{} {
+func windowsDeps() map[string]interface{} {
+	repoInfo := pipeline.Current.RepoInfo
+
 	buildDeps := map[string]interface{}{}
-	if defaultSpec.Generator == repository.GoModGenerator {
-		buildDeps["msft-golang"] = goToolchainDep(defaultSpec.GoVersion)
+	if repoInfo.Generator == repository.GoModGenerator {
+		buildDeps["msft-golang"] = goToolchainDep(pipeline.Current.RepoInfo.GoVersion)
 	}
 	return map[string]interface{}{
 		"build":       buildDeps,
@@ -230,25 +237,25 @@ func windowsDeps(defaultSpec *contents.DefaultSpec) map[string]interface{} {
 }
 
 // windowsArtifacts returns the per-target artifacts for windowscross (.exe binaries + license).
-func windowsArtifacts(defaultSpec *contents.DefaultSpec) map[string]interface{} {
+func windowsArtifacts() map[string]interface{} {
 	return map[string]interface{}{
-		"binaries": computeWindowsArtifactBinaries(defaultSpec),
+		"binaries": computeWindowsArtifactBinaries(),
 		"licenses": map[string]interface{}{
-			defaultSpec.Repo + "/LICENSE": map[string]interface{}{},
+			pipeline.Current.RepoInfo.Repo + "/LICENSE": map[string]interface{}{},
 		},
 	}
 }
 
 // windowsImageConfig builds the image map (entrypoint + symlink + optional bases) for the windowscross target.
 // Base images are extracted from the parsed Dockerfile stages (not from the LLM).
-func windowsImageConfig(binaryName string, defaultSpec *contents.DefaultSpec) map[string]interface{} {
+func windowsImageConfig(binaryName string) map[string]interface{} {
 	// binaryName is already resolved to the final Windows artifact (e.g. dropgz)
 	// by resolveTestPaths via computeArtifactPaths.
 	entrypoint := "/Windows/System32/" + binaryName + ".exe"
 
 	image := map[string]interface{}{"entrypoint": entrypoint}
 
-	if baseImages := findWindowsBaseImages(defaultSpec); len(baseImages) > 0 {
+	if baseImages := findWindowsBaseImages(); len(baseImages) > 0 {
 		var bases []map[string]interface{}
 		for _, ref := range baseImages {
 			bases = append(bases, map[string]interface{}{
@@ -270,9 +277,9 @@ func windowsImageConfig(binaryName string, defaultSpec *contents.DefaultSpec) ma
 
 // findWindowsBaseImages scans parsed Dockerfile stages for Windows base images
 // (nanoserver, servercore, etc.) and returns their full image refs.
-func findWindowsBaseImages(defaultSpec *contents.DefaultSpec) []string {
+func findWindowsBaseImages() []string {
 	var refs []string
-	for _, stage := range defaultSpec.Stages {
+	for _, stage := range pipeline.Current.Dockerfile.Stages {
 		from := strings.ToLower(stage.From)
 		if strings.Contains(from, "nanoserver") ||
 			strings.Contains(from, "servercore") ||
