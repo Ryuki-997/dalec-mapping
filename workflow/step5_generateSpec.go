@@ -21,7 +21,6 @@ import (
 	"dalec-mapping/infrastructure/repository"
 	"dalec-mapping/infrastructure/transformer"
 	"dalec-mapping/pipeline"
-	"dalec-mapping/utils"
 )
 
 // GenerateSpec creates the DALEC spec from parsed build files using static
@@ -86,6 +85,5 @@ func buildAndWriteSpec() ([]string, error) {
 		return nil, fmt.Errorf("writing output YAML file: %w", err)
 	}
 
-	log.Printf("✅ Successfully generated %s\n\n", utils.ResultDir)
 	return pipeline.Current.Onboard.Targets, nil
 }

@@ -118,7 +118,6 @@ func resolveOnboardFiles(specRepoEntries []interface{}, inputPath string) ([]pip
 			states = append(states, pipeline.State{Onboard: &component})
 		}
 	}
-	log.Println()
 	return states, nil
 }
 
@@ -182,7 +181,6 @@ func fetchOnboardFile(onboardPath, onboardDir, specRepository string) ([]onboard
 		} else {
 			log.Printf("Onboard Data: %s repo=%s tags=%v\n", component.SpecImageName, component.Repository, component.TagPatterns)
 		}
-		log.Println()
 	}
 	return components, nil
 }

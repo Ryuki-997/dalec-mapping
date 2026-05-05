@@ -38,7 +38,8 @@ func DiscoverBuildFiles() (bool, error) {
 
 	log.Println()
 	log.Printf("── Discover: %s @ %s ──\n", onboard.SpecImageName, tag)
-	log.Printf("  Repository: %s\n", repoURL)
+	log.Printf("Repository: %s\n", repoURL)
+	log.Println()
 
 	if err := clearResultDirectory(utils.ResultDir); err != nil {
 		log.Printf("⚠️  Warning: %v\n", err)
@@ -52,6 +53,7 @@ func DiscoverBuildFiles() (bool, error) {
 
 	log.Printf("  Dockerfile path: %s\n", dockerfilePath)
 	log.Printf("  Makefile path:   %s\n", makefilePath)
+	log.Println()
 
 	dockerfileContent, makefileContent, err := fetchBuildFiles(repoURL, dockerfilePath, makefilePath, tag)
 	if err != nil {
