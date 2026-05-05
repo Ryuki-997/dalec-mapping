@@ -164,7 +164,7 @@ func createFeatureBranch(branchName string) error {
 	return nil
 }
 
-// fileEntry holds a file path and its content for batch committing.
+// fileEntry holds a file path, its content, and its Git file mode for batch committing.
 type fileEntry struct {
 	Path    string
 	Content []byte
@@ -285,7 +285,7 @@ func commitAllFiles(branch, message string, files []fileEntry) error {
 		}
 		treeEntries = append(treeEntries, map[string]interface{}{
 			"path": file.Path,
-			"mode": "100644",
+			"mode": "100755",
 			"type": "blob",
 			"sha":  blobSHA,
 		})
