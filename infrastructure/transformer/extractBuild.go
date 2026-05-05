@@ -15,7 +15,7 @@ package transformer
 //     Merges per-binary build commands and pipeline steps into one shell script.
 //     Order: preamble → normal binary builds → pipeline steps → deferred sub-module builds.
 //     Calls → rawBuildCommands(), extractCdDir(), rewriteGoModCdPaths(),
-//             injectAllBinSuffixVars(), binSuffixPreamble()
+//             injectArtifactBinSuffix(), binSuffixPreamble()
 //     extractOutputFlag()       — extracts -o path from a go build command
 //     extractCdDir()            — splits "cd X && rest" into (X, rest)
 //     stripGoModDownloadPrefix()— removes go mod download prefix handled as source
@@ -328,7 +328,7 @@ func buildSteps(goModDownloads []GoModDownloadInfo) ([]map[string]interface{}, s
 	// came from a normal line, pipeline step, or deferred line.
 	stepCmd := strings.Join(parts, "\n")
 	stepCmd = strings.ReplaceAll(stepCmd, "'", "")
-	stepCmd = injectLastBinSuffix(stepCmd)
+	stepCmd = injectArtifactBinSuffix(stepCmd)
 	return []map[string]interface{}{{"command": stepCmd}}, stepCmd
 }
 
@@ -397,12 +397,22 @@ if [ "${GOOS}" = "windows" ]; then
 fi`
 }
 
-// injectLastBinSuffix rewrites ALL `-o /go/bin/<name>` occurrences in a
-// multi-line command block, appending `${BIN_SUFFIX}` to each output path.
-// This ensures every built binary receives the platform-appropriate extension
-// (e.g. .exe on Windows) so artifact paths match the actual output files.
-func injectLastBinSuffix(text string) string {
-	return binOutRe.ReplaceAllString(text, "-o ${1}$${BIN_SUFFIX}")
+// injectArtifactBinSuffix rewrites only `-o /go/bin/<name>` occurrences where
+// `<name>` matches a known artifact binary path from computeArtifactPaths().
+// This is semantically correct regardless of build order: intermediate helper
+// binaries (compressors, sub-modules) are never artifact paths and are skipped.
+func injectArtifactBinSuffix(text string) string {
+	artifactPaths := computeArtifactPaths()
+	return binOutRe.ReplaceAllStringFunc(text, func(match string) string {
+		sub := binOutRe.FindStringSubmatch(match)
+		if sub == nil {
+			return match
+		}
+		if _, isArtifact := artifactPaths[sub[1]]; isArtifact {
+			return "-o " + sub[1] + "${BIN_SUFFIX}"
+		}
+		return match
+	})
 }
 
 // scanVarReferences finds all ${VAR}/$(VAR) references in the merged command text.

@@ -44,7 +44,7 @@ func main() {
 	for groupKey, entry := range prGroups {
 		log.Printf("Group: %s, Components: %d\n", groupKey, len(entry.Components))
 	}
-	submitPRs(prGroups)
+	// submitPRs(prGroups)
 }
 
 // parseFlags registers and parses CLI flags, returning the resolved values.
@@ -69,6 +69,7 @@ func loadEnv() {
 }
 
 func fetchOnboardStates(inputPath string) ([]pipeline.State, map[string]bool) {
+	log.Printf("Step 1: fetching onboard files from %s", inputPath)
 	states, existingPaths, err := workflow.FetchOnboardStates(inputPath)
 	if err != nil {
 		log.Fatalf("❌ Failed to fetch onboard data: %v", err)
@@ -77,11 +78,13 @@ func fetchOnboardStates(inputPath string) ([]pipeline.State, map[string]bool) {
 	if len(states) == 0 {
 		log.Fatalf("❌ Potentially No onboarding files found at path: %s", inputPath)
 	}
+	log.Printf("Step 1 complete: fetched %d onboard component(s)", len(states))
 
 	return states, existingPaths
 }
 
 func resolveTagCache(componentStates []pipeline.State, existingPaths map[string]bool) []pipeline.State {
+	log.Printf("Step 2: resolving tag cache for %d component(s)", len(componentStates))
 	states, err := workflow.ResolveTagCache(componentStates, existingPaths)
 	if err != nil {
 		log.Fatalf("❌ Failed to resolve tag cache: %v", err)
@@ -90,6 +93,7 @@ func resolveTagCache(componentStates []pipeline.State, existingPaths map[string]
 	if len(states) == 0 {
 		log.Fatalf("❌ No actionable tags found for any component")
 	}
+	log.Printf("Step 2 complete: resolved %d actionable tag(s)", len(states))
 
 	return states
 }
@@ -157,10 +161,12 @@ func processTag(state pipeline.State) (string, *workflow.ComponentSpec) {
 	pipeline.Current.Onboard = onboard
 	pipeline.Current.Tag = tagSet
 
+	log.Printf("Step 3: discovering build files for %s @ %s", onboard.Repository, tagSet.Full)
 	contentChanged, err := workflow.DiscoverBuildFiles()
 	if err != nil {
 		log.Fatalf("❌ DiscoverBuildFiles failed: %v", err)
 	}
+	log.Printf("Step 3 complete: build files discovered (contentChanged=%v)", contentChanged)
 
 	isFirstOnboard := onboard.DockerfileContent == nil && onboard.MakefileContent == nil
 	action := decideAction(isFirstOnboard, contentChanged)
@@ -215,7 +221,7 @@ func decideAction(isFirstOnboard, contentChanged bool) pipelineAction {
 // ─── Chunk 4 · ACTIONS ──────────────────────────────────────────────────────
 
 func bumpCommit(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet) (string, *workflow.ComponentSpec) {
-	log.Printf("Content unchanged for %s @ %s — bumping commit hash\n", onboard.SpecImageName, tagSet.Stripped)
+	log.Printf("Step 4: bumping commit hash for %s @ %s R%d", onboard.SpecImageName, tagSet.Stripped, tagSet.Revision)
 
 	templateRevision := tagSet.Revision - 1
 
@@ -229,7 +235,7 @@ func bumpCommit(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet) (
 	}
 
 	remotePath := semver.SpecFilePath(onboard.SpecDir(), onboard.SpecImageName, tagSet.Stripped, tagSet.Revision)
-	log.Printf("✅ Revision bump complete for %s @ %s R%d — queued for PR\n", onboard.SpecImageName, tagSet.Stripped, tagSet.Revision)
+	log.Printf("✅ Step 4 complete: revision bump done for %s @ %s R%d — queued for PR\n", onboard.SpecImageName, tagSet.Stripped, tagSet.Revision)
 	return remotePath, &workflow.ComponentSpec{
 		Onboard:     onboard,
 		Tag:         tagSet.Stripped,
@@ -240,12 +246,12 @@ func bumpCommit(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet) (
 }
 
 func generateWork(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet) (string, []byte, error) {
+	log.Printf("Step 5: generating spec for %s @ %s", onboard.SpecImageName, tagSet.Full)
 	_, err := workflow.GenerateSpec()
 	if err != nil {
 		return "", nil, err
 	}
-
-	log.Printf("✅ Spec created for %s @ %s", onboard.SpecImageName, tagSet.Full)
+	log.Printf("✅ Step 5 complete: spec generated for %s @ %s", onboard.SpecImageName, tagSet.Full)
 
 	// // Test the generated spec by building and running the container image.
 	// if err := workflow.TestImage(utils.SpecPath, onboard.SpecImageName, tagSet.Stripped, resolvedTargets); err != nil {

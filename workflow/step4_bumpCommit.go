@@ -5,9 +5,13 @@
 //   Copies a previous tag's spec (templateTag), updates args.COMMIT and
 //   args.VERSION for the new tag, and writes a new spec file locally for push.
 //
-//   Chunk 1 · MAIN    BumpCommit()
-//   Chunk 2 · STEPS   fetchTemplateSpec(), resolveNewCommit(), updateSpecArgs(), writeSpecFile()
-//   Chunk 3 · HELPER  findMapValue()
+//   Functions are ordered by call sequence:
+//     BumpCommit()
+//       → fetchTemplateSpec()
+//       → pipeline.LookupTagCommit()
+//       → updateSpecArgs()
+//       → writeSpecFile()
+//             → findMapValue()
 // ═══════════════════════════════════════════════════════════════════════════════
 
 package workflow
@@ -26,8 +30,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
-
-// ─── Chunk 1 · MAIN ─────────────────────────────────────────────────────────
 
 // BumpCommit copies a previous tag's spec (templateTag), updates args.COMMIT
 // and args.VERSION for the new tag, and writes the result to utils.SpecPath.
@@ -64,8 +66,6 @@ func BumpCommit(templateTag string, templateRevision int) (string, error) {
 	log.Printf("✅ Commit bump complete — written to %s\n", utils.SpecPath)
 	return remotePath, nil
 }
-
-// ─── Chunk 2 · STEPS ─────────────────────────────────────────────────────────
 
 // fetchTemplateSpec fetches and decodes a previous tag's spec from the onboard repo.
 func fetchTemplateSpec(templateRemotePath string) (*yaml.Node, error) {
@@ -131,8 +131,6 @@ func writeSpecFile(specNode *yaml.Node) error {
 	}
 	return nil
 }
-
-// ─── Chunk 3 · HELPER ───────────────────────────────────────────────────────
 
 // findMapValue searches a YAML node tree for a mapping key and returns its value node.
 func findMapValue(root *yaml.Node, key string) *yaml.Node {
