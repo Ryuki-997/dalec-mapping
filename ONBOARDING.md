@@ -101,23 +101,53 @@ containernetworking:
 
 The group key (`containernetworking`) becomes the display name in PRs and branch names.
 
-### Step 2: Submit Pull Request
+### Step 2: Provide a Test Suite (Optional)
+
+Each component can optionally have its own test suite. The test script receives the built image tag as the first argument and any non-zero exit code fails the pipeline.
+
+**Single component** — place the test script directly under the project:
+
+```text
+specs/aks-node-controller/
+├── onboard.yml
+└── tests/
+    └── test.sh
+```
+
+**Multiple or grouped components** — create a separate folder for each component and configure distinct test suites:
+
+```text
+specs/containernetworking/
+├── onboard.yml
+├── azure-cns/
+│   └── tests/
+│       └── test.sh
+└── azure-ipam/
+    └── tests/
+        └── test.sh
+```
+
+This ensures each component's tests validate only the binary and behavior relevant to that component.
+
+### Step 3: Submit Pull Request
 
 1. Fork or clone [azure-management-and-platforms/aks-dalec-build-defs](https://github.com/azure-management-and-platforms/aks-dalec-build-defs)
 
-2. Add your `onboard.yml` file:
+2. Add your `onboard.yml` file (and optional tests):
 
    ```text
    specs/
    └── your-project/
-       └── onboard.yml
+       ├── onboard.yml
+       └── tests/
+           └── test.sh
    ```
 
 3. Create a pull request targeting the repository
 
 4. The PR will be reviewed and manually merged to the dedicated private branch
 
-### Step 3: Confirmation
+### Step 4: Confirmation
 
 Once your PR is merged, your repository is onboarded and ready for DALEC spec generation.
 
@@ -149,8 +179,10 @@ Once your PR is merged, your repository is onboarded and ready for DALEC spec ge
 
 ## Tag Pattern Format
 
-Tags are regex patterns matched against the repository's release tags. Use anchored patterns for precision:
+Tags are regex patterns matched against the repository's release tags. **Every tag that matches your pattern will be built as a separate image.** Be careful to use a pattern that satisfies exactly the versions you intend — overly broad patterns will trigger builds for every matching release.
+
+Use anchored patterns for precision:
 
 - `"^v1\\.2\\.\\d+$"` — matches `v1.2.0`, `v1.2.1`, etc.
 - `"azure-cns/v1\\.6\\..*"` — matches prefixed tags like `azure-cns/v1.6.0`
-- `"^v\\d+\\.\\d+\\.\\d+$"` — matches any semver tag
+- `"^v\\d+\\.\\d+\\.\\d+$"` — matches any semver tag (use with caution — builds every release)
