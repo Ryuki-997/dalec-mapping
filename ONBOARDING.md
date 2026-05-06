@@ -13,82 +13,103 @@ This guide explains how partner teams can onboard their repositories to the DALE
 
 ### Step 1: Create Your Configuration File
 
-Create a file named `onboard.yml` under `specs/<team>/<project>/` or `specs/<project>/` with the following structure:
+Create a file named `onboard.yml` under `specs/<your-project>/` in the onboard repo.
+
+The top-level keys are component names. The format supports two layouts:
+
+#### Standalone Component
+
+When your project produces a single component, define it as a top-level key:
 
 ```yaml
-# specs/<your-team>/<your-project>/onboard.yml
-# or specs/<your-project>/onboard.yml
+# specs/aks-node-controller/onboard.yml
 
-# Required: GitHub repository (owner/repo)
-repository: owner/repo
-
-# Required: One or more tag entries. Each entry is either:
-#   - A regex pattern to match against the repository's release tags
-#     (e.g. "^v1\\.2\\.\\d+$"). Use anchored regexes for precision.
-#   - The special keyword "latest", which always resolves to the
-#     most recent release tag in the repository.
-tags:
-  - "^v1\\.2\\.\\d+$"
-  - "^v1\\.3\\.\\d+$"
-
-# Required: Build targets to generate specs for.
-# Available targets:
-#   azlinux3/container  — Azure Linux 3 container image
-#   azlinux3/rpm        — Azure Linux 3 RPM package
-#   noble/deb           — Ubuntu Noble (24.04) deb package
-#   jammy/deb           — Ubuntu Jammy (22.04) deb package
-#   focal/deb           — Ubuntu Focal (20.04) deb package
-#   bionic/deb          — Ubuntu Bionic (18.04) deb package
-#   bookworm/deb        — Debian Bookworm deb package
-#   windowscross/container — Windows cross-compiled container image
-targets:
-  - azlinux3/container
-  - windowscross/container
-
-# Required: Path to the Dockerfile relative to the repository root.
-dockerfile: Dockerfile
-
-# Required: Path to the Makefile relative to the repository root.
-makefile: Makefile
-
-# Optional: Review mode — controls how generated specs are delivered.
-#   ManualReview (default) — Generated specs are submitted as a PR for
-#     manual approval before merging. Reviewers are notified via email.
-#   AutoReview — Generated specs are pushed directly to the base branch
-#     after passing tests, without creating a PR or sending notifications.
-reviewMode: ManualReview
-
-# Optional: List of reviewer email addresses for notifications.
-# Reviewers are notified when a PR is created (ManualReview mode only).
-reviewers:
-  - alice@example.com
-  - bob@example.com
+aks-node-controller:
+  repository: https://github.com/Azure/aks-node-controller
+  tags:
+    - "^v0\\.0\\.\\d+$"
+  targets:
+    - azlinux3/container
+  dockerfile: "."
+  makefile: "."
+  reviewers:
+    - user1
 ```
+
+#### Multiple Standalone Components
+
+When your project produces multiple independent components:
+
+```yaml
+# specs/containernetworking/onboard.yml
+
+azure-cns:
+  repository: https://github.com/Azure/azure-container-networking
+  tags:
+    - "azure-cns/v1\\.6\\..*"
+  targets:
+    - azlinux3/container
+    - windowscross/container
+  dockerfile: "."
+  makefile: "."
+  reviewers:
+    - user1
+
+azure-ipam:
+  repository: https://github.com/Azure/azure-container-networking
+  tags:
+    - "azure-ipam/v0\\.4\\..*"
+  targets:
+    - azlinux3/container
+  dockerfile: "."
+  makefile: "."
+  reviewers:
+    - user1
+```
+
+#### Grouped Components
+
+When multiple components share the same tag and should be submitted in a single PR, wrap them under a group key:
+
+```yaml
+# specs/containernetworking/onboard.yml
+
+containernetworking:
+  azure-cns:
+    repository: https://github.com/Azure/azure-container-networking
+    tags:
+      - "^v1\\.6\\.\\d+$"
+    targets:
+      - azlinux3/container
+      - windowscross/container
+    dockerfile: "."
+    makefile: "."
+    reviewers:
+      - user1
+
+  azure-ipam:
+    repository: https://github.com/Azure/azure-container-networking
+    tags:
+      - "^v1\\.6\\.\\d+$"
+    targets:
+      - azlinux3/container
+    dockerfile: "."
+    makefile: "."
+    reviewers:
+      - user1
+```
+
+The group key (`containernetworking`) becomes the display name in PRs and branch names.
 
 ### Step 2: Submit Pull Request
 
 1. Fork or clone [azure-management-and-platforms/aks-dalec-build-defs](https://github.com/azure-management-and-platforms/aks-dalec-build-defs)
 
-2. Add your `onboard.yml` file using one of these directory layouts:
+2. Add your `onboard.yml` file:
 
-   **With team grouping:**
-
-   ```bash
+   ```text
    specs/
-   └── your-team-name/
-       └── project1/
-           └── onboard.yml
-       └── project2/
-           └── onboard.yml
-   ```
-
-   **Without team grouping:**
-
-   ```bash
-   specs/
-   └── project1/
-       └── onboard.yml
-   └── project2/
+   └── your-project/
        └── onboard.yml
    ```
 
@@ -102,14 +123,34 @@ Once your PR is merged, your repository is onboarded and ready for DALEC spec ge
 
 ## Configuration Reference
 
-| Field            | Required | Description                                      |
-| ---------------- | -------- | ------------------------------------------------ |
-| `repository`     | Yes      | GitHub repository in `owner/repo` format         |
-| `tags`           | Yes      | List of regex patterns or `latest` keyword       |
-| `targets`        | Yes      | List of build targets (see available targets)    |
-| `dockerfile`     | Yes      | Path to the Dockerfile relative to the repo root |
-| `makefile`       | Yes      | Path to the Makefile relative to the repo root   |
-| `reviewMode`     | No       | `ManualReview` (default) or `AutoReview`         |
-| `reviewers`      | No       | List of email addresses for notifications        |
-| `specImageName`  | No       | Override the generated spec image name           |
-| `specRepository` | No       | Override the target spec repository              |
+| Field        | Required | Description                                             |
+| ------------ | -------- | ------------------------------------------------------- |
+| `repository` | Yes      | GitHub repository URL (`https://github.com/owner/repo`) |
+| `tags`       | Yes      | List of regex patterns to match against release tags    |
+| `targets`    | Yes      | List of build targets (see below)                       |
+| `dockerfile` | Yes      | Path to the Dockerfile relative to the repo root        |
+| `makefile`   | Yes      | Path to the Makefile relative to the repo root          |
+| `reviewers`  | No       | List of GitHub usernames to request review from         |
+
+## Available Build Targets
+
+| Target                    | Description                            |
+| ------------------------- | -------------------------------------- |
+| `azlinux3/container`      | Azure Linux 3 container image          |
+| `azlinux3/rpm`            | Azure Linux 3 RPM package              |
+| `azlinux3/testing/sysext` | Azure Linux 3 testing system extension |
+| `noble/deb`               | Ubuntu Noble (24.04) deb package       |
+| `jammy/deb`               | Ubuntu Jammy (22.04) deb package       |
+| `focal/deb`               | Ubuntu Focal (20.04) deb package       |
+| `bionic/deb`              | Ubuntu Bionic (18.04) deb package      |
+| `bookworm/deb`            | Debian Bookworm deb package            |
+| `windowscross/container`  | Windows cross-compiled container image |
+| `windowscross/zip`        | Windows cross-compiled zip archive     |
+
+## Tag Pattern Format
+
+Tags are regex patterns matched against the repository's release tags. Use anchored patterns for precision:
+
+- `"^v1\\.2\\.\\d+$"` — matches `v1.2.0`, `v1.2.1`, etc.
+- `"azure-cns/v1\\.6\\..*"` — matches prefixed tags like `azure-cns/v1.6.0`
+- `"^v\\d+\\.\\d+\\.\\d+$"` — matches any semver tag
