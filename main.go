@@ -1,8 +1,8 @@
 package main
 
 import (
+	"dalec-mapping/domain/naming"
 	"dalec-mapping/domain/onboarding"
-	"dalec-mapping/infrastructure/semver"
 	"dalec-mapping/patching"
 	"dalec-mapping/pipeline"
 	"dalec-mapping/utils"
@@ -39,7 +39,9 @@ func main() {
 
 	componentStates, existingPaths := fetchOnboardStates(inputPath)
 	states := resolveTagCache(componentStates, existingPaths)
-	prGroups := processOnboardStates(states)
+	prID := naming.GeneratePRID()
+	log.Printf("Run ID: %s", prID)
+	prGroups := processOnboardStates(states, prID)
 	for groupKey, entry := range prGroups {
 		log.Printf("Group: %s, Components: %d\n", groupKey, len(entry.Components))
 	}
@@ -123,19 +125,41 @@ func resolveTagCache(componentStates []pipeline.State, existingPaths map[string]
 
 // ─── Chunk 2 · ORCHESTRATION ─────────────────────────────────────────────────
 
+// actionEntry records what happened to a single component for the action log.
+type actionEntry struct {
+	Component string
+	Version   string
+	Action    string
+}
+
 // processOnboardStates iterates all pre-expanded states, running the pipeline
 // for each and collecting PR entries keyed by group name.
-func processOnboardStates(states []pipeline.State) map[string]*workflow.PREntry {
+func processOnboardStates(states []pipeline.State, prID string) map[string]*workflow.PREntry {
 	prGroups := make(map[string]*workflow.PREntry)
+	var actionLog []actionEntry
 
 	for _, state := range states {
 		onboard := state.Onboard
-		log.Printf("Processing: %s %s @ %s\n", onboard.Repository, onboard.SpecImageName, state.Tag.Full)
 
-		remotePath, comp := processTag(state)
+		comp := processTag(state, prID)
 		if comp == nil {
+			actionLog = append(actionLog, actionEntry{
+				Component: onboard.SpecImageName,
+				Version:   fmt.Sprintf("%s-%d", state.Tag.Version, state.Tag.Revision),
+				Action:    "SKIPPED",
+			})
 			continue
 		}
+
+		actionLabel := "GENERATE"
+		if comp.SpecOnly {
+			actionLabel = "BUMP COMMIT"
+		}
+		actionLog = append(actionLog, actionEntry{
+			Component: onboard.SpecImageName,
+			Version:   fmt.Sprintf("%s-%d", state.Tag.Version, state.Tag.Revision),
+			Action:    actionLabel,
+		})
 
 		groupName := onboard.SpecImageName
 		if onboard.GroupName != "" {
@@ -145,11 +169,47 @@ func processOnboardStates(states []pipeline.State) map[string]*workflow.PREntry 
 		if prGroups[groupKey] == nil {
 			prGroups[groupKey] = &workflow.PREntry{GroupName: onboard.GroupName}
 		}
-		comp.RemotePath = remotePath
 		prGroups[groupKey].Components = append(prGroups[groupKey].Components, *comp)
 	}
 
+	printActionLog(actionLog)
 	return prGroups
+}
+
+// printActionLog outputs a summary of all component actions taken during the run.
+func printActionLog(entries []actionEntry) {
+	log.Println()
+	log.Println("═══ Action Log ═══")
+	for _, entry := range entries {
+		log.Printf("  %-12s %s @ %s", entry.Action, entry.Component, entry.Version)
+	}
+	log.Println()
+}
+
+// printComponentBanner prints a prominent box banner for a component being processed.
+func printComponentBanner(component, tag string) {
+	label := fmt.Sprintf("  %s @ %s", component, tag)
+	width := len(label) + 4
+	if width < 60 {
+		width = 60
+	}
+	top := "╔" + repeatChar('═', width) + "╗"
+	padded := fmt.Sprintf("║  %-*s  ║", width-4, fmt.Sprintf("%s @ %s", component, tag))
+	bottom := "╚" + repeatChar('═', width) + "╝"
+
+	log.Println()
+	log.Println(top)
+	log.Println(padded)
+	log.Println(bottom)
+}
+
+// repeatChar returns a string of the given rune repeated n times.
+func repeatChar(ch rune, count int) string {
+	result := make([]rune, count)
+	for i := range result {
+		result[i] = ch
+	}
+	return string(result)
 }
 
 // submitPRs creates one PR per group (or standalone component) and logs results.
@@ -172,9 +232,7 @@ func submitPRs(prGroups map[string]*workflow.PREntry) {
 		}
 		var specPaths []string
 		for _, comp := range entry.Components {
-			if comp.RemotePath != "" {
-				specPaths = append(specPaths, comp.RemotePath)
-			}
+			specPaths = append(specPaths, comp.Naming.SpecFilePath)
 		}
 		results = append(results, prResult{url: prURL, files: specPaths})
 	}
@@ -191,15 +249,17 @@ func submitPRs(prGroups map[string]*workflow.PREntry) {
 
 // ─── Chunk 3 · PIPELINE ─────────────────────────────────────────────────────
 
-// processTag runs the full pipeline for a single tag and returns the remote
-// spec path and a ComponentSpec queued for PR creation.
-func processTag(state pipeline.State) (string, *workflow.ComponentSpec) {
+// processTag runs the full pipeline for a single tag and returns a
+// ComponentSpec queued for PR creation, or nil if skipped.
+func processTag(state pipeline.State, prID string) *workflow.ComponentSpec {
 	onboard := state.Onboard
 	tagSet := state.Tag
 
 	pipeline.Reset()
 	pipeline.Current.Onboard = onboard
 	pipeline.Current.Tag = tagSet
+
+	printComponentBanner(onboard.SpecImageName, tagSet.Stripped)
 
 	log.Printf("─── [%s @ %s] Step 3: Discover Build Files ───", onboard.SpecImageName, tagSet.Stripped)
 	log.Println("Purpose: Checking Dockerfile/Makefile changes vs. existing siblings")
@@ -225,25 +285,21 @@ func processTag(state pipeline.State) (string, *workflow.ComponentSpec) {
 	log.Printf("Result: contentChanged=%v, firstOnboard=%v -> action=%s", contentChanged, isFirstOnboard, actionLabel)
 	log.Println()
 
+	componentNaming := naming.Resolve([]onboarding.ComponentState{{Onboard: onboard, Tag: tagSet}}, prID)
+
 	switch action {
 	case actionBumpCommit:
-		return bumpCommit(onboard, tagSet)
+		return bumpCommit(onboard, tagSet, componentNaming)
 	case actionGenerate:
-		remotePath, specContent, err := generateWork(onboard, tagSet)
+		comp, err := generateWork(onboard, tagSet, componentNaming)
 		if err != nil {
 			log.Printf("⚠️  Skipping %s @ %s: %v", onboard.SpecImageName, tagSet.Full, err)
-			return "", nil
+			return nil
 		}
-		return remotePath, &workflow.ComponentSpec{
-			Onboard:     onboard,
-			Tag:         tagSet.Stripped,
-			Revision:    tagSet.Revision,
-			SpecContent: specContent,
-			SpecOnly:    false,
-		}
+		return comp
 	}
 
-	return "", nil
+	return nil
 }
 
 type pipelineAction int
@@ -267,13 +323,13 @@ func decideAction(isFirstOnboard, contentChanged bool) pipelineAction {
 
 // ─── Chunk 4 · ACTIONS ──────────────────────────────────────────────────────
 
-func bumpCommit(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet) (string, *workflow.ComponentSpec) {
+func bumpCommit(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet, componentNaming naming.Naming) *workflow.ComponentSpec {
 	log.Printf("─── [%s @ %s] Step 4: Bump Commit ───", onboard.SpecImageName, tagSet.Stripped)
 	log.Println("Purpose: Copying template spec with updated commit hash (no content change)")
 
 	templateRevision := tagSet.Revision - 1
 
-	if _, err := workflow.BumpCommit(tagSet.Full, templateRevision); err != nil {
+	if err := workflow.BumpCommit(tagSet.Full, templateRevision); err != nil {
 		log.Fatalf("❌ Revision bump failed: %v", err)
 	}
 
@@ -282,39 +338,45 @@ func bumpCommit(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet) (
 		log.Fatalf("❌ Failed to read bumped spec for %s @ %s: %v", onboard.SpecImageName, tagSet.Stripped, err)
 	}
 
-	remotePath := semver.SpecFilePath(onboard.SpecDir(), onboard.SpecImageName, tagSet.Version, tagSet.Revision)
-	log.Printf("✅ Bump commit complete: %s", remotePath)
-	return remotePath, &workflow.ComponentSpec{
+	log.Printf("✅ Bump commit complete: %s", componentNaming.SpecFilePath)
+	return &workflow.ComponentSpec{
 		Onboard:     onboard,
 		Tag:         tagSet.Stripped,
 		Revision:    tagSet.Revision,
 		SpecContent: specContent,
 		SpecOnly:    true,
+		Naming:      componentNaming,
 	}
 }
 
-func generateWork(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet) (string, []byte, error) {
+func generateWork(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet, componentNaming naming.Naming) (*workflow.ComponentSpec, error) {
 	log.Printf("─── [%s @ %s] Step 5: Generate Spec ───", onboard.SpecImageName, tagSet.Stripped)
 	log.Println("Purpose: Parsing Dockerfile/Makefile and generating full dalec spec from scratch")
 
 	_, err := workflow.GenerateSpec()
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 
 	// // Test the generated spec by building and running the container image.
 	// if err := workflow.TestImage(utils.SpecPath, onboard.SpecImageName, tagSet.Stripped, resolvedTargets); err != nil {
-	// 	return "", nil, fmt.Errorf("image test failed for %s @ %s: %w", onboard.SpecImageName, tagSet.Stripped, err)
+	// 	return nil, fmt.Errorf("image test failed for %s @ %s: %w", onboard.SpecImageName, tagSet.Stripped, err)
 	// }
 
 	specContent, err := os.ReadFile(utils.SpecPath)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to read generated spec: %w", err)
+		return nil, fmt.Errorf("failed to read generated spec: %w", err)
 	}
 
-	remotePath := semver.SpecFilePath(onboard.SpecDir(), onboard.SpecImageName, tagSet.Version, tagSet.Revision)
-	log.Printf("✅ Spec generated: %s", remotePath)
-	return remotePath, specContent, nil
+	log.Printf("✅ Spec generated: %s", componentNaming.SpecFilePath)
+	return &workflow.ComponentSpec{
+		Onboard:     onboard,
+		Tag:         tagSet.Stripped,
+		Revision:    tagSet.Revision,
+		SpecContent: specContent,
+		SpecOnly:    false,
+		Naming:      componentNaming,
+	}, nil
 }
 
 // ─── Chunk 5 · PATCHING ─────────────────────────────────────────────────────

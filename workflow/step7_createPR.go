@@ -27,14 +27,12 @@
 package workflow
 
 import (
-	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
 	"fmt"
 	"log"
 	"strings"
-	"time"
 
+	"dalec-mapping/domain/naming"
 	"dalec-mapping/domain/onboarding"
 	repo "dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/repository"
@@ -48,7 +46,7 @@ type ComponentSpec struct {
 	Revision    int
 	SpecContent []byte // generated spec file content
 	SpecOnly    bool
-	RemotePath  string // remote spec file path for downstream consumption
+	Naming      naming.Naming
 }
 
 // PREntry represents a single PR to be created — either for one standalone
@@ -62,27 +60,13 @@ type PREntry struct {
 // files to it, and opens a single PR. Works for both standalone components
 // (one component) and grouped components (multiple components).
 // Returns the PR URL on success.
-// generatePRID returns a unique run identifier in the form YYYYMMDD-xxxxxx
-// where xxxxxx is 6 random hex characters.
-func generatePRID() string {
-	date := time.Now().UTC().Format("20060102")
-	bytes := make([]byte, 3)
-	if _, err := rand.Read(bytes); err != nil {
-		// Fallback: use nanoseconds-based entropy.
-		nanos := time.Now().UnixNano()
-		bytes = []byte{byte(nanos), byte(nanos >> 8), byte(nanos >> 16)}
-	}
-	return date + "-" + hex.EncodeToString(bytes)
-}
-
 func CreatePR(entry PREntry) (string, error) {
 	if len(entry.Components) == 0 {
 		return "", fmt.Errorf("no components for %s", entry.GroupName)
 	}
 
-	prID := generatePRID()
-
-	featureBranch := deriveFeatureBranch(entry, prID)
+	first := entry.Components[0]
+	featureBranch := first.Naming.BranchName
 	if err := createFeatureBranch(featureBranch); err != nil {
 		return "", fmt.Errorf("failed to create feature branch %s: %w", featureBranch, err)
 	}
@@ -108,7 +92,7 @@ func CreatePR(entry PREntry) (string, error) {
 	}
 	log.Printf("Committed %d file(s) to %s\n", len(files), featureBranch)
 
-	prTitle, prBody := buildPRDescription(entry, componentNames, prID)
+	prTitle, prBody := buildPRDescription(entry, componentNames)
 	prURL, prNumber, err := createPullRequest(prTitle, prBody, featureBranch)
 	if err != nil {
 		return cleanup(fmt.Errorf("failed to create PR: %w", err))
@@ -127,22 +111,9 @@ func CreatePR(entry PREntry) (string, error) {
 }
 
 // deriveFeatureBranch returns the branch name for a PR entry.
-// Format: dalec/<specRepo>/<componentName>/<tag>-R<revision>/<prID>
-func deriveFeatureBranch(entry PREntry, prID string) string {
-	first := entry.Components[0]
-
-	componentName := first.Onboard.SpecImageName
-	if entry.GroupName != "" {
-		componentName = entry.GroupName
-	}
-
-	version := strings.TrimPrefix(first.Tag, "v")
-	versionRevision := fmt.Sprintf("%s-%d", version, first.Revision)
-
-	if first.Onboard.SpecRepository != "" {
-		return fmt.Sprintf("dalec/%s/%s/%s/%s", first.Onboard.SpecRepository, componentName, versionRevision, prID)
-	}
-	return fmt.Sprintf("dalec/%s/%s/%s", componentName, versionRevision, prID)
+// Uses the pre-computed Naming.BranchName from the first component.
+func deriveFeatureBranch(entry PREntry) string {
+	return entry.Components[0].Naming.BranchName
 }
 
 // createFeatureBranch creates a new branch from the tip of OnboardBranch.
@@ -182,18 +153,14 @@ func collectFiles(components []ComponentSpec) ([]string, []fileEntry, error) {
 	var files []fileEntry
 
 	for _, comp := range components {
-		onboard := comp.Onboard
-		dir := onboard.SpecDir()
-		specImageName := onboard.SpecImageName
-		names = append(names, specImageName)
+		names = append(names, comp.Onboard.SpecImageName)
 
-		version := strings.TrimPrefix(comp.Tag, "v")
-		specFile := fmt.Sprintf("%s-%s-%d-specfile.yml", specImageName, version, comp.Revision)
 		files = append(files, fileEntry{
-			Path:    fmt.Sprintf("%s/%s", dir, specFile),
+			Path:    comp.Naming.SpecFilePath,
 			Content: comp.SpecContent,
 		})
 
+		dir := comp.Onboard.SpecDir()
 		files = append(files, collectSiblingFiles(comp, dir)...)
 	}
 	return names, files, nil
@@ -330,19 +297,17 @@ func updateBranchRef(repoPath, branch, commitSHA string) error {
 
 // buildPRDescription returns the title and body for the pull request,
 // adapting for single vs multi-component entries.
-func buildPRDescription(entry PREntry, componentNames []string, prID string) (title, body string) {
+func buildPRDescription(entry PREntry, componentNames []string) (title, body string) {
 	first := entry.Components[0]
-	version := strings.TrimPrefix(first.Tag, "v")
-	versionRevision := fmt.Sprintf("%s-%d", version, first.Revision)
+	n := first.Naming
+
+	title = n.PRTitle
 	if len(entry.Components) == 1 {
-		onboard := first.Onboard
-		title = fmt.Sprintf("[Dalec][%s] %s @ %s", prID, onboard.SpecImageName, versionRevision)
-		body = fmt.Sprintf("Auto-generated Dalec spec for **%s** @ `%s`.\n\nRepository: %s\n\nRun ID: `%s`\n\nRequires 1 reviewer approval before merge.",
-			onboard.SpecImageName, versionRevision, onboard.Repository, prID)
+		body = fmt.Sprintf("Auto-generated Dalec spec for **%s** @ `%s`.\n\nRepository: %s\n\nRequires 1 reviewer approval before merge.",
+			n.DisplayName, n.VersionRevision, first.Onboard.Repository)
 	} else {
-		title = fmt.Sprintf("[Dalec][%s] %s @ %s", prID, entry.GroupName, versionRevision)
-		body = fmt.Sprintf("Auto-generated Dalec specs for group **%s** @ `%s`.\n\nComponents: %s\n\nRun ID: `%s`\n\nRequires 1 reviewer approval before merge.",
-			entry.GroupName, versionRevision, strings.Join(componentNames, ", "), prID)
+		body = fmt.Sprintf("Auto-generated Dalec specs for group **%s** @ `%s`.\n\nComponents: %s\n\nRequires 1 reviewer approval before merge.",
+			n.DisplayName, n.VersionRevision, strings.Join(componentNames, ", "))
 	}
 	return title, body
 }

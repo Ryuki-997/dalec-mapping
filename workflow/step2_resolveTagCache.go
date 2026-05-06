@@ -84,8 +84,10 @@ func matchTagPatterns(component *onboarding.ComponentConfig, repoTags map[string
 		strippedTag := semver.ToTag(actionableTag.Name)
 		tagSet := onboarding.NewTagSet(actionableTag.Name, "", strippedTag, actionableTag.NextRevision)
 		states = append(states, pipeline.State{
-			Onboard: component,
-			Tag:     tagSet,
+			ComponentState: onboarding.ComponentState{
+				Onboard: component,
+				Tag:     tagSet,
+			},
 		})
 		log.Printf("Queued: %s @ %s (R%d)\n", component.SpecImageName, actionableTag.Name, actionableTag.NextRevision)
 	}

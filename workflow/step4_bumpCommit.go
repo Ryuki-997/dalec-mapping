@@ -33,38 +33,36 @@ import (
 
 // BumpCommit copies a previous tag's spec (templateTag), updates args.COMMIT
 // and args.VERSION for the new tag, and writes the result to utils.SpecPath.
-func BumpCommit(templateTag string, templateRevision int) (string, error) {
+func BumpCommit(templateTag string, templateRevision int) error {
 	onboard := pipeline.Current.Onboard
 	tagSet := pipeline.Current.Tag
 
 	specDir := onboard.SpecDir()
-	remotePath := semver.SpecFilePath(specDir, onboard.SpecImageName, tagSet.Version, tagSet.Revision)
 	templateRemotePath := semver.SpecFilePath(specDir, onboard.SpecImageName, semver.ToTag(templateTag), templateRevision)
 
 	log.Printf("Commit bump for %s @ %s R%d (template: %s)\n", onboard.SpecImageName, tagSet.Stripped, tagSet.Revision, templateRemotePath)
 
 	specNode, err := fetchTemplateSpec(templateRemotePath)
 	if err != nil {
-		return "", err
+		return err
 	}
 
 	newCommit, err := pipeline.LookupTagCommit(onboard.Repository, tagSet.Full)
 	if err != nil {
-		return "", fmt.Errorf("failed to resolve commit for tag %s: %w", tagSet.Full, err)
+		return fmt.Errorf("failed to resolve commit for tag %s: %w", tagSet.Full, err)
 	}
 	log.Printf("   Commit SHA (from cache): %s\n", newCommit)
 
 	if err := updateSpecArgs(specNode, tagSet.Stripped, newCommit); err != nil {
-		return "", err
+		return err
 	}
 
 	if err := writeSpecFile(specNode); err != nil {
-		return "", err
+		return err
 	}
 
-	log.Printf("Step 4 output: %s\n", remotePath)
 	log.Printf("✅ Commit bump complete — written to %s\n", utils.SpecPath)
-	return remotePath, nil
+	return nil
 }
 
 // fetchTemplateSpec fetches and decodes a previous tag's spec from the onboard repo.

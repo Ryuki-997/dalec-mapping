@@ -23,11 +23,8 @@ import (
 // Set at the start of each iteration and read/written by workflow steps
 // and infrastructure functions.
 type State struct {
-	// Onboard is the current component being processed.
-	Onboard *onboarding.ComponentConfig
-
-	// Tag holds all derived representations of the current tag.
-	Tag onboarding.TagSet
+	// ComponentState embeds the component config and tag for the current iteration.
+	onboarding.ComponentState
 
 	// RepoInfo is the resolved repository metadata for the current component.
 	RepoInfo *repository.RepoInfo

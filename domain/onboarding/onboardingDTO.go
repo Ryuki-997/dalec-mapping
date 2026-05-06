@@ -123,6 +123,13 @@ func NewTagSet(fullTag, pattern, strippedTag string, revision int) TagSet {
 	}
 }
 
+// ComponentState pairs a component config with its resolved tag.
+// Used as the shared input to naming resolution and pipeline iteration.
+type ComponentState struct {
+	Onboard *ComponentConfig
+	Tag     TagSet
+}
+
 // ComponentConfig represents a single component both in the YAML onboard file
 // and at runtime throughout the pipeline.
 type ComponentConfig struct {
@@ -148,12 +155,4 @@ type ComponentConfig struct {
 // Derived from the onboard.yml location, not hardcoded.
 func (c *ComponentConfig) SpecDir() string {
 	return c.OnboardDir
-}
-
-// SpecLeaf returns the leaf path segment: "specRepo/specImage" or just "specImage".
-func (c *ComponentConfig) SpecLeaf() string {
-	if c.SpecRepository != "" {
-		return fmt.Sprintf("%s/%s", c.SpecRepository, c.SpecImageName)
-	}
-	return c.SpecImageName
 }

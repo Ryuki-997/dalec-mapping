@@ -115,7 +115,7 @@ func resolveOnboardFiles(specRepoEntries []interface{}, inputPath string) ([]pip
 		log.Println()
 		for i := range components {
 			component := components[i]
-			states = append(states, pipeline.State{Onboard: &component})
+			states = append(states, pipeline.State{ComponentState: onboarding.ComponentState{Onboard: &component}})
 		}
 	}
 	return states, nil

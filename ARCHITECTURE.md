@@ -2,260 +2,263 @@
 
 ## Overview
 
-This document outlines the internal automated workflow for generating and maintaining DALEC spec files from onboarded partner repositories.
+This document outlines the automated workflow for generating and maintaining DALEC spec files from onboarded partner repositories.
 
 ## High-Level Flow
 
-```bash
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        AUTOMATED DAILY WORKFLOW                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  Every 24 hours, for each onboarded default.yml:                            │
-│                                                                             │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                   │
-│  │   Step 1:    │───►│   Step 2:    │───►│   Step 3:    │                   │
-│  │   Discover   │    │   Populate   │    │   Generate   │                   │
-│  └──────────────┘    └──────────────┘    └──────────────┘                   │
-│         │                   │                   │                           │
-│         ▼                   ▼                   ▼                           │
-│  Validate paths      LLM agent fills     Transform to                       │
-│  from default.yml    non-deterministic   final DALEC spec                   │
-│                      values                                                 │
-│                                                                             │
-│  ┌──────────────────────────────────────────────────────────────────┐       │
-│  │                    Optional: CVE Patching                        │       │
-│  └──────────────────────────────────────────────────────────────────┘       │
-│                                                                             │
-│                              │                                              │
-│                              ▼                                              │
-│                   ┌──────────────────┐                                      │
-│                   │  Update spec in  │                                      │
-│                   │  private branch  │                                      │
-│                   └──────────────────┘                                      │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+``` bash
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                         AUTOMATED DAILY WORKFLOW                             │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  Every 24 hours, scan specs/ folder for onboard.yml files:                   │
+│                                                                              │
+│  ┌────────────┐   ┌────────────┐   ┌────────────┐   ┌────────────────────┐   │
+│  │  Step 1:   │──►│  Step 2:   │──►│  Step 3:   │──►│     Step 4:        │   │
+│  │  Fetch     │   │  Resolve   │   │  Discover  │   │  Take Action       │   │
+│  │  Onboard   │   │  Tag Cache │   │  Build     │   │                    │   │
+│  └────────────┘   └────────────┘   │  Files     │   │  ┌──────────────┐  │   │
+│        │                │          └────────────┘   │  │  Generate    │  │   │
+│        ▼                ▼                │          │  │  Full Spec   │  │   │
+│  Scan specs/ for   Expand to            ▼           │  └──────┬───────┘  │   │
+│  onboard.yml and   (component,tag)  Fetch fresh     │         │          │   │
+│  flatten grouped   pairs with       build files     │         OR         │   │
+│  components into   commit SHAs      and compare     │         │          │   │
+│  state list                         to cached       │  ┌──────┴───────┐  │   │
+│                                                     │  │  Bump Commit │  │   │
+│                                                     │  │  (fast path) │  │   │
+│                                                     │  └──────────────┘  │   │
+│                                                     └────────┬───────────┘   │
+│                                                             │                │
+│                                                             ▼                │
+│                                                    ┌────────────────────┐    │
+│                                                    │     Step 5:        │    │
+│                                                    │     Create PR      │    │
+│                                                    └────────────────────┘    │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Input: Onboarded Configuration
+---
 
-Each partner team has a `default.yml` in the private repository:
+## Input: Onboard Configuration
+
+Each partner team has an `onboard.yml` in the spec repository under `specs/<partnership>/onboard.yml`. The file contains **standalone** components (single entry) and **grouped** components (two or more entries that share a PR).
 
 ```yaml
-# definitions/<team-name>/default.yml
-repository: owner/repo/branch
+# specs/<partnership>/onboard.yml
+standalone-component:
+  repository: https://github.com/owner/repo
+  tags:
+    - "v1.2.*"
+  targets:
+    - azlinux3
+  reviewers:
+    - user1
+  dockerfile: "."
+  makefile: "."
 
-dockerfiles:
-  - Dockerfile
-  - docker/Dockerfile.alpine
-
-makefiles:
-  - Makefile
-  - src/Makefile
+group-name:
+  component-a:
+    repository: https://github.com/owner/repo-a
+    tags:
+      - "v2.*.*"
+    targets:
+      - azlinux3
+      - windowscross
+    reviewers:
+      - user2
+    dockerfile: "docker/"
+    makefile: "."
+  component-b:
+    repository: https://github.com/owner/repo-a
+    tags:
+      - "v2.*.*"
+    targets:
+      - azlinux3
+      - windowscross
+    reviewers:
+      - user2
+    dockerfile: "docker/"
+    makefile: "."
 ```
 
 Location: [azure-management-and-platforms/aks-dalec-build-defs](https://github.com/azure-management-and-platforms/aks-dalec-build-defs)
 
 ---
 
-## Step 1: Discover
+## Step 1: Fetch Onboard
 
-**Purpose**: Validate that paths specified in `default.yml` exist in the source repository.
+**Purpose**: Scan the `specs/` folder for all `onboard.yml` leaf nodes and flatten their components into a state list.
 
-### 1.1 Process
+### Process
 
-1. Read `default.yml` configuration
-2. Checkout the source repository at specified branch
-3. Verify each dockerfile and makefile path exists
-4. Collect file contents for next step
+1. Recursively fetch the spec repository tree under the target input path (e.g. `specs/`)
+2. Identify entries where the leaf node is `onboard.yml`
+3. For each `onboard.yml`, parse standalone and grouped components
+4. Flatten all components into individual `pipeline.State` entries (one per component)
+5. Track existing file paths in the spec repo for later revision calculation
 
-### 1.2 Input
+### Output
 
-```yaml
-repository: owner/repo/branch
-dockerfiles:
-  - Dockerfile
-makefiles:
-  - Makefile
-```
-
-### 1.3 Output
-
-```yaml
-# filepath.yml
-dockerfiles:
-  - Dockerfile
-makefiles:
-  - Makefile
-```
-
-### 1.4 Error Handling
-
-- If required paths are missing, log warning and proceed with available files
-- If repository is unreachable, retry with backoff authorization, then skip this cycle
+- `[]pipeline.State` — One entry per component, with `Onboard` (ComponentConfig) populated
+- `map[string]bool` — Lookup of existing spec file paths in the repo
 
 ---
 
-## Step 2: Populate
+## Step 2: Resolve Tag Cache
 
-**Purpose**: Use an LLM agent to fill non-deterministic values in the DALEC spec structure.
+**Purpose**: Expand the component-level state list into (component, tag) pairs by resolving tag patterns against repository tags. Centralizes all components with potential changes as key-value pairs of tag name to commit SHA.
 
-### 2.1 Process
+### Process
 
-1. Load discovered dockerfile and makefile contents
-2. Provide the DALEC spec struct template to the agent
-3. Agent analyzes build files and populates:
-   - Package name and version
-   - Build dependencies
-   - Runtime dependencies
-   - Build commands
-   - Environment variables
-   - Labels and metadata
+1. For each component state, fetch all tags from the source repository
+2. Cache tags globally: `TagCache[repoURL][tagName] = commitSHA`
+3. Match each component's `tag_patterns` against the fetched tags
+4. Filter out tags that already have a spec file in the remote repo
+5. Expand each matched tag into a new state with a populated `TagSet`
 
-### 2.2 Input
+### TagSet
 
-```json
-{
-  "skill": "<SKILL.md content>",
-  "parameters": {
-    "dockerfiles": ["<content>"],
-    "makefiles": ["<content>"],
-    "spec_struct": "<DALEC spec template>"
-  }
+```go
+type TagSet struct {
+    Pattern   string  // Original regex pattern (e.g. "v1.2.*")
+    Full      string  // Resolved tag from repo (e.g. "azure-ipam/v1.2.3")
+    Stripped  string  // Short semver with v prefix (e.g. "v1.2.3")
+    Version   string  // Numeric only (e.g. "1.2.3")
+    Revision  int     // Spec revision number (1, 2, 3...)
 }
 ```
 
-### 2.3 Output
+### Output
 
-```yaml
-# populated-values.yml
-name: package-name
-version: 1.2.3
-description: "Extracted from Dockerfile"
-dependencies:
-  build:
-    - gcc
-    - make
-  runtime:
-    - libc
-build:
-  commands:
-    - make build
-    - make install
-```
-
-### Agent Skill
-
-Located at: `generator/skills/non-deterministic-setup/SKILL.md`
+- `[]pipeline.State` — Expanded to one entry per (component, tag) pair, with `Onboard` and `Tag` populated
 
 ---
 
-## Step 3: Generate
+## Step 3: Discover Build Files
 
-**Purpose**: Transform populated values into the final DALEC spec format.
+**Purpose**: Fetch fresh Dockerfile/Makefile from the source repository at the resolved tag and compare against cached versions to determine what type of action the component needs.
 
-### 3.1 Process
+### Process
 
-1. Load populated values from Step 2
-2. Apply generator transformer logic
-3. Validate generated spec against DALEC schema
-4. Output final spec file
+1. Load cached build files (previously committed Dockerfile/Makefile from the onboard repo)
+2. Fetch fresh build files from the source repo at the resolved tag
+3. Diff fresh content against cached content
+4. Return `contentChanged` flag indicating whether files differ
 
-### 3.2 Transformer
+### Decision Matrix
 
-See: `generator/transformer/` for transformation logic
+| Condition | Action |
+| --------- | ------ |
+| First onboard (no cached files exist) | Generate full spec |
+| Content changed (Dockerfile/Makefile differ) | Generate full spec |
+| Content unchanged AND prior revision exists | Bump commit (fast path) |
+| Content unchanged AND no prior revision | Generate full spec |
 
-### 3.3 Input
+### Output
 
-```yaml
-# populated-values.yml
-name: package-name
-version: 1.2.3
-# ... populated fields
-```
-
-### 3.4 Output
-
-```yaml
-# final DALEC spec
-name: package-name
-version: 1.2.3
-targets:
-  mariner2:
-    image: mcr.microsoft.com/cbl-mariner/base/core:2.0
-dependencies:
-  build:
-    - gcc
-    - make
-  runtime:
-    - libc
-build:
-  steps:
-    - command: make build
-    - command: make install
-```
+- `bool` — `contentChanged` flag
+- Side effect: updates `pipeline.Current.Onboard.DockerfileContent` and `MakefileContent` with fresh content
 
 ---
 
-## Optional: CVE Patching
+## Step 4: Take Action
 
-**Purpose**: Apply security patches for known vulnerabilities.
+**Purpose**: Based on the discovery result, take the corresponding action to produce a DALEC spec file.
 
-> ⚠️ Implementation not yet determined
+### Path A: Generate Full Spec
 
-### Potential Process
+When Dockerfile/Makefile content has changed or this is a first onboard:
 
-1. Scan generated spec for known vulnerable dependencies
-2. Query CVE database for applicable patches
-3. Inject patch steps into build process
-4. Update dependency versions where applicable
+1. Fetch repository metadata (description, license, default branch)
+2. Parse Dockerfile into structured AST (stages, args, runs, copies, etc.)
+3. Parse Makefile into extracted variables
+4. Transform parsed data into a DALEC spec using the transformer pipeline:
+   - Extract targets, defaults, sources, dependencies
+   - Extract build commands, symlinks, artifacts, tests
+5. Write the final spec YAML to the result directory
+
+### Path B: Bump Commit (Fast Path)
+
+When Dockerfile/Makefile content is unchanged and a prior revision exists:
+
+1. Fetch the previous revision's spec file from the remote repo
+2. Update `args.COMMIT` with the new tag's commit SHA (from TagCache)
+3. Update `args.VERSION` with the new tag version
+4. Write the updated spec YAML to the result directory
+
+### Output
+
+- Spec file written to `result/output.yml`
+- Remote path for the spec (e.g. `specs/<partnership>/<image>/<image>-<tag>-<revision>-specfile.yml`)
 
 ---
 
-## Final Step: Update Private Repository
+## Step 5: Create PR
 
-**Purpose**: Commit the generated spec to the private branch.
+**Purpose**: Commit all generated/bumped spec files and open a pull request with reviewers.
 
-### Target Repository
+### Process
 
-[azure-management-and-platforms/aks-dalec-build-defs](https://github.com/azure-management-and-platforms/aks-dalec-build-defs)
+1. Group processed components by their group name (or standalone)
+2. Generate a unique PR ID (`YYYYMMDD-xxxxxx`)
+3. Create a feature branch from the onboard branch
+4. Collect all files for the commit (spec files + sibling Dockerfiles/Makefiles)
+5. Create a single commit with all files on the feature branch
+6. Open a pull request with a descriptive title and body
+7. Add configured reviewers to the PR
+
+### Feature Branch Format
+
+```bash
+dalec/<specRepository>/<componentName>/<version>-R<revision>/<prID>
+```
 
 ---
 
 ## Scheduling
 
-| Trigger    | Frequency | Description                          |
-| ---------- | --------- | ------------------------------------ |
-| Scheduled  | Every 24h | Process all onboarded `default.yml`  |
-| On-demand  | Manual    | Trigger for specific team/package    |
+| Trigger   | Frequency | Description                        |
+| --------- | --------- | ---------------------------------- |
+| Scheduled | Every 24h | Process all onboarded `onboard.yml` |
+| On-demand | Manual    | Trigger for specific partnership   |
 
 ---
 
 ## Component Map
 
 ```bash
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                            COMPONENTS                                       │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  ┌─────────────────┐                                                        │
-│  │  Scheduler      │  Triggers daily workflow                               │
-│  └────────┬────────┘                                                        │
-│           │                                                                 │
-│           ▼                                                                 │
-│  ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐        │
-│  │  tool/          │     │  generator/     │     │  generator/     │        │
-│  │  discover.go    │────►│  skills/        │────►│  transformer/   │        │
-│  │                 │     │  SKILL.md       │     │                 │        │
-│  └─────────────────┘     └─────────────────┘     └─────────────────┘        │
-│                                                                             │
-│  ┌─────────────────┐                                                        │
-│  │  Azure OpenAI   │  LLM for non-deterministic population                  │
-│  └─────────────────┘                                                        │
-│                                                                             │
-│  ┌─────────────────┐                                                        │
-│  │  GitHub API     │  Source repo access & spec commit                      │
-│  └─────────────────┘                                                        │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                              COMPONENTS                                       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌──────────────────┐                                                        │
+│  │  Scheduler       │  Triggers daily workflow                               │
+│  └────────┬─────────┘                                                        │
+│           │                                                                  │
+│           ▼                                                                  │
+│  ┌──────────────────┐                                                        │
+│  │  workflow/       │  Pipeline orchestration (Steps 1-5)                    │
+│  └────────┬─────────┘                                                        │
+│           │                                                                  │
+│           ├──────────────────────────────────────────────────┐               │
+│           │                                                  │               │
+│           ▼                                                  ▼               │
+│  ┌──────────────────┐     ┌──────────────────┐     ┌─────────────────┐       │
+│  │  infrastructure/ │     │  infrastructure/ │     │  infrastructure/│       │
+│  │  parser/         │     │  transformer/    │     │  repository/    │       │
+│  │                  │     │                  │     │                 │       │
+│  │  - Dockerfile    │────►│  - Targets       │     │  - GitHub API   │       │
+│  │  - Makefile      │     │  - Dependencies  │     │  - ADO API      │       │
+│  │  - Spec Writer   │     │  - Sources       │     │                 │       │
+│  └──────────────────┘     │  - Build Steps   │     └─────────────────┘       │
+│                           │  - Artifacts     │                               │
+│                           └──────────────────┘                               │
+│                                                                              │
+│  ┌──────────────────┐                                                        │
+│  │  pipeline/       │  Centralized state + tag cache                         │
+│  └──────────────────┘                                                        │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
