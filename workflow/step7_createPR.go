@@ -59,26 +59,36 @@ type PREntry struct {
 // CreatePR creates a feature branch from OnboardBranch, commits all components'
 // files to it, and opens a single PR. Works for both standalone components
 // (one component) and grouped components (multiple components).
-// Returns the PR URL on success.
-func CreatePR(entry PREntry) (string, error) {
+// Returns the PR URL and whether a new PR was created (false if an existing PR was reused).
+func CreatePR(entry PREntry) (string, bool, error) {
 	if len(entry.Components) == 0 {
-		return "", fmt.Errorf("no components for %s", entry.GroupName)
+		return "", false, fmt.Errorf("no components for %s", entry.GroupName)
 	}
 
 	first := entry.Components[0]
+
+	// Check for an existing open PR before creating a new one.
+	existingURL, err := findExistingPR(first.Naming.DisplayName, first.Naming.VersionRevision)
+	if err != nil {
+		log.Printf("⚠️  Failed to check for existing PRs, proceeding with creation: %v", err)
+	} else if existingURL != "" {
+		log.Printf("⚠️  Skipping PR creation — open PR already exists: %s", existingURL)
+		return existingURL, false, nil
+	}
+
 	featureBranch := first.Naming.BranchName
 	if err := createFeatureBranch(featureBranch); err != nil {
-		return "", fmt.Errorf("failed to create feature branch %s: %w", featureBranch, err)
+		return "", false, fmt.Errorf("failed to create feature branch %s: %w", featureBranch, err)
 	}
 	log.Printf("Created feature branch %s from %s\n", featureBranch, utils.OnboardBranch)
 
-	cleanup := func(wrapped error) (string, error) {
+	cleanup := func(wrapped error) (string, bool, error) {
 		if delErr := deleteRemoteBranch(featureBranch); delErr != nil {
 			log.Printf("⚠️  Failed to clean up remote branch %s: %v\n", featureBranch, delErr)
 		} else {
 			log.Printf("Cleaned up remote branch %s after failure\n", featureBranch)
 		}
-		return "", wrapped
+		return "", false, wrapped
 	}
 
 	componentNames, files, err := collectFiles(entry.Components)
@@ -107,7 +117,7 @@ func CreatePR(entry PREntry) (string, error) {
 		}
 	}
 
-	return prURL, nil
+	return prURL, true, nil
 }
 
 // deriveFeatureBranch returns the branch name for a PR entry.
@@ -366,6 +376,32 @@ func addReviewers(prNumber int, reviewers []string) error {
 		"reviewers": reviewers,
 	})
 	return err
+}
+
+// findExistingPR searches for an open PR with the "specfile" label whose title
+// matches the given component display name and version-revision.
+// Returns the PR URL if found, or "" if no matching PR exists.
+func findExistingPR(displayName, versionRevision string) (string, error) {
+	issuesPath := fmt.Sprintf("repos/%s/%s/issues?state=open&labels=specfile&per_page=100",
+		utils.OnboardOwner, utils.OnboardRepo)
+	issues, err := repository.FetchJSONArray(issuesPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to list open specfile PRs: %w", err)
+	}
+
+	titleSuffix := displayName + " @ " + versionRevision
+	for _, issue := range issues {
+		if issue["pull_request"] == nil {
+			continue
+		}
+		title, _ := issue["title"].(string)
+		if !strings.HasSuffix(title, titleSuffix) {
+			continue
+		}
+		htmlURL, _ := issue["html_url"].(string)
+		return htmlURL, nil
+	}
+	return "", nil
 }
 
 // deleteRemoteBranch deletes a branch from the onboard repo via the GitHub API.

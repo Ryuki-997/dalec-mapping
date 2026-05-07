@@ -4,6 +4,8 @@
 
 Before the DALEC Spec Generation pipeline can read source code from your Azure DevOps repository, the service principal must have read access to your ADO project.
 
+Authentication uses **Workload Identity Federation** (OIDC). On AKS the workload identity webhook injects federated credentials into the pod automatically. The pipeline acquires a short-lived Entra ID access token scoped to Azure DevOps — no long-lived PATs are stored or rotated.
+
 ## Steps
 
 ### 1. Navigate to your ADO project

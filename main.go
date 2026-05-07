@@ -45,7 +45,7 @@ func main() {
 	for groupKey, entry := range prGroups {
 		log.Printf("Group: %s, Components: %d\n", groupKey, len(entry.Components))
 	}
-	// submitPRs(prGroups)
+	submitPRs(prGroups)
 }
 
 // parseFlags registers and parses CLI flags, returning the resolved values.
@@ -219,13 +219,14 @@ func submitPRs(prGroups map[string]*workflow.PREntry) {
 	log.Printf("  Groups to submit: %d", len(prGroups))
 
 	type prResult struct {
-		url   string
-		files []string
+		url     string
+		files   []string
+		created bool
 	}
 	var results []prResult
 
 	for groupName, entry := range prGroups {
-		prURL, err := workflow.CreatePR(*entry)
+		prURL, created, err := workflow.CreatePR(*entry)
 		if err != nil {
 			log.Printf("❌ PR creation failed for %s: %v", groupName, err)
 			continue
@@ -234,12 +235,26 @@ func submitPRs(prGroups map[string]*workflow.PREntry) {
 		for _, comp := range entry.Components {
 			specPaths = append(specPaths, comp.Naming.SpecFilePath)
 		}
-		results = append(results, prResult{url: prURL, files: specPaths})
+		results = append(results, prResult{url: prURL, files: specPaths, created: created})
 	}
 
-	log.Printf("PR Summary (%d PRs created):", len(results))
+	createdCount := 0
+	skippedCount := 0
+	for _, result := range results {
+		if result.created {
+			createdCount++
+		} else {
+			skippedCount++
+		}
+	}
+
+	log.Printf("PR Summary (%d created, %d skipped — already open):", createdCount, skippedCount)
 	for i, result := range results {
-		log.Printf("  PR #%d: %s", i+1, result.url)
+		label := "created"
+		if !result.created {
+			label = "existing"
+		}
+		log.Printf("  PR #%d [%s]: %s", i+1, label, result.url)
 		for _, file := range result.files {
 			log.Printf("    - %s", file)
 		}

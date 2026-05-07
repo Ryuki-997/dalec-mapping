@@ -7,7 +7,7 @@
 //
 //   NOTE: This step only runs for GitHub-sourced repos. ADO-sourced repos skip
 //   local testing entirely because the ADO pipeline build itself serves as the
-//   test run (BuildKit needs an ADO_TOKEN secret for private ADO git sources,
+//   test run (BuildKit needs an Entra ID access token for private ADO git sources,
 //   which is handled by test.sh / the pipeline YAML, not here).
 //
 //   Functions are ordered by call sequence:
