@@ -4,8 +4,10 @@ package repository
 // ado.go — Azure DevOps repository access via git remote commands.
 //
 // All operations run git against the ADO repository URL directly; no local
-// checkout is required.  The pipeline agent's credential helper handles
-// authentication to msazure.visualstudio.com automatically.
+// checkout is required.  Authentication uses a short-lived Entra ID access
+// token acquired via azidentity.  On AKS the workload
+// identity webhook supplies credentials automatically; for local development
+// `az login` is sufficient.
 //
 // Repository URLs may include a component path appended after the repo name:
 //   https://dev.azure.com/org/project/_git/repo/component/path
@@ -20,28 +22,69 @@ package repository
 
 import (
 	"bytes"
+	"context"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
+
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 
 	domainRepo "dalec-mapping/domain/repository"
 )
 
-// adoAuthURL injects the ADO_TOKEN into the URL as HTTP Basic auth so that
-// git subprocesses can authenticate without a credential helper or terminal
-// prompt.  If ADO_TOKEN is not set the URL is returned unchanged.
+// azureDevOpsScope is the well-known resource ID for Azure DevOps,
+// used to request an Entra ID access token with ADO read permissions.
+const azureDevOpsScope = "499b84ac-1321-427f-aa17-267ca6975798/.default"
+
+var initCredential = sync.OnceValues(func() (*azidentity.DefaultAzureCredential, error) {
+	credential, err := azidentity.NewDefaultAzureCredential(nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Azure credential: %w", err)
+	}
+	return credential, nil
+})
+
+// adoAccessToken acquires a short-lived Entra ID access token scoped to
+// Azure DevOps. On AKS the WorkloadIdentityCredential is used automatically
+// (the webhook injects AZURE_CLIENT_ID, AZURE_TENANT_ID, and
+// AZURE_FEDERATED_TOKEN_FILE). For local development AzureCLICredential
+// activates via `az login`.
+func adoAccessToken() (string, error) {
+	credential, err := initCredential()
+	if err != nil {
+		return "", err
+	}
+
+	tokenResponse, err := credential.GetToken(context.Background(), policy.TokenRequestOptions{
+		Scopes: []string{azureDevOpsScope},
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to acquire ADO access token: %w", err)
+	}
+
+	log.Println("  Acquired Entra ID access token for Azure DevOps")
+	return tokenResponse.Token, nil
+}
+
+// adoAuthURL injects a short-lived Entra ID access token into the URL as
+// HTTP Basic auth so that git subprocesses can authenticate against Azure
+// DevOps.  If token acquisition fails the URL is returned unchanged and
+// a warning is logged.
 func adoAuthURL(rawURL string) string {
-	token := os.Getenv("ADO_TOKEN")
-	if token == "" {
+	token, err := adoAccessToken()
+	if err != nil {
+		log.Printf("⚠️  Failed to acquire ADO access token, proceeding without auth: %v", err)
 		return rawURL
 	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return rawURL
 	}
-	// Basic auth for PATs: empty username, token as password.
 	u.User = url.UserPassword("", token)
 	return u.String()
 }
