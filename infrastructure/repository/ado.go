@@ -49,12 +49,14 @@ var initCredential = sync.OnceValues(func() (*azidentity.DefaultAzureCredential,
 	return credential, nil
 })
 
-// adoAccessToken acquires a short-lived Entra ID access token scoped to
-// Azure DevOps. On AKS the WorkloadIdentityCredential is used automatically
+// cachedADOToken acquires a short-lived Entra ID access token scoped to
+// Azure DevOps on the first call and caches it for subsequent calls.
+// The token lasts ~1 hour, well beyond a single pipeline run.
+// On AKS the WorkloadIdentityCredential is used automatically
 // (the webhook injects AZURE_CLIENT_ID, AZURE_TENANT_ID, and
 // AZURE_FEDERATED_TOKEN_FILE). For local development AzureCLICredential
 // activates via `az login`.
-func adoAccessToken() (string, error) {
+var cachedADOToken = sync.OnceValues(func() (string, error) {
 	credential, err := initCredential()
 	if err != nil {
 		return "", err
@@ -69,14 +71,14 @@ func adoAccessToken() (string, error) {
 
 	log.Println("  Acquired Entra ID access token for Azure DevOps")
 	return tokenResponse.Token, nil
-}
+})
 
 // adoAuthURL injects a short-lived Entra ID access token into the URL as
 // HTTP Basic auth so that git subprocesses can authenticate against Azure
 // DevOps.  If token acquisition fails the URL is returned unchanged and
 // a warning is logged.
 func adoAuthURL(rawURL string) string {
-	token, err := adoAccessToken()
+	token, err := cachedADOToken()
 	if err != nil {
 		log.Printf("⚠️  Failed to acquire ADO access token, proceeding without auth: %v", err)
 		return rawURL
