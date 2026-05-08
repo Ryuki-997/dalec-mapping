@@ -39,9 +39,7 @@ func main() {
 
 	componentStates, existingPaths := fetchOnboardStates(inputPath)
 	states := resolveTagCache(componentStates, existingPaths)
-	prID := naming.GeneratePRID()
-	log.Printf("Run ID: %s", prID)
-	prGroups := processOnboardStates(states, prID)
+	prGroups := processOnboardStates(states)
 	for groupKey, entry := range prGroups {
 		log.Printf("Group: %s, Components: %d\n", groupKey, len(entry.Components))
 	}
@@ -125,25 +123,21 @@ func resolveTagCache(componentStates []pipeline.State, existingPaths map[string]
 
 // ─── Chunk 2 · ORCHESTRATION ─────────────────────────────────────────────────
 
-// actionEntry records what happened to a single component for the action log.
-type actionEntry struct {
-	Component string
-	Version   string
-	Action    string
-}
-
 // processOnboardStates iterates all pre-expanded states, running the pipeline
 // for each and collecting PR entries keyed by group name.
-func processOnboardStates(states []pipeline.State, prID string) map[string]*workflow.PREntry {
+// A unique prID is generated per group key so each component+version+revision
+// combination gets its own identifier.
+func processOnboardStates(states []pipeline.State) map[string]*workflow.PREntry {
 	prGroups := make(map[string]*workflow.PREntry)
-	var actionLog []actionEntry
+	groupPRIDs := make(map[string]string)
+	var actionLog []utils.ActionEntry
 
 	for _, state := range states {
 		onboard := state.Onboard
 
-		comp := processTag(state, prID)
+		comp := processTag(state)
 		if comp == nil {
-			actionLog = append(actionLog, actionEntry{
+			actionLog = append(actionLog, utils.ActionEntry{
 				Component: onboard.SpecImageName,
 				Version:   fmt.Sprintf("%s-%d", state.Tag.Version, state.Tag.Revision),
 				Action:    "SKIPPED",
@@ -155,7 +149,7 @@ func processOnboardStates(states []pipeline.State, prID string) map[string]*work
 		if comp.SpecOnly {
 			actionLabel = "BUMP COMMIT"
 		}
-		actionLog = append(actionLog, actionEntry{
+		actionLog = append(actionLog, utils.ActionEntry{
 			Component: onboard.SpecImageName,
 			Version:   fmt.Sprintf("%s-%d", state.Tag.Version, state.Tag.Revision),
 			Action:    actionLabel,
@@ -168,48 +162,33 @@ func processOnboardStates(states []pipeline.State, prID string) map[string]*work
 		groupKey := fmt.Sprintf("%s@%s", groupName, state.Tag.Stripped)
 		if prGroups[groupKey] == nil {
 			prGroups[groupKey] = &workflow.PREntry{GroupName: onboard.GroupName}
+			groupPRIDs[groupKey] = naming.GeneratePRID()
+			log.Printf("Assigned PR ID %s to group %s", groupPRIDs[groupKey], groupKey)
 		}
 		prGroups[groupKey].Components = append(prGroups[groupKey].Components, *comp)
 	}
 
-	printActionLog(actionLog)
+	// Resolve naming for each group now that per-group prIDs are assigned.
+	resolveGroupNaming(prGroups, groupPRIDs)
+
+	utils.PrintActionLog(actionLog)
 	return prGroups
 }
 
-// printActionLog outputs a summary of all component actions taken during the run.
-func printActionLog(entries []actionEntry) {
-	log.Println()
-	log.Println("═══ Action Log ═══")
-	for _, entry := range entries {
-		log.Printf("  %-12s %s @ %s", entry.Action, entry.Component, entry.Version)
+// resolveGroupNaming computes Naming for every component in each PR group
+// using the group's unique prID.
+func resolveGroupNaming(prGroups map[string]*workflow.PREntry, groupPRIDs map[string]string) {
+	for groupKey, entry := range prGroups {
+		prID := groupPRIDs[groupKey]
+		for componentIndex := range entry.Components {
+			comp := &entry.Components[componentIndex]
+			componentState := onboarding.ComponentState{
+				Onboard: comp.Onboard,
+				Tag:     onboarding.NewTagSet("", "", comp.Tag, comp.Revision),
+			}
+			comp.Naming = naming.Resolve([]onboarding.ComponentState{componentState}, prID)
+		}
 	}
-	log.Println()
-}
-
-// printComponentBanner prints a prominent box banner for a component being processed.
-func printComponentBanner(component, tag string) {
-	label := fmt.Sprintf("  %s @ %s", component, tag)
-	width := len(label) + 4
-	if width < 60 {
-		width = 60
-	}
-	top := "╔" + repeatChar('═', width) + "╗"
-	padded := fmt.Sprintf("║  %-*s  ║", width-4, fmt.Sprintf("%s @ %s", component, tag))
-	bottom := "╚" + repeatChar('═', width) + "╝"
-
-	log.Println()
-	log.Println(top)
-	log.Println(padded)
-	log.Println(bottom)
-}
-
-// repeatChar returns a string of the given rune repeated n times.
-func repeatChar(ch rune, count int) string {
-	result := make([]rune, count)
-	for i := range result {
-		result[i] = ch
-	}
-	return string(result)
 }
 
 // submitPRs creates one PR per group (or standalone component) and logs results.
@@ -266,7 +245,9 @@ func submitPRs(prGroups map[string]*workflow.PREntry) {
 
 // processTag runs the full pipeline for a single tag and returns a
 // ComponentSpec queued for PR creation, or nil if skipped.
-func processTag(state pipeline.State, prID string) *workflow.ComponentSpec {
+// Naming is left unset — resolved later in processOnboardStates once
+// each PR group has its own unique prID.
+func processTag(state pipeline.State) *workflow.ComponentSpec {
 	onboard := state.Onboard
 	tagSet := state.Tag
 
@@ -274,7 +255,7 @@ func processTag(state pipeline.State, prID string) *workflow.ComponentSpec {
 	pipeline.Current.Onboard = onboard
 	pipeline.Current.Tag = tagSet
 
-	printComponentBanner(onboard.SpecImageName, tagSet.Stripped)
+	utils.PrintComponentBanner(onboard.SpecImageName, tagSet.Stripped)
 
 	log.Printf("─── [%s @ %s] Step 3: Discover Build Files ───", onboard.SpecImageName, tagSet.Stripped)
 	log.Println("Purpose: Checking Dockerfile/Makefile changes vs. existing siblings")
@@ -300,13 +281,11 @@ func processTag(state pipeline.State, prID string) *workflow.ComponentSpec {
 	log.Printf("Result: contentChanged=%v, firstOnboard=%v -> action=%s", contentChanged, isFirstOnboard, actionLabel)
 	log.Println()
 
-	componentNaming := naming.Resolve([]onboarding.ComponentState{{Onboard: onboard, Tag: tagSet}}, prID)
-
 	switch action {
 	case actionBumpCommit:
-		return bumpCommit(onboard, tagSet, componentNaming)
+		return bumpCommit(onboard, tagSet)
 	case actionGenerate:
-		comp, err := generateWork(onboard, tagSet, componentNaming)
+		comp, err := generateWork(onboard, tagSet)
 		if err != nil {
 			log.Printf("⚠️  Skipping %s @ %s: %v", onboard.SpecImageName, tagSet.Full, err)
 			return nil
@@ -338,7 +317,7 @@ func decideAction(isFirstOnboard, contentChanged bool) pipelineAction {
 
 // ─── Chunk 4 · ACTIONS ──────────────────────────────────────────────────────
 
-func bumpCommit(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet, componentNaming naming.Naming) *workflow.ComponentSpec {
+func bumpCommit(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet) *workflow.ComponentSpec {
 	log.Printf("─── [%s @ %s] Step 4: Bump Commit ───", onboard.SpecImageName, tagSet.Stripped)
 	log.Println("Purpose: Copying template spec with updated commit hash (no content change)")
 
@@ -353,18 +332,17 @@ func bumpCommit(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet, c
 		log.Fatalf("❌ Failed to read bumped spec for %s @ %s: %v", onboard.SpecImageName, tagSet.Stripped, err)
 	}
 
-	log.Printf("✅ Bump commit complete: %s", componentNaming.SpecFilePath)
+	log.Printf("✅ Bump commit complete: %s @ %s-%d", onboard.SpecImageName, tagSet.Version, tagSet.Revision)
 	return &workflow.ComponentSpec{
 		Onboard:     onboard,
 		Tag:         tagSet.Stripped,
 		Revision:    tagSet.Revision,
 		SpecContent: specContent,
 		SpecOnly:    true,
-		Naming:      componentNaming,
 	}
 }
 
-func generateWork(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet, componentNaming naming.Naming) (*workflow.ComponentSpec, error) {
+func generateWork(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet) (*workflow.ComponentSpec, error) {
 	log.Printf("─── [%s @ %s] Step 5: Generate Spec ───", onboard.SpecImageName, tagSet.Stripped)
 	log.Println("Purpose: Parsing Dockerfile/Makefile and generating full dalec spec from scratch")
 
@@ -383,14 +361,13 @@ func generateWork(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet,
 		return nil, fmt.Errorf("failed to read generated spec: %w", err)
 	}
 
-	log.Printf("✅ Spec generated: %s", componentNaming.SpecFilePath)
+	log.Printf("✅ Spec generated: %s @ %s-%d", onboard.SpecImageName, tagSet.Version, tagSet.Revision)
 	return &workflow.ComponentSpec{
 		Onboard:     onboard,
 		Tag:         tagSet.Stripped,
 		Revision:    tagSet.Revision,
 		SpecContent: specContent,
 		SpecOnly:    false,
-		Naming:      componentNaming,
 	}, nil
 }
 
