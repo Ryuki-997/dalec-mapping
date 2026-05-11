@@ -1,31 +1,24 @@
 package repository
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// repository.go — GitHub API client and repository metadata fetching.
+// github.go — GitHub API client and repository metadata.
 //
-//   Chunk 1 · HTTP CLIENT              FetchRawContent(), FetchJSON(), FetchJSONArray()
-//     Public Fetch wrappers over private makeGitHubRequest().
-//
-//   Chunk 2 · REPOSITORY INFO          FetchRepoInfo(), FetchRepositorySegments()
-//     Entry-point for populating RepoInfo; URL/path parsing.
-//
-//   Chunk 3 · METADATA                 fetchRepoMetadata(), fetchReleaseMetadata(),
-//                                       fetchSourceGenerator()
-//     Branch, license, version, commit SHA, and source-generator detection.
-//
-//   Chunk 4 · TAGS                     fetchTagInfo(), FetchTagCommit(), FetchAllTags()
-//     Tag-to-commit resolution and paginated tag listing.
+//   Chunk 1 · URL PARSING              SplitGitHubComponent()
+//   Chunk 2 · HTTP CLIENT              FetchRawContent(), FetchJSON(), FetchJSONArray(), WriteJSON()
+//   Chunk 3 · REPOSITORY INFO          FetchRepoInfo(), fetchRepositorySegments()
+//   Chunk 4 · METADATA                 fetchRepoMetadata(), fetchSourceGenerator()
+//   Chunk 5 · TAGS                     FetchAllGithubTags()
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"path"
 	"strings"
 
 	"dalec-mapping/domain/repository"
@@ -33,7 +26,44 @@ import (
 
 const githubAPIBase = "https://api.github.com"
 
-// ─── Chunk 1 · HTTP CLIENT ──────────────────────────────────────────────────
+// ─── Chunk 1 · URL PARSING ──────────────────────────────────────────────────
+
+// SplitGitHubComponent splits a GitHub path (owner/repo or owner/repo/component/...)
+// into its base ref and an optional component subdirectory.
+// Also handles full https://github.com/owner/repo/... URLs.
+//
+// Example:
+//
+//	"owner/repo/test/npd"
+//	→ baseRef   = "owner/repo"
+//	  component = "test/npd"
+func SplitGitHubComponent(repoRef string) (string, string) {
+	repoRef = strings.TrimSuffix(repoRef, ".git")
+
+	// Strip scheme+host prefix if present.
+	prefix := ""
+	for _, scheme := range []string{"https://github.com/", "http://github.com/"} {
+		if strings.HasPrefix(repoRef, scheme) {
+			prefix = scheme
+			repoRef = strings.TrimPrefix(repoRef, scheme)
+			break
+		}
+	}
+
+	// Also handle owner/repo/tree/branch format — don't treat tree segments as component.
+	parts := strings.Split(strings.Trim(repoRef, "/"), "/")
+	if len(parts) >= 4 && parts[2] == "tree" {
+		// owner/repo/tree/branch[/...] — no component
+		return prefix + repoRef, ""
+	}
+	if len(parts) <= 2 {
+		return prefix + repoRef, ""
+	}
+	base := prefix + parts[0] + "/" + parts[1]
+	return base, strings.Join(parts[2:], "/")
+}
+
+// ─── Chunk 2 · HTTP CLIENT ──────────────────────────────────────────────────
 
 // GithubReturnType controls how makeGitHubRequest decodes the response body.
 type GithubReturnType int
@@ -159,19 +189,24 @@ func WriteJSON(path string, method repository.CRUDRequest, payload interface{}) 
 	return m, nil
 }
 
-// ─── Chunk 2 · REPOSITORY INFO ──────────────────────────────────────────────
+// ─── Chunk 3 · REPOSITORY INFO ──────────────────────────────────────────────
 
 // FetchRepoInfo fetches repository metadata from the GitHub API.
-func FetchRepoInfo(repoPath, tag string) (*repository.RepoInfo, error) {
-	baseRef, componentPath := SplitComponent(repoPath)
-	owner, repo, branch := FetchRepositorySegments(baseRef)
+func FetchRepoInfo(repoPath string) (*repository.RepoInfo, error) {
+	baseRef, componentPath := SplitGitHubComponent(repoPath)
+	owner, repo, branch := fetchRepositorySegments(baseRef)
+
+	componentName := ""
+	if componentPath != "" {
+		componentName = path.Base(componentPath)
+	}
 
 	info := &repository.RepoInfo{
 		Owner:         owner,
 		Repo:          repo,
 		Branch:        branch,
 		ComponentPath: componentPath,
-		ComponentName: ComponentName(componentPath),
+		ComponentName: componentName,
 		GitURL:        fmt.Sprintf("https://github.com/%s/%s", owner, repo),
 	}
 
@@ -181,14 +216,11 @@ func FetchRepoInfo(repoPath, tag string) (*repository.RepoInfo, error) {
 	if err := fetchSourceGenerator(info); err != nil {
 		return nil, fmt.Errorf("failed to fetch source generator: %w", err)
 	}
-	if err := fetchTagInfo(info, tag); err != nil {
-		return nil, fmt.Errorf("failed to fetch tag when tag is provided: %w", err)
-	}
 	return info, nil
 }
 
-// FetchRepositorySegments extracts the repository segments from a GitHub URL or path.
-func FetchRepositorySegments(repo string) (owner, name, branch string) {
+// fetchRepositorySegments extracts the repository segments from a GitHub URL or path.
+func fetchRepositorySegments(repo string) (owner, name, branch string) {
 	repo = strings.TrimSuffix(repo, ".git")
 	repo = strings.TrimPrefix(repo, "https://")
 	repo = strings.TrimPrefix(repo, "http://")
@@ -217,7 +249,7 @@ func FetchRepositorySegments(repo string) (owner, name, branch string) {
 	return "", "", ""
 }
 
-// ─── Chunk 3 · METADATA ────────────────────────────────────────────────────
+// ─── Chunk 4 · METADATA ────────────────────────────────────────────────────
 
 // fetchRepoMetadata acquires default branch, description, URL, and license.
 func fetchRepoMetadata(info *repository.RepoInfo) error {
@@ -244,7 +276,7 @@ func fetchRepoMetadata(info *repository.RepoInfo) error {
 		info.GitURL = url
 	}
 
-	info.License = "foo-license"
+	info.License = "proprietary"
 	if license, ok := data["license"].(map[string]interface{}); ok {
 		if spdxID, ok := license["spdx_id"].(string); ok && spdxID != "NOASSERTION" {
 			info.License = spdxID
@@ -344,75 +376,16 @@ func fetchSourceGenerator(info *repository.RepoInfo) error {
 	return fmt.Errorf("❌  No recognized source generator files found; Supported: Go (go.mod), Rust (Cargo.toml), Python (requirements.txt, setup.py, Pipfile)")
 }
 
-// ─── Chunk 4 · TAGS ────────────────────────────────────────────────────────
-
-// fetchTagInfo resolves `tag` to a commit SHA and populates info.LatestCommit and info.Version.
-// Looks up the tag via the commits API to resolve to the actual commit SHA.
-// If a direct lookup fails, it searches all git tags for a matching semver.
-func fetchTagInfo(info *repository.RepoInfo, tag string) error {
-	if tag == "" {
-		return fmt.Errorf("Tag must be specified")
-	}
-
-	fullTag := tag
-
-	// Try resolving the tag directly via commits API
-	commitData, err := FetchJSON(fmt.Sprintf("repos/%s/%s/commits/%s", info.Owner, info.Repo, fullTag))
-	if err != nil {
-		// Tag not found directly — search all tags for a matching semver
-		allTags, fetchErr := FetchAllGithubTags(info.Owner, info.Repo)
-		if fetchErr != nil {
-			return fmt.Errorf("tag %q not found and could not fetch tag list: %w", tag, fetchErr)
-		}
-		for _, t := range allTags {
-			if semverTagRe.FindString(t.Name) == tag {
-				fullTag = t.Name
-				break
-			}
-		}
-		if fullTag == tag {
-			return fmt.Errorf("tag %q not found in repository", tag)
-		}
-		// Resolve the matched full tag
-		commitData, err = FetchJSON(fmt.Sprintf("repos/%s/%s/commits/%s", info.Owner, info.Repo, fullTag))
-		if err != nil {
-			return fmt.Errorf("failed to resolve commit for tag %q: %w", fullTag, err)
-		}
-	}
-
-	// Extract version from the tag
-	if m := semverTagRe.FindString(tag); m != "" {
-		info.Version = strings.TrimPrefix(m, "v")
-	} else {
-		info.Version = strings.TrimPrefix(tag, "v")
-	}
-
-	if sha, ok := commitData["sha"].(string); ok {
-		info.LatestCommit = sha
-		return nil
-	}
-
-	return fmt.Errorf("failed to extract commit SHA from tag %q", fullTag)
-}
-
-// FetchTagCommit resolves a git tag to its release commit SHA for the given owner/repo.
-// Uses the commits API to dereference annotated tags to the actual commit.
-func FetchTagCommit(owner, repo, tagRef string) (string, error) {
-	data, err := FetchJSON(fmt.Sprintf("repos/%s/%s/commits/%s", owner, repo, tagRef))
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve commit for tag %q in %s/%s: %w", tagRef, owner, repo, err)
-	}
-	if sha, ok := data["sha"].(string); ok {
-		return sha, nil
-	}
-	return "", fmt.Errorf("failed to extract commit SHA from tag %q", tagRef)
-}
+// ─── Chunk 5 · TAGS ────────────────────────────────────────────────────────
 
 // FetchAllGithubTags fetches all git tags for a repository using the high-level
 // tags API, which returns the dereferenced commit SHA directly without additional
-// per-tag round-trips. Fetches all pages (100 tags per page).
-func FetchAllGithubTags(owner, repo string) ([]TagInfo, error) {
-	var allTags []TagInfo
+// per-tag round-trips. Returns a map of tagName → commitSHA.
+// repoURL is a GitHub path like "owner/repo" or full URL.
+// Fetches all pages (100 tags per page).
+func FetchAllGithubTags(repoURL string) (map[string]string, error) {
+	owner, repo, _ := fetchRepositorySegments(repoURL)
+	allTags := map[string]string{}
 	page := 1
 	for {
 		pageData, err := FetchJSONArray(fmt.Sprintf("repos/%s/%s/tags?per_page=100&page=%d", owner, repo, page))
@@ -433,7 +406,7 @@ func FetchAllGithubTags(owner, repo string) ([]TagInfo, error) {
 				continue
 			}
 			sha, _ := commit["sha"].(string)
-			allTags = append(allTags, TagInfo{Name: name, Commit: sha})
+			allTags[name] = sha
 		}
 
 		if len(pageData) < 100 {
@@ -444,56 +417,3 @@ func FetchAllGithubTags(owner, repo string) ([]TagInfo, error) {
 	return allTags, nil
 }
 
-// FetchRemoteSpecCommit fetches a spec file from the given repo/branch and parses
-// the args.COMMIT value from the YAML. Returns the commit SHA stored in the spec.
-func FetchRemoteSpecCommit(specFilePath, owner, repo, branch string) (string, error) {
-	contentsPath := fmt.Sprintf("repos/%s/%s/contents/%s?ref=%s", owner, repo, specFilePath, branch)
-
-	data, err := FetchJSON(contentsPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch spec file %s: %w", specFilePath, err)
-	}
-
-	contentStr, ok := data["content"].(string)
-	if !ok {
-		return "", fmt.Errorf("unexpected response: missing content field for %s", specFilePath)
-	}
-
-	// Decode base64 content
-	cleaned := strings.ReplaceAll(contentStr, "\n", "")
-	decoded, err := base64.StdEncoding.DecodeString(cleaned)
-	if err != nil {
-		return "", fmt.Errorf("failed to decode content for %s: %w", specFilePath, err)
-	}
-
-	// Parse COMMIT from args section using simple line scanning
-	commit := parseArgFromYAML(string(decoded), "COMMIT")
-	if commit == "" {
-		return "", fmt.Errorf("args.COMMIT not found in %s", specFilePath)
-	}
-	return commit, nil
-}
-
-// parseArgFromYAML extracts a named arg value from a YAML spec string.
-// Scans for lines like "  COMMIT: abc123" within the args block.
-func parseArgFromYAML(content, argName string) string {
-	inArgs := false
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "args:" {
-			inArgs = true
-			continue
-		}
-		if inArgs {
-			// End of args block (next top-level key)
-			if len(line) > 0 && line[0] != ' ' && line[0] != '\t' {
-				break
-			}
-			if strings.HasPrefix(trimmed, argName+":") {
-				value := strings.TrimPrefix(trimmed, argName+":")
-				return strings.TrimSpace(value)
-			}
-		}
-	}
-	return ""
-}

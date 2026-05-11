@@ -112,22 +112,18 @@ func buildSteps(goModDownloads []GoModDownloadInfo) ([]map[string]interface{}, s
 	// Detect the go.mod subdirectory within the repo.
 	// When ComponentPath is set, go.mod is at the component root — no extra subdir needed.
 	// Otherwise: Priority: gomod subpath → makefile location → dockerfile location.
+	// MakefileDir and DockerfileDir are directory paths (e.g. "cns", "."),
+	// so they are used directly. "." means repo root (no subdir needed).
 	goModSubdir := ""
 	if repoInfo.ComponentPath == "" {
 		if subpaths := collectGoModSubpaths(pipeline.Current.Spec); len(subpaths) > 0 {
 			goModSubdir = subpaths[0]
 		}
-		if goModSubdir == "" && onboard.MakefileDir != "" {
-			dir := strings.TrimSuffix(onboard.MakefileDir, "/")
-			if idx := strings.LastIndex(dir, "/"); idx >= 0 {
-				goModSubdir = dir[:idx]
-			}
+		if goModSubdir == "" && onboard.MakefileDir != "" && onboard.MakefileDir != "." {
+			goModSubdir = strings.TrimSuffix(onboard.MakefileDir, "/")
 		}
-		if goModSubdir == "" && onboard.DockerfileDir != "" {
-			d := strings.TrimSuffix(onboard.DockerfileDir, "/")
-			if idx := strings.LastIndex(d, "/"); idx >= 0 {
-				goModSubdir = d[:idx]
-			}
+		if goModSubdir == "" && onboard.DockerfileDir != "" && onboard.DockerfileDir != "." {
+			goModSubdir = strings.TrimSuffix(onboard.DockerfileDir, "/")
 		}
 	}
 	// Source file paths in rawCmds are relative to the repo root (e.g. cni/network/plugin/main.go).

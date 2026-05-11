@@ -35,24 +35,11 @@ var semverRegex = regexp.MustCompile(`v(\d+)\.(\d+)\.(\d+)`)
 // Tags are fetched once per repo and the map is reused for all components
 // sharing the same repository URL.
 func FetchRepoTags(repoURL string) (map[string]string, error) {
-	var tags []repository.TagInfo
-	var err error
-
 	if repository.IsADORepo(repoURL) {
-		tags, err = repository.FetchAllADOTags(repoURL)
-	} else {
-		owner, repoName, _ := repository.FetchRepositorySegments(repoURL)
-		tags, err = repository.FetchAllGithubTags(owner, repoName)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch tags for %s: %w", repoURL, err)
+		return repository.FetchAllADOTags(repoURL)
 	}
 
-	tagMap := make(map[string]string, len(tags))
-	for _, tagInfo := range tags {
-		tagMap[tagInfo.Name] = tagInfo.Commit
-	}
-	return tagMap, nil
+	return repository.FetchAllGithubTags(repoURL)
 }
 
 // MatchTagSets matches regex patterns against pre-fetched tags and determines

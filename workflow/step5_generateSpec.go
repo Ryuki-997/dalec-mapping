@@ -28,9 +28,8 @@ import (
 // use (e.g. image test).
 func GenerateSpec() ([]string, error) {
 	onboard := pipeline.Current.Onboard
-	tag := pipeline.Current.Tag.Full
 
-	if err := fetchRepoMetadata(onboard.Repository, tag); err != nil {
+	if err := fetchRepoMetadata(onboard.Repository); err != nil {
 		return nil, fmt.Errorf("fetching repository info: %w", err)
 	}
 
@@ -48,15 +47,27 @@ func GenerateSpec() ([]string, error) {
 }
 
 // fetchRepoMetadata fetches repository metadata from GitHub or ADO based on the repo URL.
-// Stores the result in pipeline.Current.RepoInfo.
-func fetchRepoMetadata(repoURL, tag string) error {
+// Stores the result in pipeline.Current.RepoInfo. Populates LatestCommit from
+// the tag cache and Version from the current TagSet.
+func fetchRepoMetadata(repoURL string) error {
 	var err error
 	if repository.IsADORepo(repoURL) {
-		pipeline.Current.RepoInfo, err = repository.FetchADORepoInfo(repoURL, tag)
+		pipeline.Current.RepoInfo, err = repository.FetchADORepoInfo(repoURL)
 	} else {
-		pipeline.Current.RepoInfo, err = repository.FetchRepoInfo(repoURL, tag)
+		pipeline.Current.RepoInfo, err = repository.FetchRepoInfo(repoURL)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+
+	tagSet := pipeline.Current.Tag
+	commitSHA, err := pipeline.LookupTagCommit(repoURL, tagSet.Full)
+	if err != nil {
+		return fmt.Errorf("failed to resolve commit for tag %s: %w", tagSet.Full, err)
+	}
+	pipeline.Current.RepoInfo.LatestCommit = commitSHA
+	pipeline.Current.RepoInfo.Version = tagSet.Version
+	return nil
 }
 
 // parseAndExtract parses Dockerfile/Makefile content and runs static extraction.

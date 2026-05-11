@@ -4,6 +4,8 @@
 
 result/
 correct/
+generated/
+diff/
 fips-check/
 
 TODO

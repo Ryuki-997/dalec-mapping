@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path"
 
 	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/infrastructure/repository"
@@ -31,6 +32,9 @@ import (
 
 // DiscoverBuildFiles fetches the Dockerfile and Makefile from the source repo at the
 // given tag, diffs them against cached siblings, and returns whether content changed.
+// DockerfileDir and MakefileDir are treated as directory paths (e.g. "." or "cns").
+// The actual filenames (Dockerfile, Makefile) are discovered by listing the
+// directory one level deep.
 func DiscoverBuildFiles() (bool, error) {
 	onboard := pipeline.Current.Onboard
 	tag := pipeline.Current.Tag.Full
@@ -47,9 +51,21 @@ func DiscoverBuildFiles() (bool, error) {
 
 	loadCachedBuildFiles(onboard)
 
-	_, componentPath := repository.SplitComponent(repoURL)
-	dockerfilePath := repository.ResolveFilePath(componentPath, onboard.DockerfileDir)
-	makefilePath := repository.ResolveFilePath(componentPath, onboard.MakefileDir)
+	var componentPath string
+	if repository.IsADORepo(repoURL) {
+		_, componentPath = repository.SplitADOComponent(repoURL)
+	} else {
+		_, componentPath = repository.SplitGitHubComponent(repoURL)
+	}
+
+	dockerfilePath := ""
+	if onboard.DockerfileDir != "" {
+		dockerfilePath = resolveFilePath(componentPath, onboard.DockerfileDir, "Dockerfile")
+	}
+	makefilePath := ""
+	if onboard.MakefileDir != "" {
+		makefilePath = resolveFilePath(componentPath, onboard.MakefileDir, "Makefile")
+	}
 
 	log.Printf("  Dockerfile path: %s\n", dockerfilePath)
 	log.Printf("  Makefile path:   %s\n", makefilePath)
@@ -69,6 +85,28 @@ func DiscoverBuildFiles() (bool, error) {
 
 	log.Printf("Step 3 output: contentChanged=%v\n", contentChanged)
 	return contentChanged, nil
+}
+
+// resolveFilePath resolves a directory path (from onboard.yml) relative to a
+// component directory and appends the given filename (e.g. "Dockerfile", "Makefile").
+// Returns the full file path ready for fetching from the source repository.
+func resolveFilePath(componentPath, dirPath, fileName string) string {
+	if dirPath == "" {
+		return ""
+	}
+	dir := dirPath
+	if dir == "." {
+		dir = ""
+	}
+	if componentPath != "" && dir != "" {
+		dir = componentPath + "/" + dir
+	} else if componentPath != "" {
+		dir = componentPath
+	}
+	if dir == "" {
+		return fileName
+	}
+	return path.Clean(dir + "/" + fileName)
 }
 
 // loadCachedBuildFiles fetches the previously-committed Dockerfile/Makefile
@@ -109,7 +147,7 @@ func fetchBuildFiles(repoURL, dockerfilePath, makefilePath, tag string) ([]byte,
 
 // fetchBuildFilesFromADO fetches Dockerfile and Makefile from an ADO repository.
 func fetchBuildFilesFromADO(repoURL, dockerfilePath, makefilePath, tag string) ([]byte, []byte, error) {
-	if _, err := repository.FetchADORepoInfo(repoURL, tag); err != nil {
+	if _, err := repository.FetchADORepoInfo(repoURL); err != nil {
 		return nil, nil, fmt.Errorf("failed to fetch repository info: %w", err)
 	}
 
@@ -138,17 +176,16 @@ func fetchBuildFilesFromADO(repoURL, dockerfilePath, makefilePath, tag string) (
 
 // fetchBuildFilesFromGitHub fetches Dockerfile and Makefile from a GitHub repository.
 func fetchBuildFilesFromGitHub(repoURL, dockerfilePath, makefilePath, tag string) ([]byte, []byte, error) {
-	if _, err := repository.FetchRepoInfo(repoURL, tag); err != nil {
+	repoInfo, err := repository.FetchRepoInfo(repoURL)
+	if err != nil {
 		return nil, nil, fmt.Errorf("failed to fetch repository info: %w", err)
 	}
 
-	baseRef, _ := repository.SplitComponent(repoURL)
-	owner, repoName, _ := repository.FetchRepositorySegments(baseRef)
 	ref := tag
 	if ref == "" {
-		_, _, ref = repository.FetchRepositorySegments(baseRef)
+		ref = repoInfo.Branch
 	}
-	rawPath := fmt.Sprintf("%s/%s/%s", owner, repoName, ref)
+	rawPath := fmt.Sprintf("%s/%s/%s", repoInfo.Owner, repoInfo.Repo, ref)
 
 	var dockerfileContent, makefileContent []byte
 

@@ -20,9 +20,9 @@ package transformer
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import (
-	"dalec-mapping/pipeline"
 	"dalec-mapping/domain/contents"
 	"dalec-mapping/infrastructure/repository"
+	"dalec-mapping/pipeline"
 	"fmt"
 	"log"
 	"regexp"
@@ -86,24 +86,21 @@ func buildPrimarySource(sources map[string]interface{}) {
 
 	// Determine where the primary go.mod lives.
 	// Priority: ComponentPath > MakefileDir > gomod subpath > DockerfileDir
+	// MakefileDir and DockerfileDir are directory paths (e.g. "cns", "."),
+	// so they are used directly as subpath candidates. "." means repo root
+	// (no subpath needed).
 	rootGoModSubpath := ""
 	if repoInfo.ComponentPath != "" {
 		rootGoModSubpath = repoInfo.ComponentPath
 	}
-	if rootGoModSubpath == "" && onboard.MakefileDir != "" {
-		dir := strings.TrimSuffix(onboard.MakefileDir, "/")
-		if idx := strings.LastIndex(dir, "/"); idx >= 0 {
-			rootGoModSubpath = dir[:idx]
-		}
+	if rootGoModSubpath == "" && onboard.MakefileDir != "" && onboard.MakefileDir != "." {
+		rootGoModSubpath = strings.TrimSuffix(onboard.MakefileDir, "/")
 	}
 	if rootGoModSubpath == "" && len(subpaths) > 0 {
 		rootGoModSubpath = subpaths[0]
 	}
-	if rootGoModSubpath == "" && onboard.DockerfileDir != "" {
-		d := strings.TrimSuffix(onboard.DockerfileDir, "/")
-		if idx := strings.LastIndex(d, "/"); idx >= 0 {
-			rootGoModSubpath = d[:idx]
-		}
+	if rootGoModSubpath == "" && onboard.DockerfileDir != "" && onboard.DockerfileDir != "." {
+		rootGoModSubpath = strings.TrimSuffix(onboard.DockerfileDir, "/")
 	}
 
 	rootEntry := map[string]interface{}{
