@@ -125,6 +125,7 @@ func buildPrimarySource(sources map[string]interface{}) {
 	if repository.IsADORepo(repoInfo.GitURL) {
 		gitBlock["auth"] = map[string]interface{}{
 			"header": "GIT_AUTH_HEADER",
+			"token":  "GIT_AUTH_TOKEN",
 		}
 	}
 
@@ -155,6 +156,7 @@ func buildSubmoduleSources(sources map[string]interface{}, goModDownloads []GoMo
 		if repository.IsADORepo(info.GitURL) {
 			subGitBlock["auth"] = map[string]interface{}{
 				"header": "GIT_AUTH_HEADER",
+				"token":  "GIT_AUTH_TOKEN",
 			}
 		}
 

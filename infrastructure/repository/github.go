@@ -283,6 +283,10 @@ func fetchRepoMetadata(info *repository.RepoInfo) error {
 		}
 	}
 
+	if info.LicenseFile == "" || info.LicenseFile == "LICENSE" || info.LicenseFile == "." {
+		info.LicenseFile = "LICENSE"
+	}
+
 	return nil
 }
 

@@ -26,6 +26,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 
 	domainRepo "dalec-mapping/domain/repository"
+	"dalec-mapping/pipeline"
 )
 
 // ─── Chunk 1 · URL PARSING ──────────────────────────────────────────────────
@@ -162,6 +163,8 @@ func gitOutBytes(dir string, args ...string) ([]byte, error) {
 // FetchADORepoInfo assembles a RepoInfo by querying the ADO repository
 // remotely via git ls-remote. The repoURL may contain a component path
 // (e.g. _git/repo/comp/path) which is extracted and stored on RepoInfo.
+// The license file path is read from pipeline.Current.Onboard.LicenseDir;
+// when empty, defaults to "LICENSE".
 func FetchADORepoInfo(repoURL string) (*domainRepo.RepoInfo, error) {
 	baseURL, componentPath := SplitADOComponent(repoURL)
 
@@ -182,6 +185,11 @@ func FetchADORepoInfo(repoURL string) (*domainRepo.RepoInfo, error) {
 		componentName = path.Base(componentPath)
 	}
 
+	licensePath := pipeline.Current.Onboard.LicenseDir
+	if licensePath == "" {
+		licensePath = "LICENSE"
+	}
+
 	info := &domainRepo.RepoInfo{
 		Owner:         adoOrg(baseURL),
 		Repo:          adoRepoName(baseURL),
@@ -191,6 +199,14 @@ func FetchADORepoInfo(repoURL string) (*domainRepo.RepoInfo, error) {
 		GitURL:        baseURL,
 		Description:   fmt.Sprintf("This is the %s project.", adoRepoName(baseURL)),
 		License:       "proprietary",
+		LicenseFile:   licensePath,
+	}
+
+	licenseContent, err := FetchADOFileContent(repoURL, licensePath, branch)
+	if err != nil {
+		log.Printf("⚠️  Could not fetch license file %s from %s: %v", licensePath, repoURL, err)
+	} else {
+		info.License = DetectSPDXFromContent(licenseContent)
 	}
 
 	return info, nil

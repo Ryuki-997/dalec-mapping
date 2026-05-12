@@ -20,6 +20,7 @@ PATHS=(
     "specs/containernetworking"
     "specs/aks-node-controller"
     "specs/aks-secure-tls-bootstrap"
+    "specs/azure-policy"
 )
 
 rm -rf ./diff ./generated

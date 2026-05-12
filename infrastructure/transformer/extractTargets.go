@@ -241,7 +241,7 @@ func windowsArtifacts() map[string]interface{} {
 	return map[string]interface{}{
 		"binaries": computeWindowsArtifactBinaries(),
 		"licenses": map[string]interface{}{
-			pipeline.Current.RepoInfo.Repo + "/LICENSE": map[string]interface{}{},
+			pipeline.Current.RepoInfo.Repo + "/" + pipeline.Current.RepoInfo.LicenseFile: map[string]interface{}{},
 		},
 	}
 }

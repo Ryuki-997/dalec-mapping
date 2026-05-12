@@ -2,7 +2,6 @@ package transformer
 
 import (
 	"dalec-mapping/pipeline"
-	"strings"
 )
 
 // extractBuildExtensions builds the `x-build-extensions:` map.
@@ -10,19 +9,10 @@ import (
 // overrides (e.g. windows/amd64 for the windowscross target).
 func extractBuildExtensions() map[string]interface{} {
 	onboard := pipeline.Current.Onboard
-	repoInfo := pipeline.Current.RepoInfo
 	buildTargets := onboardBuildTargets()
 
 	ext := map[string]interface{}{
 		"build-targets": buildTargets,
-	}
-
-	// Emit image-name when it differs from the spec name (repo name).
-	// This maps the spec to a specific image within the repository
-	// (e.g. "azure-cni" within the "azure-container-networking" repo).
-	imageName := strings.ToLower(onboard.SpecImageName)
-	if imageName != strings.ToLower(repoInfo.Repo) {
-		ext["image-name"] = imageName
 	}
 
 	if onboard.SpecRepository != "" {
