@@ -45,7 +45,7 @@ func main() {
 	for groupKey, entry := range prGroups {
 		log.Printf("Group: %s, Components: %d\n", groupKey, len(entry.Components))
 	}
-	// submitPRs(prGroups)
+	submitPRs(prGroups)
 }
 
 // parseFlags registers and parses CLI flags, returning the resolved values.
