@@ -53,11 +53,18 @@ func fetchRepoMetadata(repoURL string) error {
 	var err error
 	if repository.IsADORepo(repoURL) {
 		pipeline.Current.RepoInfo, err = repository.FetchADORepoInfo(repoURL)
+		if err != nil {
+			return err
+		}
+		repoInfo := pipeline.Current.RepoInfo
+		tagSet := pipeline.Current.Tag
+		repoInfo.Generator = repository.DetectADOGenerator(
+			repoURL, repoInfo.ComponentPath, tagSet.Full)
 	} else {
 		pipeline.Current.RepoInfo, err = repository.FetchRepoInfo(repoURL)
-	}
-	if err != nil {
-		return err
+		if err != nil {
+			return err
+		}
 	}
 
 	tagSet := pipeline.Current.Tag

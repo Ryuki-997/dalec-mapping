@@ -24,10 +24,12 @@ package transformer
 
 import (
 	"dalec-mapping/domain/contents"
+	domainRepo "dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/repository"
 	"dalec-mapping/pipeline"
 	"fmt"
 	"log"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -76,11 +78,38 @@ func extractSourcesSection(goModDownloads []goModDownloadInfo) map[string]interf
 
 // ─── Chunk 2 · PRIMARY SOURCE ────────────────────────────────────────────────
 
+// extractADODomain extracts the hostname from a git URL (e.g. "dev.azure.com"
+// from "https://dev.azure.com/org/project/_git/repo").
+func extractADODomain(gitURL string) string {
+	parsed, err := url.Parse(gitURL)
+	if err != nil || parsed.Host == "" {
+		return "dev.azure.com"
+	}
+	return parsed.Hostname()
+}
+
+// adoGoModAuth returns the value for a gomod generate entry.
+// For ADO Go repos it includes an auth block keyed by the ADO domain;
+// for all other repos it returns an empty map.
+func adoGoModAuth(repoInfo *domainRepo.RepoInfo) map[string]interface{} {
+	if repository.IsADORepo(repoInfo.GitURL) && repoInfo.Generator == domainRepo.GoModGenerator {
+		domain := extractADODomain(repoInfo.GitURL)
+		return map[string]interface{}{
+			"auth": map[string]interface{}{
+				domain: map[string]interface{}{
+					"token": "GIT_AUTH_TOKEN",
+				},
+			},
+		}
+	}
+	return map[string]interface{}{}
+}
+
 // buildPrimarySource adds the main repo git source with gomod generate entries
 // for the root module and any subdirectories discovered in build commands.
 // When a ComponentPath is set on the spec, it is used as the primary subpath
 // and gomod discovery is scoped within it. Otherwise falls back to heuristics
-// from MakefileDir/DockerfileDir.
+// from MakefileDir.
 func buildPrimarySource(sources map[string]interface{}) {
 	repoInfo := pipeline.Current.RepoInfo
 
@@ -88,7 +117,7 @@ func buildPrimarySource(sources map[string]interface{}) {
 	rootGoModSubpath := resolveGoModSubpath()
 
 	rootEntry := map[string]interface{}{
-		string(repoInfo.Generator): map[string]interface{}{},
+		string(repoInfo.Generator): adoGoModAuth(repoInfo),
 	}
 	if rootGoModSubpath != "" {
 		rootEntry["subpath"] = rootGoModSubpath
@@ -97,7 +126,7 @@ func buildPrimarySource(sources map[string]interface{}) {
 	generateEntries := []map[string]interface{}{rootEntry}
 	for _, sub := range subpaths {
 		generateEntries = append(generateEntries, map[string]interface{}{
-			string(repoInfo.Generator): map[string]interface{}{},
+			string(repoInfo.Generator): adoGoModAuth(repoInfo),
 			"subpath":                  sub,
 		})
 	}
@@ -108,8 +137,7 @@ func buildPrimarySource(sources map[string]interface{}) {
 	}
 	if repository.IsADORepo(repoInfo.GitURL) {
 		gitBlock["auth"] = map[string]interface{}{
-			"header": "GIT_AUTH_HEADER",
-			"token":  "GIT_AUTH_TOKEN",
+			"token": "GIT_AUTH_TOKEN",
 		}
 	}
 
@@ -139,15 +167,14 @@ func buildSubmoduleSources(sources map[string]interface{}, goModDownloads []goMo
 		}
 		if repository.IsADORepo(info.GitURL) {
 			subGitBlock["auth"] = map[string]interface{}{
-				"header": "GIT_AUTH_HEADER",
-				"token":  "GIT_AUTH_TOKEN",
+				"token": "GIT_AUTH_TOKEN",
 			}
 		}
 
 		entry := map[string]interface{}{
 			"git": subGitBlock,
 			"generate": []map[string]interface{}{
-				{string(repoInfo.Generator): map[string]interface{}{}},
+				{string(repoInfo.Generator): adoGoModAuth(repoInfo)},
 			},
 		}
 		if info.SubPath != "" {
@@ -161,8 +188,8 @@ func buildSubmoduleSources(sources map[string]interface{}, goModDownloads []goMo
 
 // resolveGoModSubpath determines the subdirectory containing the primary go.mod
 // relative to the repo root.
-// Priority: ComponentPath > MakefileDir > gomod subpath > DockerfileDir.
-// Returns "" when go.mod lives at the repo root.
+// Priority: ComponentPath > MakefileDir > gomod subpath > "." (root).
+// Returns "." when no specific subdirectory is identified.
 func resolveGoModSubpath() string {
 	repoInfo := pipeline.Current.RepoInfo
 	onboard := pipeline.Current.Onboard
@@ -179,10 +206,7 @@ func resolveGoModSubpath() string {
 	if len(subpaths) > 0 {
 		return subpaths[0]
 	}
-	if onboard.DockerfileDir != "" && onboard.DockerfileDir != "." {
-		return strings.TrimSuffix(onboard.DockerfileDir, "/")
-	}
-	return ""
+	return "."
 }
 
 // collectGoModSubpaths returns ordered unique subdirectory paths found via

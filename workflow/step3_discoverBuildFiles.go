@@ -23,6 +23,7 @@ import (
 	"log"
 	"os"
 	"path"
+	"strings"
 
 	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/infrastructure/repository"
@@ -87,13 +88,27 @@ func DiscoverBuildFiles() (bool, error) {
 	return contentChanged, nil
 }
 
-// resolveFilePath resolves a directory path (from onboard.yml) relative to a
-// component directory and appends the given filename (e.g. "Dockerfile", "Makefile").
-// Returns the full file path ready for fetching from the source repository.
+// resolveFilePath resolves a partner-provided path relative to a component
+// directory. The path may be either a directory (e.g. ".", "cns") or an
+// explicit file (e.g. "./docker/Dockerfile"). When the path looks like a
+// file (its base name matches fileName or contains a dot extension), it is
+// returned directly. Otherwise it is treated as a directory and fileName is
+// appended.
 func resolveFilePath(componentPath, dirPath, fileName string) string {
 	if dirPath == "" {
 		return ""
 	}
+
+	baseName := path.Base(dirPath)
+	isFile := baseName == fileName || strings.Contains(baseName, ".")
+
+	if isFile {
+		if componentPath != "" {
+			return path.Clean(componentPath + "/" + dirPath)
+		}
+		return path.Clean(dirPath)
+	}
+
 	dir := dirPath
 	if dir == "." {
 		dir = ""

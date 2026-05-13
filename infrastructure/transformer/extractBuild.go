@@ -28,6 +28,7 @@ package transformer
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import (
+	"dalec-mapping/infrastructure/repository"
 	"dalec-mapping/pipeline"
 	"fmt"
 	"strings"
@@ -70,9 +71,11 @@ func extractBuildSection(goModDownloads []goModDownloadInfo) (map[string]interfa
 // ─── Chunk 2 · ENVIRONMENT ───────────────────────────────────────────────────
 
 // buildEnv constructs the env map for the build section.
-// Standard Go build vars are always included.
+// Standard Go build vars are always included. ADO repos additionally
+// get GONOSUMCHECK and GONOSUMDB to bypass the checksum database for
+// private modules.
 func buildEnv() map[string]interface{} {
-	return map[string]interface{}{
+	env := map[string]interface{}{
 		"GOPROXY":      "${GOPROXY}",
 		"GOEXPERIMENT": "systemcrypto",
 		"CGO_ENABLED":  "1", // required by GOEXPERIMENT=systemcrypto (FIPS)
@@ -80,6 +83,15 @@ func buildEnv() map[string]interface{} {
 		"GOOS":         "${TARGETOS}",
 		"GOARCH":       "${TARGETARCH}",
 	}
+
+	repoInfo := pipeline.Current.RepoInfo
+	if repository.IsADORepo(repoInfo.GitURL) {
+		domain := extractADODomain(repoInfo.GitURL)
+		env["GONOSUMCHECK"] = domain + "/*"
+		env["GONOSUMDB"] = domain + "/*"
+	}
+
+	return env
 }
 
 // ─── Chunk 3 · COMMAND ASSEMBLY ──────────────────────────────────────────────

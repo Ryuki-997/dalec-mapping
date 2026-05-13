@@ -115,6 +115,7 @@ func cleanBuildCommand(cmd, ldflags string) string {
 var dalecHandledEnvs = map[string]bool{
 	"CGO_ENABLED": true, "GOOS": true, "GOARCH": true,
 	"GOARM": true, "GOARM64": true, "OS": true, "ARCH": true,
+	"GO111MODULE": true,
 }
 
 // stripDalecHandledEnvs removes leading KEY=VALUE shell env assignments for

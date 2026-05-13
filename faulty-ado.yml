@@ -1,0 +1,89 @@
+# syntax=ghcr.io/project-dalec/dalec/frontend:0.20
+args:
+  COMMIT: deb8afebae10d7a2241a3c8df31f87984d82960a
+  GOPROXY: direct
+  REVISION: 1
+  TARGETARCH: ""
+  TARGETOS: ""
+  VERSION: 1.17.1
+name: policy-kubernetes-addon-prod
+packager: Azure Container Upstream
+vendor: Microsoft Corporation
+license: proprietary
+website: https://dev.azure.com/msazure/One/_git/mgmt-Governance-Policy-Kubernetes
+description: This is the mgmt-Governance-Policy-Kubernetes project.
+version: ${VERSION}
+revision: ${REVISION}
+x-build-extensions:
+  build-targets:
+    - azlinux3/container
+  repository: azure-policy
+sources:
+  mgmt-Governance-Policy-Kubernetes:
+    generate:
+      - "": {}
+        subpath: ./docker/azure-policy-addon
+    git:
+      auth:
+        header: GIT_AUTH_HEADER
+        token: GIT_AUTH_TOKEN
+      commit: ${COMMIT}
+      url: https://dev.azure.com/msazure/One/_git/mgmt-Governance-Policy-Kubernetes
+dependencies:
+  build: {}
+  runtime: {}
+targets:
+  azlinux3:
+    dependencies:
+      build:
+        SymCrypt: {}
+        SymCrypt-OpenSSL: {}
+        git: {}
+        openssl-libs: {}
+      runtime:
+        SymCrypt: {}
+        SymCrypt-OpenSSL: {}
+        ca-certificates: {}
+        openssl-libs: {}
+    image:
+      bases:
+        - rootfs:
+            image:
+              ref: mcr.microsoft.com/azurelinux/distroless/base:3.0
+      entrypoint: /usr/local/bin/azurepolicyaddon
+      post:
+        symlinks:
+          /usr/bin/azurepolicyaddon:
+            path: /usr/local/bin/azurepolicyaddon
+          /usr/local/bin/azurepolicyaddon:
+            path: /azurepolicyaddon
+    tests:
+      - files:
+          /usr/bin/azurepolicyaddon:
+            permissions: 0755
+        name: Check azlinux3 Files
+build:
+  env:
+    CGO_ENABLED: "1"
+    GOARCH: ${TARGETARCH}
+    GOEXPERIMENT: systemcrypto
+    GOOS: ${TARGETOS}
+    GOPROXY: ${GOPROXY}
+    VERSION: ${VERSION}
+  steps:
+    - command: |-
+        BUILD_ROOT="$PWD"
+        BIN_SUFFIX=""
+        OS="linux"
+        if [ "${GOOS}" = "windows" ]; then
+          BIN_SUFFIX=".exe"
+          OS="windows"
+        fi
+        cd mgmt-Governance-Policy-Kubernetes
+        GO111MODULE=on go build -a -o /go/bin/azurepolicyaddon${BIN_SUFFIX} ./cmd/azure-policy-addon/main.go
+artifacts:
+  binaries:
+    /go/bin/azurepolicyaddon: {}
+  licenses:
+    mgmt-Governance-Policy-Kubernetes/LICENSE: {}
+tests: []

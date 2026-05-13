@@ -292,19 +292,13 @@ func fetchRepoMetadata(info *repository.RepoInfo) error {
 
 // fetchSourceGenerator detects the project's build system by scanning the repo tree.
 func fetchSourceGenerator(info *repository.RepoInfo) error {
-	fileGenerators := map[string]repository.SourceGenerator{
-		"go.mod":           repository.GoModGenerator,
-		"main.go":          repository.GoModGenerator,
-		"Gopkg.toml":       repository.GoModGenerator,
-		"Cargo.toml":       repository.CargoHomeGenerator,
-		"Cargo.lock":       repository.CargoHomeGenerator,
-		"requirements.txt": repository.PipGenerator,
-		"setup.py":         repository.PipGenerator,
-		"Pipfile":          repository.PipGenerator,
+	fileGenerators := make(map[string]repository.SourceGenerator, len(repository.FileGeneratorMarkers))
+	for _, m := range repository.FileGeneratorMarkers {
+		fileGenerators[m.FileName] = m.Generator
 	}
-	dirGenerators := map[string]repository.SourceGenerator{
-		"Godeps": repository.GoModGenerator,
-		"vendor": repository.GoModGenerator,
+	dirGenerators := make(map[string]repository.SourceGenerator, len(repository.DirGeneratorMarkers))
+	for _, m := range repository.DirGeneratorMarkers {
+		dirGenerators[m.FileName] = m.Generator
 	}
 
 	data, err := FetchJSON(fmt.Sprintf("repos/%s/%s/git/trees/%s?recursive=1", info.Owner, info.Repo, info.Branch))
