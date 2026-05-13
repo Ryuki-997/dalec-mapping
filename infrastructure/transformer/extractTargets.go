@@ -34,6 +34,7 @@ import (
 	"dalec-mapping/domain/contents"
 	"dalec-mapping/domain/repository"
 	"dalec-mapping/infrastructure/parser"
+	infraRepo "dalec-mapping/infrastructure/repository"
 	"dalec-mapping/infrastructure/test"
 	"dalec-mapping/pipeline"
 	"log"
@@ -147,6 +148,11 @@ func linuxDeps(osName string, intermediateDeps []parser.IntermediateRuntimeDeps)
 	buildDeps := map[string]interface{}{}
 	runtimeDeps := map[string]interface{}{}
 
+	// ADO repos need git at build time for source fetching.
+	if infraRepo.IsADORepo(repoInfo.GitURL) {
+		buildDeps["git"] = map[string]interface{}{}
+	}
+
 	switch osName {
 	case "azlinux3":
 		if repoInfo.Generator == repository.GoModGenerator {
@@ -227,6 +233,9 @@ func windowsDeps() map[string]interface{} {
 	repoInfo := pipeline.Current.RepoInfo
 
 	buildDeps := map[string]interface{}{}
+	if infraRepo.IsADORepo(repoInfo.GitURL) {
+		buildDeps["git"] = map[string]interface{}{}
+	}
 	if repoInfo.Generator == repository.GoModGenerator {
 		buildDeps["msft-golang"] = goToolchainDep(pipeline.Current.RepoInfo.GoVersion)
 	}

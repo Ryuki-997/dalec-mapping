@@ -69,7 +69,7 @@ func TransformToDalec() parser.DalecSpec {
 	}
 
 	// Detect go mod download patterns once — shared across build, sources, and args.
-	goModDownloads := DetectGoModDownloads()
+	goModDownloads := detectGoModDownloads()
 
 	// Compute build section first to discover which variables are referenced
 	buildSection, referencedVars := extractBuildSection(goModDownloads)

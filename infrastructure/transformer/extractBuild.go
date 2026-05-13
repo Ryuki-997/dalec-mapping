@@ -3,25 +3,42 @@ package transformer
 // ═══════════════════════════════════════════════════════════════════════════════
 // extractBuild.go — Generates the `build:` section (env + steps) of a Dalec spec.
 //
-//   Chunk 1 · ORCHESTRATION        extractBuildSection()
+//   Chunk 1 · ORCHESTRATION          extractBuildSection()
 //     Assembles env + steps into the build map, then scans for ${VAR} refs
 //     so the caller can promote them to top-level args.
 //     Calls → buildEnv(), buildSteps(), scanVarReferences()
 //
-//   Chunk 2 · ENVIRONMENT           buildEnv()
-//     Static Go env vars (GOPROXY, CGO_ENABLED, etc.) plus LDFLAGS when present.
+//   Chunk 2 · ENVIRONMENT            buildEnv()
+//     Static Go env vars (GOPROXY, CGO_ENABLED, etc.).
 //
-//   Chunk 3 · COMMAND ASSEMBLY      buildSteps()
+//   Chunk 3 · COMMAND ASSEMBLY       buildSteps()
 //     Merges per-binary build commands and pipeline steps into one shell script.
-//     Order: preamble → normal binary builds → pipeline steps → deferred sub-module builds.
+//     Order: preamble → cd baseDir → normal binaries → pipeline steps → deferred sub-modules.
 //     Calls → rawBuildCommands(), extractCdDir(), rewriteGoModCdPaths(),
-//             injectArtifactBinSuffix(), binSuffixPreamble()
-//     extractOutputFlag()       — extracts -o path from a go build command
-//     extractCdDir()            — splits "cd X && rest" into (X, rest)
-//     stripGoModDownloadPrefix()— removes go mod download prefix handled as source
-//     rewriteGoModCdPaths()     — /go/pkg/mod/… → "$BUILD_ROOT"/<sourceKey>
-//     isSubmoduleName()         — checks if name matches a go-mod-download source
-//     cleanBuildCommand()       — inlines ldflags, strips env assignments, cleans whitespace
+//             injectArtifactBinSuffix(), binSuffixPreamble(), stageWorkdirs(),
+//             intermediateStageCopies(), submoduleStageCopies()
+//
+//   Chunk 4 · PER-BINARY PROCESSING  rawBuildCommands()
+//     Cleans each binary's fields and returns one command string per binary.
+//     Calls → cleanBuildCommand(), entrypointBinaryName(), isSubmoduleName()
+//
+//   Chunk 5 · UTILITIES
+//     binSuffixPreamble()          — shell preamble setting BIN_SUFFIX + BUILD_ROOT
+//     injectArtifactBinSuffix()    — appends ${BIN_SUFFIX} to artifact -o paths
+//     scanVarReferences()          — finds ${VAR} refs in merged command text
+//     extractOutputFlag()          — extracts -o path from a go build command
+//     extractCdDir()               — splits "cd X && rest" into (X, rest)
+//     stripGoModDownloadPrefix()   — removes go mod download prefix handled as source
+//     rewriteSubmoduleBuildCd()    — injects cd before bare go build for submodules
+//     rewriteGoModCdPaths()        — /go/pkg/mod/… → "$BUILD_ROOT"/<sourceKey>
+//     rewriteRelativeSourceCd()    — bare cd <sourceKey> → cd "$BUILD_ROOT"/<sourceKey>
+//     isSubmoduleName()            — checks if name matches a go-mod-download source
+//     stripDalecHandledEnvs()      — strips GOOS/CGO_ENABLED/etc. env prefixes
+//     normalizeBareVars()          — rewrites $VAR → ${VAR}
+//     submoduleStageCopies()       — COPY --from from Go builder stages
+//     intermediateStageCopies()    — COPY --from from non-Go intermediate stages
+//     stageWorkdirs()              — non-standard WORKDIRs needing mkdir
+//     cleanBuildCommand()          — inlines ldflags, strips env assignments, cleans whitespace
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import (
@@ -46,7 +63,7 @@ var binOutRe = regexp.MustCompile(`-o (/go/bin/[^${}\s]+)`)
 // extractBuildSection assembles the top-level `build:` map for a Dalec spec.
 // Returns the build map and the set of ${VAR} names referenced inside it,
 // so the caller can forward them as top-level args.
-func extractBuildSection(goModDownloads []GoModDownloadInfo) (map[string]interface{}, map[string]bool) {
+func extractBuildSection(goModDownloads []goModDownloadInfo) (map[string]interface{}, map[string]bool) {
 	build := make(map[string]interface{})
 
 	env := buildEnv()
@@ -78,8 +95,7 @@ func extractBuildSection(goModDownloads []GoModDownloadInfo) (map[string]interfa
 // ─── Chunk 2 · ENVIRONMENT ───────────────────────────────────────────────────
 
 // buildEnv constructs the env map for the build section.
-// Standard Go build vars are always included. Per-binary ldflags are embedded
-// directly in each binary's build command — no global LDFLAGS env entry.
+// Standard Go build vars are always included.
 func buildEnv() map[string]interface{} {
 	return map[string]interface{}{
 		"GOPROXY":      "${GOPROXY}",
@@ -98,7 +114,7 @@ func buildEnv() map[string]interface{} {
 // Also returns the combined command text for var scanning.
 // The first step after the preamble is always `cd <baseDir>` where baseDir is
 // repo (or repo/componentPath when a component is set).
-func buildSteps(goModDownloads []GoModDownloadInfo) ([]map[string]interface{}, string) {
+func buildSteps(goModDownloads []goModDownloadInfo) ([]map[string]interface{}, string) {
 	repoInfo := pipeline.Current.RepoInfo
 	onboard := pipeline.Current.Onboard
 
@@ -335,7 +351,7 @@ func buildSteps(goModDownloads []GoModDownloadInfo) ([]map[string]interface{}, s
 // from the primary linux entrypoint when it differs from the parsed binary name (e.g.
 // "dropgz" when binaries[0].Name is "azure-ipam"). BIN_SUFFIX is injected so the same
 // step works for both Linux (BIN_SUFFIX="") and windowscross (BIN_SUFFIX=".exe").
-func rawBuildCommands(goModDownloads []GoModDownloadInfo) []string {
+func rawBuildCommands(goModDownloads []goModDownloadInfo) []string {
 	if pipeline.Current.Spec == nil {
 		return nil
 	}
@@ -459,7 +475,7 @@ func stripGoModDownloadPrefix(cmd string) string {
 // pipeline step whose output binary matches a known go-mod-download source. These builds
 // need the source's own go.mod to be reachable, so we cd to "$BUILD_ROOT"/<sourceKey>
 // before running them.
-func rewriteSubmoduleBuildCd(step string, downloads []GoModDownloadInfo) string {
+func rewriteSubmoduleBuildCd(step string, downloads []goModDownloadInfo) string {
 	if strings.HasPrefix(step, "cd ") {
 		return step // already has a cd prefix
 	}
@@ -477,7 +493,7 @@ func rewriteSubmoduleBuildCd(step string, downloads []GoModDownloadInfo) string 
 // rewriteGoModCdPaths replaces `cd /go/pkg/mod/<module>@<version>` with
 // `cd "$BUILD_ROOT"/<sourceKey>`. BUILD_ROOT is set in the preamble to the
 // initial working directory (where DALEC extracts sources).
-func rewriteGoModCdPaths(step string, downloads []GoModDownloadInfo) string {
+func rewriteGoModCdPaths(step string, downloads []goModDownloadInfo) string {
 	for _, dl := range downloads {
 		// Match patterns like:
 		//   cd /go/pkg/mod/github.com/azure/azure-container-networking/dropgz@${DROPGZ_VERSION}
@@ -492,7 +508,7 @@ func rewriteGoModCdPaths(step string, downloads []GoModDownloadInfo) string {
 // `cd "$BUILD_ROOT"/<sourceKey>` when <sourceKey> matches a known
 // go-mod-download source. This ensures the path resolves correctly
 // even after an earlier absolute cd has changed the working directory.
-func rewriteRelativeSourceCd(step string, downloads []GoModDownloadInfo) string {
+func rewriteRelativeSourceCd(step string, downloads []goModDownloadInfo) string {
 	for _, dl := range downloads {
 		prefix := "cd " + dl.SourceKey
 		if step == prefix ||
@@ -508,7 +524,7 @@ func rewriteRelativeSourceCd(step string, downloads []GoModDownloadInfo) string 
 // isSubmoduleName returns true if name matches a detected go-mod-download sub-module
 // source key. Used to avoid renaming the primary binary when the entrypoint comes
 // from a sub-module that is built separately.
-func isSubmoduleName(name string, downloads []GoModDownloadInfo) bool {
+func isSubmoduleName(name string, downloads []goModDownloadInfo) bool {
 	for _, dl := range downloads {
 		if dl.SourceKey == name {
 			return true

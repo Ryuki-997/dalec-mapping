@@ -58,7 +58,7 @@ var makeFunctions = []string{
 // ─── Chunk 1 · ORCHESTRATION ─────────────────────────────────────────────────
 
 // extractDefaultsSection writes metadata into the spec and returns the resolved args map.
-func extractDefaultsSection(referencedVars map[string]bool, goModDownloads []GoModDownloadInfo, spec map[string]interface{}) map[string]interface{} {
+func extractDefaultsSection(referencedVars map[string]bool, goModDownloads []goModDownloadInfo, spec map[string]interface{}) map[string]interface{} {
 	extractMetadata(spec)
 	args := extractArgs(referencedVars, goModDownloads)
 	return args
@@ -86,7 +86,7 @@ func extractMetadata(spec map[string]interface{}) {
 // extractArgs builds the top-level args map.
 // referencedVars is the set of variable names actually used in build commands/ldflags;
 // only Makefile variables in this set are promoted to args with their resolved values.
-func extractArgs(referencedVars map[string]bool, goModDownloads []GoModDownloadInfo) map[string]interface{} {
+func extractArgs(referencedVars map[string]bool, goModDownloads []goModDownloadInfo) map[string]interface{} {
 	repoInfo := pipeline.Current.RepoInfo
 
 	args := map[string]interface{}{
@@ -163,7 +163,7 @@ func mergeMakefileVars(args map[string]interface{}, makefileInfo *contents.Makef
 // go mod download submodules. These are "used" variables — their presence
 // in a source commit field means they must appear in args.
 // Resolves from Dockerfile ARGs first, then Makefile variables.
-func mergeSubmoduleVars(args map[string]interface{}, makefileInfo *contents.MakefileInfo, goModDownloads []GoModDownloadInfo) map[string]interface{} {
+func mergeSubmoduleVars(args map[string]interface{}, makefileInfo *contents.MakefileInfo, goModDownloads []goModDownloadInfo) map[string]interface{} {
 	for _, dl := range goModDownloads {
 		varName := strings.Trim(dl.VersionVar, "${}()")
 		if varName == "" {

@@ -42,9 +42,6 @@ func main() {
 	componentStates, existingPaths := fetchOnboardStates(inputPath)
 	states := resolveTagCache(componentStates, existingPaths)
 	prGroups := processOnboardStates(states)
-	for groupKey, entry := range prGroups {
-		log.Printf("Group: %s, Components: %d\n", groupKey, len(entry.Components))
-	}
 	submitPRs(prGroups)
 }
 
@@ -177,6 +174,11 @@ func processOnboardStates(states []pipeline.State) map[string]*workflow.PREntry 
 	resolveGroupNaming(prGroups, groupPRIDs)
 
 	utils.PrintActionLog(actionLog)
+
+	for groupKey, entry := range prGroups {
+		log.Printf("Group: %s, Components: %d\n", groupKey, len(entry.Components))
+	}
+
 	return prGroups
 }
 

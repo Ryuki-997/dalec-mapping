@@ -14,7 +14,7 @@ package transformer
 //   Chunk 3 · SUBMODULE SOURCES        buildSubmoduleSources()
 //     Separate git+gomod entries for each `go mod download` dependency.
 //
-//   Chunk 4 · DISCOVERY                DetectGoModDownloads(), collectGoModSubpaths()
+//   Chunk 4 · DISCOVERY                detectGoModDownloads(), collectGoModSubpaths()
 //     Scans pipeline steps + binary commands to detect go mod download patterns
 //     and literal cd subdirectories that need gomod generate entries.
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -44,8 +44,8 @@ var goModDownloadRe = regexp.MustCompile(`go\s+mod\s+download\s+(\S+)@(\S+)`)
 // Captures: (1) full module path, (2) version.
 var goModCdRe = regexp.MustCompile(`cd\s+/go/pkg/mod/(\S+)@(\S+)`)
 
-// GoModDownloadInfo holds the parsed info from a `go mod download` pipeline step.
-type GoModDownloadInfo struct {
+// goModDownloadInfo holds the parsed info from a `go mod download` pipeline step.
+type goModDownloadInfo struct {
 	// SourceKey is the short name used as the DALEC source key (e.g. "dropgz").
 	SourceKey string
 	// ModulePath is the full Go module path (e.g. "github.com/azure/azure-container-networking/dropgz").
@@ -62,7 +62,7 @@ type GoModDownloadInfo struct {
 
 // extractSourcesSection assembles all source entries for the Dalec spec.
 // Pre-computed goModDownloads are emitted as separate prefetched sources.
-func extractSourcesSection(goModDownloads []GoModDownloadInfo) map[string]interface{} {
+func extractSourcesSection(goModDownloads []goModDownloadInfo) map[string]interface{} {
 	sources := make(map[string]interface{})
 
 	buildPrimarySource(sources)
@@ -139,7 +139,7 @@ func buildPrimarySource(sources map[string]interface{}) {
 
 // buildSubmoduleSources adds a separate git+gomod entry for each pre-computed
 // go mod download dependency (e.g. dropgz).
-func buildSubmoduleSources(sources map[string]interface{}, goModDownloads []GoModDownloadInfo) {
+func buildSubmoduleSources(sources map[string]interface{}, goModDownloads []goModDownloadInfo) {
 	repoInfo := pipeline.Current.RepoInfo
 
 	for _, info := range goModDownloads {
@@ -219,11 +219,11 @@ func collectGoModSubpaths(spec *contents.DockerfileSpec) []string {
 	return subpaths
 }
 
-// DetectGoModDownloads scans pipeline steps AND binary build commands for
+// detectGoModDownloads scans pipeline steps AND binary build commands for
 // submodule references. Detects both `go mod download <module>@<version>`
 // (legacy) and `cd /go/pkg/mod/<module>@<version>` patterns and returns
 // parsed info for each.
-func DetectGoModDownloads() []GoModDownloadInfo {
+func detectGoModDownloads() []goModDownloadInfo {
 	if pipeline.Current.Spec == nil {
 		return nil
 	}
@@ -238,7 +238,7 @@ func DetectGoModDownloads() []GoModDownloadInfo {
 	}
 
 	seen := map[string]bool{}
-	var results []GoModDownloadInfo
+	var results []goModDownloadInfo
 	for _, step := range stepsToScan {
 		// Try `go mod download <module>@<version>` first (legacy),
 		// then fall back to `cd /go/pkg/mod/<module>@<version>`.
@@ -275,7 +275,7 @@ func DetectGoModDownloads() []GoModDownloadInfo {
 			}
 		}
 
-		results = append(results, GoModDownloadInfo{
+		results = append(results, goModDownloadInfo{
 			SourceKey:  sourceKey,
 			ModulePath: modulePath,
 			SubPath:    subPath,
