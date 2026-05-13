@@ -151,6 +151,9 @@ func linuxDeps(osName string, intermediateDeps []parser.IntermediateRuntimeDeps)
 	// ADO repos need git at build time for source fetching.
 	if infraRepo.IsADORepo(repoInfo.GitURL) {
 		buildDeps["git"] = map[string]interface{}{}
+		if repoInfo.Generator == repository.GoModGenerator {
+			buildDeps["msft-golang"] = goToolchainDep(pipeline.Current.RepoInfo.GoVersion)
+		}
 	}
 
 	switch osName {
@@ -235,6 +238,9 @@ func windowsDeps() map[string]interface{} {
 	buildDeps := map[string]interface{}{}
 	if infraRepo.IsADORepo(repoInfo.GitURL) {
 		buildDeps["git"] = map[string]interface{}{}
+		if repoInfo.Generator == repository.GoModGenerator {
+			buildDeps["msft-golang"] = goToolchainDep(pipeline.Current.RepoInfo.GoVersion)
+		}
 	}
 	if repoInfo.Generator == repository.GoModGenerator {
 		buildDeps["msft-golang"] = goToolchainDep(pipeline.Current.RepoInfo.GoVersion)

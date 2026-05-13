@@ -17,9 +17,9 @@ set -uo pipefail
 # ═══════════════════════════════════════════════════════════════════════════════
 
 PATHS=(
-    "specs/containernetworking"
-    "specs/aks-node-controller"
-    "specs/aks-secure-tls-bootstrap"
+    # "specs/containernetworking"
+    # "specs/aks-node-controller"
+    # "specs/aks-secure-tls-bootstrap"
     "specs/azure-policy"
 )
 

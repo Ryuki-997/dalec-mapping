@@ -14,9 +14,12 @@ package transformer
 //   Chunk 3 · SUBMODULE SOURCES        buildSubmoduleSources()
 //     Separate git+gomod entries for each `go mod download` dependency.
 //
-//   Chunk 4 · DISCOVERY                detectGoModDownloads(), collectGoModSubpaths()
+//   Chunk 4 · DISCOVERY                detectGoModDownloads(), collectGoModSubpaths(),
+//                                       resolveGoModSubpath()
 //     Scans pipeline steps + binary commands to detect go mod download patterns
 //     and literal cd subdirectories that need gomod generate entries.
+//     resolveGoModSubpath() centralizes the priority chain for finding the
+//     primary go.mod location (ComponentPath > MakefileDir > gomod > DockerfileDir).
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import (
@@ -80,28 +83,9 @@ func extractSourcesSection(goModDownloads []goModDownloadInfo) map[string]interf
 // from MakefileDir/DockerfileDir.
 func buildPrimarySource(sources map[string]interface{}) {
 	repoInfo := pipeline.Current.RepoInfo
-	onboard := pipeline.Current.Onboard
 
 	subpaths := collectGoModSubpaths(pipeline.Current.Spec)
-
-	// Determine where the primary go.mod lives.
-	// Priority: ComponentPath > MakefileDir > gomod subpath > DockerfileDir
-	// MakefileDir and DockerfileDir are directory paths (e.g. "cns", "."),
-	// so they are used directly as subpath candidates. "." means repo root
-	// (no subpath needed).
-	rootGoModSubpath := ""
-	if repoInfo.ComponentPath != "" {
-		rootGoModSubpath = repoInfo.ComponentPath
-	}
-	if rootGoModSubpath == "" && onboard.MakefileDir != "" && onboard.MakefileDir != "." {
-		rootGoModSubpath = strings.TrimSuffix(onboard.MakefileDir, "/")
-	}
-	if rootGoModSubpath == "" && len(subpaths) > 0 {
-		rootGoModSubpath = subpaths[0]
-	}
-	if rootGoModSubpath == "" && onboard.DockerfileDir != "" && onboard.DockerfileDir != "." {
-		rootGoModSubpath = strings.TrimSuffix(onboard.DockerfileDir, "/")
-	}
+	rootGoModSubpath := resolveGoModSubpath()
 
 	rootEntry := map[string]interface{}{
 		string(repoInfo.Generator): map[string]interface{}{},
@@ -174,6 +158,32 @@ func buildSubmoduleSources(sources map[string]interface{}, goModDownloads []goMo
 }
 
 // ─── Chunk 4 · DISCOVERY ─────────────────────────────────────────────────────
+
+// resolveGoModSubpath determines the subdirectory containing the primary go.mod
+// relative to the repo root.
+// Priority: ComponentPath > MakefileDir > gomod subpath > DockerfileDir.
+// Returns "" when go.mod lives at the repo root.
+func resolveGoModSubpath() string {
+	repoInfo := pipeline.Current.RepoInfo
+	onboard := pipeline.Current.Onboard
+
+	if repoInfo.ComponentPath != "" {
+		return repoInfo.ComponentPath
+	}
+
+	subpaths := collectGoModSubpaths(pipeline.Current.Spec)
+
+	if onboard.MakefileDir != "" && onboard.MakefileDir != "." {
+		return strings.TrimSuffix(onboard.MakefileDir, "/")
+	}
+	if len(subpaths) > 0 {
+		return subpaths[0]
+	}
+	if onboard.DockerfileDir != "" && onboard.DockerfileDir != "." {
+		return strings.TrimSuffix(onboard.DockerfileDir, "/")
+	}
+	return ""
+}
 
 // collectGoModSubpaths returns ordered unique subdirectory paths found via
 // literal `cd <subdir> &&` in binary build commands and pipeline steps.
