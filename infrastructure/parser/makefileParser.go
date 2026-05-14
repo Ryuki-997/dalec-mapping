@@ -3,6 +3,8 @@ package parser
 import (
 	"bufio"
 	"dalec-mapping/domain/contents"
+	parserutils "dalec-mapping/infrastructure/parser/utils"
+	"path"
 	"regexp"
 	"strings"
 )
@@ -10,6 +12,9 @@ import (
 // makefileGoBuildRe matches `go build ... <target>` in Makefile recipe lines.
 // Captures the last argument (package target) which is a path like cmd/client/main.go or ./cmd/client.
 var makefileGoBuildRe = regexp.MustCompile(`go\s+build\s+.+?\s+((?:\./)?[a-zA-Z][^\s]*)\s*$`)
+
+// makefileVarRe matches Makefile variable references: $(VAR) or ${VAR}.
+var makefileVarRe = regexp.MustCompile(`\$\(([A-Za-z_][A-Za-z0-9_]*)\)`)
 
 // shellBuiltins lists shell commands that can trail a go build in compound
 // lines (e.g. "go build ./cmd/foo && popd") and must not be treated as targets.
@@ -63,6 +68,16 @@ func ParseMakefile(makefile []byte, info *contents.MakefileInfo) (*contents.Make
 					info.GoBuildTargets = append(info.GoBuildTargets, target)
 				}
 			}
+
+			// Parse the full go build command for Name, OutputPath, LdFlags.
+			// Only include commands with -o flag (actual binary builds, not compile checks like ./...).
+			normalizedSegment := convertMakefileVarsToShell(goBuildSegment)
+			resolvedSegment := resolveMakefileVars(normalizedSegment, info.Variables)
+			binary := parserutils.ParseGoBuildCommand(resolvedSegment)
+			if binary.Name != "" && binary.OutputPath != "" {
+				binary.OutputPath = normalizeBinaryOutputPath(binary.OutputPath, binary.Name)
+				info.GoBuildCommands = append(info.GoBuildCommands, binary)
+			}
 		}
 	}
 	return info, nil
@@ -90,4 +105,36 @@ func parseVariable(line string, info *contents.MakefileInfo) {
 		}
 		info.Variables[key] = value
 	}
+}
+
+// convertMakefileVarsToShell converts Makefile $(VAR) references to shell ${VAR} syntax.
+func convertMakefileVarsToShell(command string) string {
+	return makefileVarRe.ReplaceAllString(command, "${$1}")
+}
+
+// resolveMakefileVars expands ${VAR} references using known Makefile variables.
+// Unresolved variables are left as ${VAR} for promotion to spec args.
+func resolveMakefileVars(command string, variables map[string]string) string {
+	for varName, varValue := range variables {
+		command = strings.ReplaceAll(command, "${"+varName+"}", varValue)
+	}
+	return command
+}
+
+// normalizeBinaryOutputPath rewrites the output path to Dalec convention /go/bin/<name>.
+// If the path is relative or non-standard, it uses the binary name to build the standard path.
+func normalizeBinaryOutputPath(outputPath, binaryName string) string {
+	if outputPath == "" {
+		return "/go/bin/" + binaryName
+	}
+	// If already an absolute path under /go/bin/, keep it.
+	if strings.HasPrefix(outputPath, "/go/bin/") {
+		return outputPath
+	}
+	// Use the base name from the parsed output path to build the Dalec standard path.
+	baseName := path.Base(outputPath)
+	if baseName == "." || baseName == "/" {
+		baseName = binaryName
+	}
+	return "/go/bin/" + baseName
 }

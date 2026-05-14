@@ -14,12 +14,9 @@ package transformer
 //   Chunk 3 · SUBMODULE SOURCES        buildSubmoduleSources()
 //     Separate git+gomod entries for each `go mod download` dependency.
 //
-//   Chunk 4 · DISCOVERY                detectGoModDownloads(), collectGoModSubpaths(),
-//                                       resolveGoModSubpath()
+//   Chunk 4 · DISCOVERY                detectGoModDownloads(), collectGoModSubpaths()
 //     Scans pipeline steps + binary commands to detect go mod download patterns
 //     and literal cd subdirectories that need gomod generate entries.
-//     resolveGoModSubpath() centralizes the priority chain for finding the
-//     primary go.mod location (ComponentPath > MakefileDir > gomod > DockerfileDir).
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import (
@@ -114,7 +111,11 @@ func buildPrimarySource(sources map[string]interface{}) {
 	repoInfo := pipeline.Current.RepoInfo
 
 	subpaths := collectGoModSubpaths(pipeline.Current.Spec)
-	rootGoModSubpath := resolveGoModSubpath()
+
+	rootGoModSubpath := "."
+	if repoInfo.ComponentPath != "" {
+		rootGoModSubpath = repoInfo.ComponentPath
+	}
 
 	rootEntry := map[string]interface{}{
 		string(repoInfo.Generator): adoGoModAuth(repoInfo),
@@ -185,29 +186,6 @@ func buildSubmoduleSources(sources map[string]interface{}, goModDownloads []goMo
 }
 
 // ─── Chunk 4 · DISCOVERY ─────────────────────────────────────────────────────
-
-// resolveGoModSubpath determines the subdirectory containing the primary go.mod
-// relative to the repo root.
-// Priority: ComponentPath > MakefileDir > gomod subpath > "." (root).
-// Returns "." when no specific subdirectory is identified.
-func resolveGoModSubpath() string {
-	repoInfo := pipeline.Current.RepoInfo
-	onboard := pipeline.Current.Onboard
-
-	if repoInfo.ComponentPath != "" {
-		return repoInfo.ComponentPath
-	}
-
-	subpaths := collectGoModSubpaths(pipeline.Current.Spec)
-
-	if onboard.MakefileDir != "" && onboard.MakefileDir != "." {
-		return strings.TrimSuffix(onboard.MakefileDir, "/")
-	}
-	if len(subpaths) > 0 {
-		return subpaths[0]
-	}
-	return "."
-}
 
 // collectGoModSubpaths returns ordered unique subdirectory paths found via
 // literal `cd <subdir> &&` in binary build commands and pipeline steps.

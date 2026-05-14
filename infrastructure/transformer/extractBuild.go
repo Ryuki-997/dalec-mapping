@@ -32,6 +32,8 @@ import (
 	"dalec-mapping/pipeline"
 	"fmt"
 	"strings"
+
+	domainRepo "dalec-mapping/domain/repository"
 )
 
 // ─── Chunk 1 · ORCHESTRATION ─────────────────────────────────────────────────
@@ -48,7 +50,10 @@ func extractBuildSection(goModDownloads []goModDownloadInfo) (map[string]interfa
 	steps, scanText := buildSteps(goModDownloads)
 	build["steps"] = steps
 
-	referencedVars := scanVarReferences(scanText)
+	referencedVars := make(map[string]bool)
+	for _, m := range varRefRe.FindAllStringSubmatch(scanText, -1) {
+		referencedVars[m[1]] = true
+	}
 
 	// Promote any referenced Makefile variable into env so the spec arg is wired through.
 	// Skip variables that are set dynamically in the build preamble (e.g. OS, ARCH)
@@ -85,7 +90,7 @@ func buildEnv() map[string]interface{} {
 	}
 
 	repoInfo := pipeline.Current.RepoInfo
-	if repository.IsADORepo(repoInfo.GitURL) {
+	if repository.IsADORepo(repoInfo.GitURL) && repoInfo.Generator == domainRepo.GoModGenerator {
 		domain := extractADODomain(repoInfo.GitURL)
 		env["GONOSUMCHECK"] = domain + "/*"
 		env["GONOSUMDB"] = domain + "/*"
@@ -118,28 +123,17 @@ func buildSteps(goModDownloads []goModDownloadInfo) ([]map[string]interface{}, s
 
 	rawCmds := rawBuildCommands(goModDownloads)
 
-	// When ComponentPath is set, go.mod is at the component root — no extra subdir needed
-	// because baseDir already includes it.
-	goModSubdir := ""
-	if repoInfo.ComponentPath == "" {
-		goModSubdir = resolveGoModSubpath()
-	}
-
 	if len(rawCmds) == 0 {
-		cdTarget := baseDir
-		if goModSubdir != "" {
-			cdTarget = baseDir + "/" + goModSubdir
-		}
 		// Use Makefile go build target when available (e.g. "./cmd/client") instead
 		// of "." which fails when the go.mod directory has no Go files at root.
 		buildTarget := "."
 		if len(pipeline.Current.Makefile.GoBuildTargets) > 0 {
 			buildTarget = pipeline.Current.Makefile.GoBuildTargets[0]
 		}
-		return fallbackBuildStep(cdTarget, buildTarget)
+		return fallbackBuildStep(baseDir, buildTarget)
 	}
 
-	allBuildLines := parseBuildLines(rawCmds, baseDir, goModSubdir, goModDownloads)
+	allBuildLines := parseBuildLines(rawCmds, baseDir, goModDownloads)
 
 	if len(allBuildLines) == 0 {
 		return fallbackBuildStep(baseDir, ".")
@@ -157,7 +151,7 @@ func buildSteps(goModDownloads []goModDownloadInfo) ([]map[string]interface{}, s
 		}
 	}
 
-	parts := []string{binSuffixPreamble(), "cd " + baseDir}
+	parts := []string{binSuffixPreamble, "cd " + baseDir}
 
 	// Emit normal binary builds. Only emit cd when the path changes from baseDir.
 	lastCd := baseDir
@@ -184,25 +178,57 @@ func buildSteps(goModDownloads []goModDownloadInfo) ([]map[string]interface{}, s
 // fallbackBuildStep builds a synthetic go-build command when no parsed binaries exist.
 func fallbackBuildStep(cdTarget, buildTarget string) ([]map[string]interface{}, string) {
 	binaryName := resolveFallbackBinaryName()
-	fallback := fmt.Sprintf("%s\ncd %s\ngo build -o /go/bin/%s${BIN_SUFFIX} %s", binSuffixPreamble(), cdTarget, binaryName, buildTarget)
+	fallback := fmt.Sprintf("%s\ncd %s\ngo build -o /go/bin/%s${BIN_SUFFIX} %s", binSuffixPreamble, cdTarget, binaryName, buildTarget)
 	return []map[string]interface{}{{"command": fallback}}, fallback
 }
 
 // resolveFallbackBinaryName returns the binary name for a synthetic fallback build.
-// Uses the first parsed binary name when available, otherwise the repo name.
+// Uses the first parsed binary name when available, then Makefile binaries, otherwise the repo name.
 func resolveFallbackBinaryName() string {
 	repoInfo := pipeline.Current.RepoInfo
 	binaryName := repoInfo.Repo
 	if pipeline.Current.Spec != nil && len(pipeline.Current.Spec.Binaries) > 0 && pipeline.Current.Spec.Binaries[0].Name != "" {
 		binaryName = pipeline.Current.Spec.Binaries[0].Name
+	} else if len(pipeline.Current.Makefile.GoBuildCommands) > 0 && pipeline.Current.Makefile.GoBuildCommands[0].Name != "" {
+		binaryName = pipeline.Current.Makefile.GoBuildCommands[0].Name
 	}
 	return binaryName
+}
+
+// makefileBuildCommands returns cleaned go build commands extracted from the Makefile.
+// Called when no Dockerfile Spec is available (Makefile-only projects).
+func makefileBuildCommands() []string {
+	makefileBinaries := pipeline.Current.Makefile.GoBuildCommands
+	if len(makefileBinaries) == 0 {
+		return nil
+	}
+
+	var cmds []string
+	for _, binary := range makefileBinaries {
+		if binary.Name == "" {
+			continue
+		}
+
+		var cmd string
+		if binary.BuildCommand != "" {
+			cmd = binary.BuildCommand
+		} else if binary.LdFlags != "" {
+			cmd = fmt.Sprintf("go build -ldflags \"%s\" -o %s", binary.LdFlags, binary.OutputPath)
+		} else {
+			cmd = fmt.Sprintf("go build -o %s", binary.OutputPath)
+		}
+
+		if cmd != "" {
+			cmds = append(cmds, cmd)
+		}
+	}
+	return cmds
 }
 
 // parseBuildLines converts raw command strings into structured build lines.
 // Each raw command is classified as a normal binary build or a deferred
 // submodule build, with its cd path resolved.
-func parseBuildLines(rawCmds []string, baseDir, goModSubdir string, goModDownloads []goModDownloadInfo) []buildLine {
+func parseBuildLines(rawCmds []string, baseDir string, goModDownloads []goModDownloadInfo) []buildLine {
 	var lines []buildLine
 	for _, raw := range rawCmds {
 		raw = strings.TrimSpace(raw)
@@ -230,11 +256,7 @@ func parseBuildLines(rawCmds []string, baseDir, goModSubdir string, goModDownloa
 
 		cdPath := baseDir
 		if subdir != "" && subdir != baseDir {
-			// Raw command had an explicit inner cd to a non-baseDir path.
 			cmd = "cd " + subdir + "\n" + cmd + "\ncd .."
-		} else if subdir == "" && goModSubdir != "" && strings.HasSuffix(cmd, " .") {
-			// Build command targets "." — Go files live in <goModSubdir>, not the repo root.
-			cmd = "cd " + goModSubdir + "\n" + cmd + "\ncd .."
 		}
 		lines = append(lines, buildLine{cdPath: cdPath, command: cmd})
 	}
@@ -265,7 +287,7 @@ func emitPipelineSteps(parts []string, baseDir string, goModDownloads []goModDow
 			continue
 		}
 		step = stripDalecHandledEnvs(step)
-		step = normalizeBareVars(step)
+		step = bareVarRe.ReplaceAllString(step, "${$1}")
 		step = rewriteGoModCdPaths(step, goModDownloads)
 		step = rewriteRelativeSourceCd(step, goModDownloads)
 		submodCdPrefix, step := rewriteSubmoduleBuildCd(step, goModDownloads)
@@ -350,7 +372,7 @@ func emitDeferredBuilds(parts []string, deferredLines []buildLine, submodCopies 
 // step works for both Linux (BIN_SUFFIX="") and windowscross (BIN_SUFFIX=".exe").
 func rawBuildCommands(goModDownloads []goModDownloadInfo) []string {
 	if pipeline.Current.Spec == nil {
-		return nil
+		return makefileBuildCommands()
 	}
 
 	epBase := entrypointBinaryName(pipeline.Current.Spec)

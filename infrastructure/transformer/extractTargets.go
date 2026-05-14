@@ -25,8 +25,7 @@ package transformer
 //                                       msftWindowsExtraRepo()
 //     Microsoft package repository definitions for apt sources.
 //
-//   Chunk 6 · UTILITIES                findPrimaryLinuxTarget(),
-//                                       entrypointBinaryName(), canonicalBase()
+//   Chunk 6 · UTILITIES                entrypointBinaryName(), canonicalBase()
 //     Target lookup helpers and shared functions used by other extract* files.
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -151,9 +150,6 @@ func linuxDeps(osName string, intermediateDeps []parser.IntermediateRuntimeDeps)
 	// ADO repos need git at build time for source fetching.
 	if infraRepo.IsADORepo(repoInfo.GitURL) {
 		buildDeps["git"] = map[string]interface{}{}
-		if repoInfo.Generator == repository.GoModGenerator {
-			buildDeps["msft-golang"] = goToolchainDep(pipeline.Current.RepoInfo.GoVersion)
-		}
 	}
 
 	switch osName {
@@ -238,9 +234,6 @@ func windowsDeps() map[string]interface{} {
 	buildDeps := map[string]interface{}{}
 	if infraRepo.IsADORepo(repoInfo.GitURL) {
 		buildDeps["git"] = map[string]interface{}{}
-		if repoInfo.Generator == repository.GoModGenerator {
-			buildDeps["msft-golang"] = goToolchainDep(pipeline.Current.RepoInfo.GoVersion)
-		}
 	}
 	if repoInfo.Generator == repository.GoModGenerator {
 		buildDeps["msft-golang"] = goToolchainDep(pipeline.Current.RepoInfo.GoVersion)
@@ -375,16 +368,6 @@ func msftWindowsExtraRepo() map[string]interface{} {
 
 // ─── Chunk 6 · UTILITIES ────────────────────────────────────────────────────
 
-// findPrimaryLinuxTarget returns the first non-windowscross SpecTarget.
-func findPrimaryLinuxTarget(targets []contents.SpecTarget) *contents.SpecTarget {
-	for i, ts := range targets {
-		if ts.OS != "windowscross" {
-			return &targets[i]
-		}
-	}
-	return nil
-}
-
 // entrypointBinaryName derives the canonical binary name from the primary
 // linux target's symlink path (the Dalec symlinks map key = real installed binary).
 // Returns "" when no linux target or symlink is set.
@@ -392,8 +375,10 @@ func entrypointBinaryName(spec *contents.DockerfileSpec) string {
 	if spec == nil {
 		return ""
 	}
-	if lt := findPrimaryLinuxTarget(spec.Targets); lt != nil {
-		return canonicalBase(lt.Symlink)
+	for i, ts := range spec.Targets {
+		if ts.OS != "windowscross" {
+			return canonicalBase(spec.Targets[i].Symlink)
+		}
 	}
 	return ""
 }

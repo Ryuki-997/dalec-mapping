@@ -77,8 +77,12 @@ func computeArtifactPaths() map[string]interface{} {
 		return paths
 	}
 
-	// Fallback.
-	paths["/go/bin/"+pipeline.Current.RepoInfo.Repo] = struct{}{}
+	// Fallback: use Makefile binary name if available, otherwise repo name.
+	if len(pipeline.Current.Makefile.GoBuildCommands) > 0 && pipeline.Current.Makefile.GoBuildCommands[0].Name != "" {
+		paths["/go/bin/"+pipeline.Current.Makefile.GoBuildCommands[0].Name] = struct{}{}
+	} else {
+		paths["/go/bin/"+pipeline.Current.RepoInfo.Repo] = struct{}{}
+	}
 	return paths
 }
 
@@ -102,8 +106,8 @@ func resolveOutputPath(bin contents.SpecBinary) string {
 	if bin.OutputPath != "" {
 		return bin.OutputPath
 	}
-	if flagPath := extractOutputFlag(bin.BuildCommand); flagPath != "" {
-		return flagPath
+	if m := outputFlagRe.FindStringSubmatch(bin.BuildCommand); m != nil {
+		return m[1]
 	}
 	return "/go/bin/" + bin.Name
 }

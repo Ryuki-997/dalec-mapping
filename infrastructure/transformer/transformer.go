@@ -10,43 +10,29 @@ import (
 	"strings"
 )
 
-// ResolveBuildTargets validates the targets list from onboard.yml and replaces
-// pipeline.Current.Onboard.Targets with only the valid entries. Returns an
-// error if no valid targets remain.
+// ResolveBuildTargets validates the targets list from onboard.yml, overwrites
+// Targets with only the valid entries, and returns an error if none remain.
 func ResolveBuildTargets() error {
 	onboardInfo := pipeline.Current.Onboard
 
-	resolved := resolveOnboardTargets(onboardInfo.Targets)
-	if len(resolved) == 0 {
-		return fmt.Errorf("no valid targets in onboard.yml for %s", onboardInfo.SpecImageName)
-	}
-
-	validated := make([]string, len(resolved))
-	for i, bt := range resolved {
-		validated[i] = string(bt)
-	}
-	onboardInfo.Targets = validated
-
-	return nil
-}
-
-// resolveOnboardTargets validates the targets list from onboard.yml and returns
-// the corresponding BuildTarget values. Logs a warning for any invalid entries.
-func resolveOnboardTargets(targets []string) []contents.BuildTarget {
-	var resolved []contents.BuildTarget
-	for _, t := range targets {
+	var resolved []string
+	for _, t := range onboardInfo.Targets {
 		t = strings.TrimSpace(t)
-		if bt, ok := contents.IsValidTarget(t); ok {
-			resolved = append(resolved, bt)
+		if _, ok := contents.IsValidTarget(t); ok {
+			resolved = append(resolved, t)
 		} else {
 			log.Printf("⚠️  Ignoring unsupported onboard target: %s\n", t)
 		}
 	}
-	return resolved
+	if len(resolved) == 0 {
+		return fmt.Errorf("no valid targets in onboard.yml for %s", onboardInfo.SpecImageName)
+	}
+
+	onboardInfo.Targets = resolved
+	return nil
 }
 
-// onboardBuildTargets returns the resolved build targets from the current
-// onboard config as typed BuildTarget values.
+// onboardBuildTargets returns the validated build targets as typed BuildTarget values.
 func onboardBuildTargets() []contents.BuildTarget {
 	targets := make([]contents.BuildTarget, len(pipeline.Current.Onboard.Targets))
 	for i, t := range pipeline.Current.Onboard.Targets {
@@ -76,8 +62,8 @@ func TransformToDalec() parser.DalecSpec {
 	spec["build"] = buildSection
 
 	// Initialize args + metadata — only include Makefile vars that are actually used
-	args := extractDefaultsSection(referencedVars, goModDownloads, spec)
-	spec["args"] = args
+	extractMetadata(spec)
+	spec["args"] = extractArgs(referencedVars, goModDownloads)
 
 	// Build extensions section
 	spec["x-build-extensions"] = extractBuildExtensions()
@@ -85,10 +71,13 @@ func TransformToDalec() parser.DalecSpec {
 	// Transform Dockerfile content to Dalec sections
 	spec["sources"] = extractSourcesSection(goModDownloads)
 
-	spec["dependencies"] = extractDependencies()
+	spec["dependencies"] = map[string]interface{}{
+		"build":   map[string]interface{}{},
+		"runtime": map[string]interface{}{},
+	}
 	spec["artifacts"] = extractArtifactsSection()
 	spec["targets"] = extractTargetsSection()
-	spec["tests"] = extractTests()
+	spec["tests"] = []string{}
 
 	return spec
 }

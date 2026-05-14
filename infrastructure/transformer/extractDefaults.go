@@ -55,16 +55,7 @@ var makeFunctions = []string{
 	"error ", "warning ", "info ",
 }
 
-// ─── Chunk 1 · ORCHESTRATION ─────────────────────────────────────────────────
-
-// extractDefaultsSection writes metadata into the spec and returns the resolved args map.
-func extractDefaultsSection(referencedVars map[string]bool, goModDownloads []goModDownloadInfo, spec map[string]interface{}) map[string]interface{} {
-	extractMetadata(spec)
-	args := extractArgs(referencedVars, goModDownloads)
-	return args
-}
-
-// ─── Chunk 2 · METADATA ─────────────────────────────────────────────────────
+// ─── Chunk 1 · METADATA ──────────────────────────────────────────────────────
 
 // extractMetadata writes the fixed metadata fields into the spec map.
 func extractMetadata(spec map[string]interface{}) {

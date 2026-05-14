@@ -393,3 +393,5 @@ func DetectADOGenerator(repoURL, componentPath, tag string) domainRepo.SourceGen
 	}
 	return ""
 }
+
+

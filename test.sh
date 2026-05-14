@@ -18,9 +18,9 @@ set -uo pipefail
 
 PATHS=(
     # "specs/containernetworking"
-    # "specs/aks-node-controller"
+    "specs/aks-node-controller"
     # "specs/aks-secure-tls-bootstrap"
-    "specs/azure-policy"
+    # "specs/azure-policy"
 )
 
 rm -rf ./diff ./generated
