@@ -43,7 +43,7 @@ func main() {
 	states := resolveTagCache(componentStates, existingPaths)
 	prGroups := processOnboardStates(states)
 	log.Printf("Total PR groups to submit: %d", len(prGroups))
-	submitPRs(prGroups)
+	// submitPRs(prGroups)
 }
 
 // parseFlags registers and parses CLI flags, returning the resolved values.

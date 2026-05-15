@@ -401,7 +401,7 @@ func canonicalBase(entrypoint string) string {
 func goToolchainDep(goVersion string) map[string]interface{} {
 	if goVersion != "" {
 		return map[string]interface{}{
-			"version": []string{">=" + goVersion},
+			"version": []string{">= " + goVersion},
 		}
 	}
 	return map[string]interface{}{}
