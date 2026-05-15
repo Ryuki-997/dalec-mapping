@@ -44,7 +44,6 @@ type RepoInfo struct {
 	Description   string
 	Version       string
 	License       string
-	LicenseFile   string // path to the license file within the repo (e.g. "LICENSE", "docs/NOTICE")
 	LatestCommit  string
 	GoVersion     string // Go toolchain version detected from the Dockerfile (e.g. "1.24")
 	Generator     SourceGenerator

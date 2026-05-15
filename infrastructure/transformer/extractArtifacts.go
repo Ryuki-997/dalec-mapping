@@ -43,7 +43,7 @@ func extractArtifactsSection() map[string]interface{} {
 	return map[string]interface{}{
 		"binaries": binaries,
 		"licenses": map[string]interface{}{
-			pipeline.Current.RepoInfo.Repo + "/" + pipeline.Current.RepoInfo.LicenseFile: map[string]interface{}{},
+			pipeline.Current.RepoInfo.Repo + "/LICENSE": map[string]interface{}{},
 		},
 	}
 }

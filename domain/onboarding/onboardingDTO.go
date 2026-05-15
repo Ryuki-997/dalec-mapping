@@ -139,7 +139,7 @@ type ComponentConfig struct {
 	Reviewers     []string `yaml:"reviewers,omitempty"`
 	DockerfileDir string   `yaml:"dockerfile"`
 	MakefileDir   string     `yaml:"makefile"`
-	LicenseDir    string   `yaml:"license"`
+	License       string   `yaml:"license,omitempty"`
 
 	// Runtime fields (set during Flatten / pipeline, not from YAML).
 	OnboardDir     string `yaml:"-"` // component directory derived from onboard.yml location (e.g. "specs/containernetworking/azure-cns")

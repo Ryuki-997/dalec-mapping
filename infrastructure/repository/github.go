@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"dalec-mapping/domain/repository"
+	"dalec-mapping/pipeline"
 )
 
 const githubAPIBase = "https://api.github.com"
@@ -283,8 +284,9 @@ func fetchRepoMetadata(info *repository.RepoInfo) error {
 		}
 	}
 
-	if info.LicenseFile == "" || info.LicenseFile == "LICENSE" || info.LicenseFile == "." {
-		info.LicenseFile = "LICENSE"
+	// Component config override takes priority over GitHub API detection.
+	if pipeline.Current.Onboard.License != "" {
+		info.License = pipeline.Current.Onboard.License
 	}
 
 	return nil
