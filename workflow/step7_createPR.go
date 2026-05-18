@@ -68,12 +68,14 @@ func CreatePR(entry PREntry) (string, bool, error) {
 	first := entry.Components[0]
 
 	// Check for an existing open PR before creating a new one.
-	existingURL, err := findExistingPR(first.Naming.DisplayName, first.Naming.VersionRevision)
-	if err != nil {
-		log.Printf("⚠️  Failed to check for existing PRs, proceeding with creation: %v", err)
-	} else if existingURL != "" {
-		log.Printf("⚠️  Skipping PR creation — open PR already exists: %s", existingURL)
-		return existingURL, false, nil
+	if !ForcePR {
+		existingURL, err := findExistingPR(first.Naming.DisplayName, first.Naming.VersionRevision)
+		if err != nil {
+			log.Printf("⚠️  Failed to check for existing PRs, proceeding with creation: %v", err)
+		} else if existingURL != "" {
+			log.Printf("⚠️  Skipping PR creation — open PR already exists: %s", existingURL)
+			return existingURL, false, nil
+		}
 	}
 
 	featureBranch := first.Naming.BranchName

@@ -10,7 +10,8 @@ import "fmt"
 // repoURL is a GitHub path like "owner/repo" or full URL.
 // Fetches all pages (100 tags per page).
 func FetchAllGithubTags(repoURL string) (map[string]string, error) {
-	owner, repo, _ := fetchRepositorySegments(repoURL)
+	baseRef, _ := SplitGitHubComponent(repoURL)
+	owner, repo, _ := fetchRepositorySegments(baseRef)
 	allTags := map[string]string{}
 	page := 1
 	for {

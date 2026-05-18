@@ -17,9 +17,9 @@ set -uo pipefail
 # ═══════════════════════════════════════════════════════════════════════════════
 
 PATHS=(
-    # "specs/containernetworking"
-    "specs/aks-node-controller"
-    # "specs/aks-secure-tls-bootstrap"
+    # "specs/containernetworking false"
+    # "specs/aks-node-controller true"
+    "specs/aks-secure-tls-bootstrap true"
 )
 
 rm -rf ./diff ./generated
@@ -34,16 +34,24 @@ results_file="${TMPDIR:-/tmp}/test_results_$$"
 rm -f "$results_file"
 trap 'rm -f "$results_file"' EXIT
 
-for spec_path in "${PATHS[@]}"; do
+for entry in "${PATHS[@]}"; do
+    spec_path="${entry%% *}"
+    force_flag="${entry##* }"
+
+    force_arg=""
+    if [[ "$force_flag" == "true" ]]; then
+        force_arg="-force"
+    fi
+
     echo "════════════════════════════════════════"
-    echo "  Running pipeline: go run . -path=${spec_path}"
+    echo "  Running pipeline: go run . -path=${spec_path} ${force_arg}"
     echo "════════════════════════════════════════"
     echo ""
 
     # Run the pipeline, streaming output and capturing diffWithGolden results.
     # diffWithGolden runs per component×tag right after spec generation,
     # so result/output.yml is always fresh when the comparison happens.
-    go run . -path="${spec_path}" 2>&1 | while IFS= read -r line; do
+    go run . -path="${spec_path}" ${force_arg} 2>&1 | while IFS= read -r line; do
         echo "$line"
 
         # ✅ PASS  {component} @ {tag}

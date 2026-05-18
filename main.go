@@ -7,14 +7,9 @@ import (
 	"dalec-mapping/pipeline"
 	"dalec-mapping/utils"
 	"dalec-mapping/workflow"
-	"flag"
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
-	"path/filepath"
-
-	"github.com/joho/godotenv"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -30,96 +25,23 @@ import (
 // ─── Chunk 1 · ENTRY ────────────────────────────────────────────────────────
 
 func main() {
-	inputPath, patchMode := parseFlags()
+	inputPath, patchMode := workflow.ParseFlags()
 
-	loadEnv()
+	workflow.LoadEnv()
 
 	if patchMode {
 		runPatchWorkflow()
 		return
 	}
 
-	componentStates, existingPaths := fetchOnboardStates(inputPath)
-	states := resolveTagCache(componentStates, existingPaths)
+	componentStates, existingPaths := workflow.RunFetchOnboard(inputPath)
+	states := workflow.RunResolveTagCache(componentStates, existingPaths)
 	prGroups := processOnboardStates(states)
 	log.Printf("Total PR groups to submit: %d", len(prGroups))
-	// submitPRs(prGroups)
+	submitPRs(prGroups)
 }
 
-// parseFlags registers and parses CLI flags, returning the resolved values.
-func parseFlags() (string, bool) {
-	inputPath := flag.String("path", "", "Input path to search for onboarding files (e.g. containernetworking and containernetworking/azure-cns both work). Omit to fetch all under specs/")
-	patchMode := flag.Bool("patch", false, "Run patching workflow: fetch MCR images and scan for vulnerabilities")
-	flag.Parse()
-	return *inputPath, *patchMode
-}
 
-func loadEnv() {
-	wd, _ := os.Getwd()
-	log.Printf("Working directory: %s", wd)
-
-	if err := godotenv.Load(); err != nil {
-		log.Printf("No .env file found: %v", err)
-	}
-
-	if tok := os.Getenv("GH_TOKEN"); tok == "" {
-		log.Printf("⚠️  GH_TOKEN is not set — GitHub API calls will be unauthenticated")
-	}
-}
-
-func fetchOnboardStates(inputPath string) ([]pipeline.State, map[string]bool) {
-	log.Println("═══ Step 1: Fetch Onboard Files ═══")
-	log.Println("Purpose: Fetching onboard configs and separating into component queue")
-	log.Printf("Input path: %s", inputPath)
-
-	states, existingPaths, err := workflow.FetchOnboardStates(inputPath)
-	if err != nil {
-		log.Fatalf("❌ Failed to fetch onboard data: %v", err)
-	}
-
-	if len(states) == 0 {
-		log.Fatalf("❌ Potentially No onboarding files found at path: %s", inputPath)
-	}
-
-	log.Printf("Component queue (%d components):", len(states))
-	for i, state := range states {
-		log.Printf("  [%d] %-20s repo=%s", i+1, state.Onboard.SpecImageName, state.Onboard.Repository)
-	}
-	log.Println()
-
-	return states, existingPaths
-}
-
-func resolveTagCache(componentStates []pipeline.State, existingPaths map[string]bool) []pipeline.State {
-	log.Println("═══ Step 2: Resolve Tag Cache ═══")
-	log.Println("Purpose: Building global tag-to-commit cache and resolving actionable tags per component")
-
-	states, err := workflow.ResolveTagCache(componentStates, existingPaths)
-	if err != nil {
-		log.Fatalf("❌ Failed to resolve tag cache: %v", err)
-	}
-
-	if len(states) == 0 {
-		log.Fatalf("❌ No actionable tags found for any component")
-	}
-
-	// Group tags by component for display
-	tagsByComponent := make(map[string][]string)
-	for _, state := range states {
-		name := state.Onboard.SpecImageName
-		tagsByComponent[name] = append(tagsByComponent[name], fmt.Sprintf("%s (R%d)", state.Tag.Stripped, state.Tag.Revision))
-	}
-	log.Printf("Tag cache (%d tags across %d components):", len(states), len(tagsByComponent))
-	for component, tags := range tagsByComponent {
-		log.Printf("  %s:", component)
-		for _, tag := range tags {
-			log.Printf("    %s", tag)
-		}
-	}
-	log.Println()
-
-	return states
-}
 
 // ─── Chunk 2 · ORCHESTRATION ─────────────────────────────────────────────────
 
@@ -321,73 +243,6 @@ func decideAction(isFirstOnboard, contentChanged bool) pipelineAction {
 		return actionGenerate
 	}
 	return actionBumpCommit
-}
-
-// writeGenerated writes the generated spec content to
-// ./generated/{component}/{component}-{tag}-specfile.yml so it can serve as a
-// cache of the latest run.
-func writeGenerated(component, tag string, specContent []byte) {
-	generatedDir := filepath.Join("generated", component)
-	if err := os.MkdirAll(generatedDir, 0o755); err != nil {
-		log.Printf("⚠️  Failed to create generated directory %s: %v", generatedDir, err)
-		return
-	}
-
-	fileName := fmt.Sprintf("%s-%s-specfile.yml", component, tag)
-	generatedPath := filepath.Join(generatedDir, fileName)
-	if err := os.WriteFile(generatedPath, specContent, 0o644); err != nil {
-		log.Printf("⚠️  Failed to write generated spec %s: %v", generatedPath, err)
-		return
-	}
-}
-
-// diffWithGolden compares the generated spec content against the golden file
-// at ./correct/{component}/{component}-{tag}-specfile.yml.
-// Logs PASS if identical, otherwise writes a unified diff to ./diff/.
-func diffWithGolden(component, tag string, specContent []byte) {
-	goldenPath := filepath.Join("correct", component, fmt.Sprintf("%s-%s-specfile.yml", component, tag))
-
-	goldenContent, err := os.ReadFile(goldenPath)
-	if err != nil {
-		log.Printf("⚠️  SKIP diff for %s @ %s — no golden file at %s", component, tag, goldenPath)
-		return
-	}
-
-	if string(specContent) == string(goldenContent) {
-		log.Printf("✅ PASS  %s @ %s", component, tag)
-		return
-	}
-
-	// Write actual output to a temp file for diff
-	actualPath, err := os.CreateTemp("", "spec-actual-*.yml")
-	if err != nil {
-		log.Printf("⚠️  Failed to create temp file for diff: %v", err)
-		return
-	}
-	defer os.Remove(actualPath.Name())
-
-	if _, err := actualPath.Write(specContent); err != nil {
-		actualPath.Close()
-		log.Printf("⚠️  Failed to write temp file for diff: %v", err)
-		return
-	}
-	actualPath.Close()
-
-	diffOutput, _ := exec.Command("diff", "-u", goldenPath, actualPath.Name()).Output()
-
-	if err := os.MkdirAll("diff", 0o755); err != nil {
-		log.Printf("⚠️  Failed to create diff directory: %v", err)
-		return
-	}
-
-	diffFileName := fmt.Sprintf("%s-%s.diff", component, tag)
-	diffPath := filepath.Join("diff", diffFileName)
-	if err := os.WriteFile(diffPath, diffOutput, 0o644); err != nil {
-		log.Printf("⚠️  Failed to write diff file: %v", err)
-		return
-	}
-
-	log.Printf("❌ FAIL  %s @ %s — diff written to %s", component, tag, diffPath)
 }
 
 // ─── Chunk 4 · ACTIONS ──────────────────────────────────────────────────────
