@@ -153,14 +153,14 @@ Once your PR is merged, your repository is onboarded and ready for DALEC spec ge
 
 ## Configuration Reference
 
-| Field        | Required | Description                                             |
-| ------------ | -------- | ------------------------------------------------------- |
-| `repository` | Yes      | GitHub repository URL (`https://github.com/owner/repo`) |
-| `tags`       | Yes      | List of regex patterns to match against release tags    |
-| `targets`    | Yes      | List of build targets (see below)                       |
-| `dockerfile` | Yes      | Path to the Dockerfile relative to the repo root        |
-| `makefile`   | Yes      | Path to the Makefile relative to the repo root          |
-| `reviewers`  | No       | List of GitHub usernames to request review from         |
+| Field        | Required | Description                                                                                      |
+| ------------ | -------- | ------------------------------------------------------------------------------------------------ |
+| `repository` | Yes      | GitHub or ADO repository URL. May include a component subpath (e.g. `https://github.com/owner/repo/subdir`) |
+| `tags`       | Yes      | List of regex patterns to match against release tags                                             |
+| `targets`    | Yes      | List of build targets (see below)                                                               |
+| `dockerfile` | Yes      | Path to the Dockerfile relative to the repository starting point                                |
+| `makefile`   | Yes      | Path to the Makefile relative to the repository starting point                                  |
+| `reviewers`  | No       | List of GitHub usernames to request review from                                                 |
 
 ## Available Build Targets
 

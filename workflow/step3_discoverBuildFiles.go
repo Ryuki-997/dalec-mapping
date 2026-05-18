@@ -62,6 +62,19 @@ func DiscoverBuildFiles() (bool, error) {
 		makefilePath = resolveFilePath(onboard.MakefileDir, "Makefile")
 	}
 
+	// Paths are relative to the repository starting point. When the URL
+	// contains a component suffix (e.g. owner/repo/cns), prefix the resolved
+	// paths so they are correct from the repo root.
+	componentPath := extractComponentPath(repoURL)
+	if componentPath != "" {
+		if dockerfilePath != "" {
+			dockerfilePath = path.Join(componentPath, dockerfilePath)
+		}
+		if makefilePath != "" {
+			makefilePath = path.Join(componentPath, makefilePath)
+		}
+	}
+
 	log.Printf("  Dockerfile path: %s\n", dockerfilePath)
 	log.Printf("  Makefile path:   %s\n", makefilePath)
 	log.Println()
@@ -93,7 +106,7 @@ func resolveFilePath(dirPath, fileName string) string {
 	}
 
 	baseName := path.Base(dirPath)
-	isFile := baseName == fileName || strings.Contains(baseName, ".")
+	isFile := baseName == fileName || (strings.Contains(baseName, ".") && baseName != "." && baseName != "..")
 
 	if isFile {
 		return path.Clean(dirPath)
@@ -250,4 +263,15 @@ func clearResultDirectory(resultDir string) error {
 	}
 	log.Printf("Cleared result directory: %s\n", resultDir)
 	return nil
+}
+
+// extractComponentPath returns the component subdirectory from a repository URL.
+// Returns "" when the URL has no component suffix (i.e. the project lives at root).
+func extractComponentPath(repoURL string) string {
+	if ado.IsADORepo(repoURL) {
+		_, componentPath := ado.SplitADOComponent(repoURL)
+		return componentPath
+	}
+	_, componentPath := github.SplitGitHubComponent(repoURL)
+	return componentPath
 }

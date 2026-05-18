@@ -59,8 +59,6 @@ func fetchRepoMetadata(repoURL string) error {
 			return err
 		}
 		repoInfo := pipeline.Current.RepoInfo
-		repoInfo.ComponentPath = ado.ResolveComponentPath(
-			repoURL, onboard.DockerfileDir, onboard.MakefileDir, onboard.SpecImageName)
 		repoInfo.ComponentName = onboard.SpecImageName
 
 		tagSet := pipeline.Current.Tag
@@ -72,8 +70,6 @@ func fetchRepoMetadata(repoURL string) error {
 			return err
 		}
 		repoInfo := pipeline.Current.RepoInfo
-		repoInfo.ComponentPath = github.ResolveComponentPath(
-			repoURL, onboard.DockerfileDir, onboard.MakefileDir, onboard.SpecImageName)
 		repoInfo.ComponentName = onboard.SpecImageName
 	}
 
