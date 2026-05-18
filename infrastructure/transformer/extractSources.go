@@ -22,7 +22,7 @@ package transformer
 import (
 	"dalec-mapping/domain/contents"
 	domainRepo "dalec-mapping/domain/repository"
-	"dalec-mapping/infrastructure/repository"
+	"dalec-mapping/infrastructure/ado"
 	"dalec-mapping/pipeline"
 	"fmt"
 	"log"
@@ -89,7 +89,7 @@ func extractADODomain(gitURL string) string {
 // For ADO Go repos it includes an auth block keyed by the ADO domain;
 // for all other repos it returns an empty map.
 func adoGoModAuth(repoInfo *domainRepo.RepoInfo) map[string]interface{} {
-	if repository.IsADORepo(repoInfo.GitURL) && repoInfo.Generator == domainRepo.GoModGenerator {
+	if ado.IsADORepo(repoInfo.GitURL) && repoInfo.Generator == domainRepo.GoModGenerator {
 		domain := extractADODomain(repoInfo.GitURL)
 		return map[string]interface{}{
 			"auth": map[string]interface{}{
@@ -136,7 +136,7 @@ func buildPrimarySource(sources map[string]interface{}) {
 		"url":    repoInfo.GitURL,
 		"commit": "${COMMIT}",
 	}
-	if repository.IsADORepo(repoInfo.GitURL) {
+	if ado.IsADORepo(repoInfo.GitURL) {
 		gitBlock["auth"] = map[string]interface{}{
 			"token": "GIT_AUTH_TOKEN",
 		}
@@ -166,7 +166,7 @@ func buildSubmoduleSources(sources map[string]interface{}, goModDownloads []goMo
 			"url":    info.GitURL,
 			"commit": commitRef,
 		}
-		if repository.IsADORepo(info.GitURL) {
+		if ado.IsADORepo(info.GitURL) {
 			subGitBlock["auth"] = map[string]interface{}{
 				"token": "GIT_AUTH_TOKEN",
 			}

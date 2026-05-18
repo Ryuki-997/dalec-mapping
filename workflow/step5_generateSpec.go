@@ -17,8 +17,9 @@ import (
 	"fmt"
 	"log"
 
+	"dalec-mapping/infrastructure/ado"
+	"dalec-mapping/infrastructure/github"
 	"dalec-mapping/infrastructure/parser"
-	"dalec-mapping/infrastructure/repository"
 	"dalec-mapping/infrastructure/transformer"
 	"dalec-mapping/pipeline"
 )
@@ -50,21 +51,30 @@ func GenerateSpec() ([]string, error) {
 // Stores the result in pipeline.Current.RepoInfo. Populates LatestCommit from
 // the tag cache and Version from the current TagSet.
 func fetchRepoMetadata(repoURL string) error {
+	onboard := pipeline.Current.Onboard
 	var err error
-	if repository.IsADORepo(repoURL) {
-		pipeline.Current.RepoInfo, err = repository.FetchADORepoInfo(repoURL)
+	if ado.IsADORepo(repoURL) {
+		pipeline.Current.RepoInfo, err = ado.FetchADORepoInfo(repoURL)
 		if err != nil {
 			return err
 		}
 		repoInfo := pipeline.Current.RepoInfo
+		repoInfo.ComponentPath = ado.ResolveComponentPath(
+			repoURL, onboard.DockerfileDir, onboard.MakefileDir, onboard.SpecImageName)
+		repoInfo.ComponentName = onboard.SpecImageName
+
 		tagSet := pipeline.Current.Tag
-		repoInfo.Generator = repository.DetectADOGenerator(
+		repoInfo.Generator = ado.DetectADOGenerator(
 			repoURL, repoInfo.ComponentPath, tagSet.Full)
 	} else {
-		pipeline.Current.RepoInfo, err = repository.FetchRepoInfo(repoURL)
+		pipeline.Current.RepoInfo, err = github.FetchRepoInfo(repoURL)
 		if err != nil {
 			return err
 		}
+		repoInfo := pipeline.Current.RepoInfo
+		repoInfo.ComponentPath = github.ResolveComponentPath(
+			repoURL, onboard.DockerfileDir, onboard.MakefileDir, onboard.SpecImageName)
+		repoInfo.ComponentName = onboard.SpecImageName
 	}
 
 	tagSet := pipeline.Current.Tag

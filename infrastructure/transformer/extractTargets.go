@@ -32,8 +32,8 @@ package transformer
 import (
 	"dalec-mapping/domain/contents"
 	"dalec-mapping/domain/repository"
+	"dalec-mapping/infrastructure/ado"
 	"dalec-mapping/infrastructure/parser"
-	infraRepo "dalec-mapping/infrastructure/repository"
 	"dalec-mapping/infrastructure/test"
 	"dalec-mapping/pipeline"
 	"log"
@@ -148,7 +148,7 @@ func linuxDeps(osName string, intermediateDeps []parser.IntermediateRuntimeDeps)
 	runtimeDeps := map[string]interface{}{}
 
 	// ADO repos need git at build time for source fetching.
-	if infraRepo.IsADORepo(repoInfo.GitURL) {
+	if ado.IsADORepo(repoInfo.GitURL) {
 		buildDeps["git"] = map[string]interface{}{}
 	}
 
@@ -232,7 +232,7 @@ func windowsDeps() map[string]interface{} {
 	repoInfo := pipeline.Current.RepoInfo
 
 	buildDeps := map[string]interface{}{}
-	if infraRepo.IsADORepo(repoInfo.GitURL) {
+	if ado.IsADORepo(repoInfo.GitURL) {
 		buildDeps["git"] = map[string]interface{}{}
 	}
 	if repoInfo.Generator == repository.GoModGenerator {

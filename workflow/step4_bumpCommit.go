@@ -23,7 +23,7 @@ import (
 	"os"
 	"strings"
 
-	"dalec-mapping/infrastructure/repository"
+	"dalec-mapping/infrastructure/github"
 	"dalec-mapping/infrastructure/semver"
 	"dalec-mapping/pipeline"
 	"dalec-mapping/utils"
@@ -67,7 +67,7 @@ func BumpCommit(templateTag string, templateRevision int) error {
 
 // fetchTemplateSpec fetches and decodes a previous tag's spec from the onboard repo.
 func fetchTemplateSpec(templateRemotePath string) (*yaml.Node, error) {
-	fileData, err := repository.FetchJSON(fmt.Sprintf("repos/%s/%s/contents/%s?ref=%s",
+	fileData, err := github.FetchJSON(fmt.Sprintf("repos/%s/%s/contents/%s?ref=%s",
 		utils.OnboardOwner, utils.OnboardRepo, templateRemotePath, utils.OnboardBranch))
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch template spec %s: %w", templateRemotePath, err)

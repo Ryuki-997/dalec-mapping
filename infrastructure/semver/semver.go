@@ -22,7 +22,8 @@ import (
 	"strconv"
 	"strings"
 
-	"dalec-mapping/infrastructure/repository"
+	"dalec-mapping/infrastructure/ado"
+	"dalec-mapping/infrastructure/github"
 )
 
 // semverRegex matches the first vX.Y.Z occurrence inside any tag string.
@@ -35,11 +36,11 @@ var semverRegex = regexp.MustCompile(`v(\d+)\.(\d+)\.(\d+)`)
 // Tags are fetched once per repo and the map is reused for all components
 // sharing the same repository URL.
 func FetchRepoTags(repoURL string) (map[string]string, error) {
-	if repository.IsADORepo(repoURL) {
-		return repository.FetchAllADOTags(repoURL)
+	if ado.IsADORepo(repoURL) {
+		return ado.FetchAllADOTags(repoURL)
 	}
 
-	return repository.FetchAllGithubTags(repoURL)
+	return github.FetchAllGithubTags(repoURL)
 }
 
 // MatchTagSets matches regex patterns against pre-fetched tags and determines

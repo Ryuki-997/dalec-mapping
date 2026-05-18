@@ -35,7 +35,7 @@ import (
 	"dalec-mapping/domain/naming"
 	"dalec-mapping/domain/onboarding"
 	repo "dalec-mapping/domain/repository"
-	"dalec-mapping/infrastructure/repository"
+	"dalec-mapping/infrastructure/github"
 	"dalec-mapping/utils"
 )
 
@@ -129,7 +129,7 @@ func deriveFeatureBranch(entry PREntry) string {
 // createFeatureBranch creates a new branch from the tip of OnboardBranch.
 func createFeatureBranch(branchName string) error {
 	refPath := fmt.Sprintf("repos/%s/%s/git/ref/heads/%s", utils.OnboardOwner, utils.OnboardRepo, utils.OnboardBranch)
-	ref, err := repository.FetchJSON(refPath)
+	ref, err := github.FetchJSON(refPath)
 	if err != nil {
 		return fmt.Errorf("failed to get ref for %s: %w", utils.OnboardBranch, err)
 	}
@@ -140,7 +140,7 @@ func createFeatureBranch(branchName string) error {
 	}
 
 	createPath := fmt.Sprintf("repos/%s/%s/git/refs", utils.OnboardOwner, utils.OnboardRepo)
-	_, err = repository.WriteJSON(createPath, repo.POST, map[string]interface{}{
+	_, err = github.WriteJSON(createPath, repo.POST, map[string]interface{}{
 		"ref": "refs/heads/" + branchName,
 		"sha": sha,
 	})
@@ -204,7 +204,7 @@ func commitAllFiles(branch, message string, files []fileEntry) error {
 	repoPath := fmt.Sprintf("repos/%s/%s", utils.OnboardOwner, utils.OnboardRepo)
 
 	// Get the current commit SHA of the branch.
-	refResp, err := repository.FetchJSON(fmt.Sprintf("%s/git/ref/heads/%s", repoPath, branch))
+	refResp, err := github.FetchJSON(fmt.Sprintf("%s/git/ref/heads/%s", repoPath, branch))
 	if err != nil {
 		return fmt.Errorf("failed to get branch ref: %w", err)
 	}
@@ -212,7 +212,7 @@ func commitAllFiles(branch, message string, files []fileEntry) error {
 	parentSHA, _ := refObject["sha"].(string)
 
 	// Get the base tree SHA from the parent commit.
-	commitResp, err := repository.FetchJSON(fmt.Sprintf("%s/git/commits/%s", repoPath, parentSHA))
+	commitResp, err := github.FetchJSON(fmt.Sprintf("%s/git/commits/%s", repoPath, parentSHA))
 	if err != nil {
 		return fmt.Errorf("failed to get parent commit: %w", err)
 	}
@@ -253,7 +253,7 @@ func commitAllFiles(branch, message string, files []fileEntry) error {
 
 // createBlob creates a blob in the repository and returns its SHA.
 func createBlob(repoPath string, content []byte) (string, error) {
-	resp, err := repository.WriteJSON(fmt.Sprintf("%s/git/blobs", repoPath), repo.POST, map[string]interface{}{
+	resp, err := github.WriteJSON(fmt.Sprintf("%s/git/blobs", repoPath), repo.POST, map[string]interface{}{
 		"content":  base64.StdEncoding.EncodeToString(content),
 		"encoding": "base64",
 	})
@@ -266,7 +266,7 @@ func createBlob(repoPath string, content []byte) (string, error) {
 
 // createTree creates a new tree with the given entries on top of a base tree.
 func createTree(repoPath, baseTreeSHA string, entries []map[string]interface{}) (string, error) {
-	resp, err := repository.WriteJSON(fmt.Sprintf("%s/git/trees", repoPath), repo.POST, map[string]interface{}{
+	resp, err := github.WriteJSON(fmt.Sprintf("%s/git/trees", repoPath), repo.POST, map[string]interface{}{
 		"base_tree": baseTreeSHA,
 		"tree":      entries,
 	})
@@ -279,7 +279,7 @@ func createTree(repoPath, baseTreeSHA string, entries []map[string]interface{}) 
 
 // createCommit creates a commit with the given tree and parent.
 func createCommit(repoPath, message, treeSHA, parentSHA string) (string, error) {
-	resp, err := repository.WriteJSON(fmt.Sprintf("%s/git/commits", repoPath), repo.POST, map[string]interface{}{
+	resp, err := github.WriteJSON(fmt.Sprintf("%s/git/commits", repoPath), repo.POST, map[string]interface{}{
 		"message": message,
 		"tree":    treeSHA,
 		"parents": []string{parentSHA},
@@ -297,7 +297,7 @@ func createCommit(repoPath, message, treeSHA, parentSHA string) (string, error) 
 
 // updateBranchRef fast-forwards the branch to point at the given commit SHA.
 func updateBranchRef(repoPath, branch, commitSHA string) error {
-	_, err := repository.WriteJSON(
+	_, err := github.WriteJSON(
 		fmt.Sprintf("%s/git/refs/heads/%s", repoPath, branch),
 		repo.PATCH,
 		map[string]interface{}{"sha": commitSHA},
@@ -327,7 +327,7 @@ func buildPRDescription(entry PREntry, componentNames []string) (title, body str
 func createPullRequest(title, body, head string) (string, int, error) {
 	prPath := fmt.Sprintf("repos/%s/%s/pulls", utils.OnboardOwner, utils.OnboardRepo)
 
-	result, err := repository.WriteJSON(prPath, repo.POST, map[string]interface{}{
+	result, err := github.WriteJSON(prPath, repo.POST, map[string]interface{}{
 		"title": title,
 		"body":  body,
 		"head":  head,
@@ -342,7 +342,7 @@ func createPullRequest(title, body, head string) (string, int, error) {
 	prNumber := int(prNumberFloat)
 
 	labelPath := fmt.Sprintf("repos/%s/%s/issues/%d/labels", utils.OnboardOwner, utils.OnboardRepo, prNumber)
-	_, err = repository.WriteJSON(labelPath, repo.POST, map[string]interface{}{
+	_, err = github.WriteJSON(labelPath, repo.POST, map[string]interface{}{
 		"labels": []string{"specfile"},
 	})
 	if err != nil {
@@ -372,7 +372,7 @@ func collectReviewers(components []ComponentSpec) []string {
 func addReviewers(prNumber int, reviewers []string) error {
 	reviewPath := fmt.Sprintf("repos/%s/%s/pulls/%d/requested_reviewers", utils.OnboardOwner, utils.OnboardRepo, prNumber)
 
-	_, err := repository.WriteJSON(reviewPath, repo.POST, map[string]interface{}{
+	_, err := github.WriteJSON(reviewPath, repo.POST, map[string]interface{}{
 		"reviewers": reviewers,
 	})
 	return err
@@ -384,7 +384,7 @@ func addReviewers(prNumber int, reviewers []string) error {
 func findExistingPR(displayName, versionRevision string) (string, error) {
 	issuesPath := fmt.Sprintf("repos/%s/%s/issues?state=open&labels=specfile&per_page=100",
 		utils.OnboardOwner, utils.OnboardRepo)
-	issues, err := repository.FetchJSONArray(issuesPath)
+	issues, err := github.FetchJSONArray(issuesPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to list open specfile PRs: %w", err)
 	}
@@ -407,7 +407,7 @@ func findExistingPR(displayName, versionRevision string) (string, error) {
 // deleteRemoteBranch deletes a branch from the onboard repo via the GitHub API.
 func deleteRemoteBranch(branchName string) error {
 	refPath := fmt.Sprintf("repos/%s/%s/git/refs/heads/%s", utils.OnboardOwner, utils.OnboardRepo, branchName)
-	_, err := repository.WriteJSON(refPath, repo.DELETE, nil)
+	_, err := github.WriteJSON(refPath, repo.DELETE, nil)
 	if err != nil {
 		return fmt.Errorf("failed to delete remote branch %s: %w", branchName, err)
 	}

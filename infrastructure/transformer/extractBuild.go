@@ -28,7 +28,7 @@ package transformer
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import (
-	"dalec-mapping/infrastructure/repository"
+	"dalec-mapping/infrastructure/ado"
 	"dalec-mapping/pipeline"
 	"fmt"
 	"strings"
@@ -90,7 +90,7 @@ func buildEnv() map[string]interface{} {
 	}
 
 	repoInfo := pipeline.Current.RepoInfo
-	if repository.IsADORepo(repoInfo.GitURL) && repoInfo.Generator == domainRepo.GoModGenerator {
+	if ado.IsADORepo(repoInfo.GitURL) && repoInfo.Generator == domainRepo.GoModGenerator {
 		domain := extractADODomain(repoInfo.GitURL)
 		env["GONOSUMCHECK"] = domain + "/*"
 		env["GONOSUMDB"] = domain + "/*"
@@ -183,10 +183,14 @@ func fallbackBuildStep(cdTarget, buildTarget string) ([]map[string]interface{}, 
 }
 
 // resolveFallbackBinaryName returns the binary name for a synthetic fallback build.
-// Uses the first parsed binary name when available, then Makefile binaries, otherwise the repo name.
+// Uses the first parsed binary name when available, then Makefile binaries,
+// then the component name (if set), otherwise the repo name.
 func resolveFallbackBinaryName() string {
 	repoInfo := pipeline.Current.RepoInfo
 	binaryName := repoInfo.Repo
+	if repoInfo.ComponentName != "" {
+		binaryName = repoInfo.ComponentName
+	}
 	if pipeline.Current.Spec != nil && len(pipeline.Current.Spec.Binaries) > 0 && pipeline.Current.Spec.Binaries[0].Name != "" {
 		binaryName = pipeline.Current.Spec.Binaries[0].Name
 	} else if len(pipeline.Current.Makefile.GoBuildCommands) > 0 && pipeline.Current.Makefile.GoBuildCommands[0].Name != "" {

@@ -26,7 +26,8 @@ import (
 	"strings"
 
 	"dalec-mapping/domain/onboarding"
-	"dalec-mapping/infrastructure/repository"
+	"dalec-mapping/infrastructure/ado"
+	"dalec-mapping/infrastructure/github"
 	"dalec-mapping/pipeline"
 	"dalec-mapping/utils"
 )
@@ -52,20 +53,13 @@ func DiscoverBuildFiles() (bool, error) {
 
 	loadCachedBuildFiles(onboard)
 
-	var componentPath string
-	if repository.IsADORepo(repoURL) {
-		_, componentPath = repository.SplitADOComponent(repoURL)
-	} else {
-		_, componentPath = repository.SplitGitHubComponent(repoURL)
-	}
-
 	dockerfilePath := ""
 	if onboard.DockerfileDir != "" {
-		dockerfilePath = resolveFilePath(componentPath, onboard.DockerfileDir, "Dockerfile")
+		dockerfilePath = resolveFilePath(onboard.DockerfileDir, "Dockerfile")
 	}
 	makefilePath := ""
 	if onboard.MakefileDir != "" {
-		makefilePath = resolveFilePath(componentPath, onboard.MakefileDir, "Makefile")
+		makefilePath = resolveFilePath(onboard.MakefileDir, "Makefile")
 	}
 
 	log.Printf("  Dockerfile path: %s\n", dockerfilePath)
@@ -88,13 +82,12 @@ func DiscoverBuildFiles() (bool, error) {
 	return contentChanged, nil
 }
 
-// resolveFilePath resolves a partner-provided path relative to a component
-// directory. The path may be either a directory (e.g. ".", "cns") or an
-// explicit file (e.g. "./docker/Dockerfile"). When the path looks like a
-// file (its base name matches fileName or contains a dot extension), it is
-// returned directly. Otherwise it is treated as a directory and fileName is
-// appended.
-func resolveFilePath(componentPath, dirPath, fileName string) string {
+// resolveFilePath resolves a partner-provided path to a full file path.
+// The path may be either a directory (e.g. ".", "cns") or an explicit file
+// (e.g. "./docker/Dockerfile"). When the path looks like a file (its base
+// name matches fileName or contains a dot extension), it is returned directly.
+// Otherwise it is treated as a directory and fileName is appended.
+func resolveFilePath(dirPath, fileName string) string {
 	if dirPath == "" {
 		return ""
 	}
@@ -103,20 +96,12 @@ func resolveFilePath(componentPath, dirPath, fileName string) string {
 	isFile := baseName == fileName || strings.Contains(baseName, ".")
 
 	if isFile {
-		if componentPath != "" {
-			return path.Clean(componentPath + "/" + dirPath)
-		}
 		return path.Clean(dirPath)
 	}
 
 	dir := dirPath
 	if dir == "." {
 		dir = ""
-	}
-	if componentPath != "" && dir != "" {
-		dir = componentPath + "/" + dir
-	} else if componentPath != "" {
-		dir = componentPath
 	}
 	if dir == "" {
 		return fileName
@@ -132,13 +117,13 @@ func loadCachedBuildFiles(component *onboarding.ComponentConfig) {
 		utils.OnboardOwner, utils.OnboardRepo, utils.OnboardBranch)
 
 	dockerfilePath := component.OnboardDir + "/Dockerfile"
-	dockerfileContent, err := repository.FetchRawContent(rawBaseURL + "/" + dockerfilePath)
+	dockerfileContent, err := github.FetchRawContent(rawBaseURL + "/" + dockerfilePath)
 	if err == nil {
 		component.DockerfileContent = dockerfileContent
 	}
 
 	makefilePath := component.OnboardDir + "/Makefile"
-	makefileContent, err := repository.FetchRawContent(rawBaseURL + "/" + makefilePath)
+	makefileContent, err := github.FetchRawContent(rawBaseURL + "/" + makefilePath)
 	if err == nil {
 		component.MakefileContent = makefileContent
 	}
@@ -154,7 +139,7 @@ func loadCachedBuildFiles(component *onboarding.ComponentConfig) {
 
 // fetchBuildFiles dispatches to the ADO or GitHub fetcher based on the repo URL.
 func fetchBuildFiles(repoURL, dockerfilePath, makefilePath, tag string) ([]byte, []byte, error) {
-	if repository.IsADORepo(repoURL) {
+	if ado.IsADORepo(repoURL) {
 		return fetchBuildFilesFromADO(repoURL, dockerfilePath, makefilePath, tag)
 	}
 	return fetchBuildFilesFromGitHub(repoURL, dockerfilePath, makefilePath, tag)
@@ -162,14 +147,14 @@ func fetchBuildFiles(repoURL, dockerfilePath, makefilePath, tag string) ([]byte,
 
 // fetchBuildFilesFromADO fetches Dockerfile and Makefile from an ADO repository.
 func fetchBuildFilesFromADO(repoURL, dockerfilePath, makefilePath, tag string) ([]byte, []byte, error) {
-	if _, err := repository.FetchADORepoInfo(repoURL); err != nil {
+	if _, err := ado.FetchADORepoInfo(repoURL); err != nil {
 		return nil, nil, fmt.Errorf("failed to fetch repository info: %w", err)
 	}
 
 	var dockerfileContent, makefileContent []byte
 
 	if dockerfilePath != "" {
-		content, err := repository.FetchADOFileContent(repoURL, dockerfilePath, tag)
+		content, err := ado.FetchADOFileContent(repoURL, dockerfilePath, tag)
 		if err != nil {
 			log.Printf("⚠️  Warning: failed to fetch Dockerfile: %v\n", err)
 		} else {
@@ -178,7 +163,7 @@ func fetchBuildFilesFromADO(repoURL, dockerfilePath, makefilePath, tag string) (
 	}
 
 	if makefilePath != "" {
-		content, err := repository.FetchADOFileContent(repoURL, makefilePath, tag)
+		content, err := ado.FetchADOFileContent(repoURL, makefilePath, tag)
 		if err != nil {
 			log.Printf("⚠️  Warning: failed to fetch Makefile: %v\n", err)
 		} else {
@@ -191,7 +176,7 @@ func fetchBuildFilesFromADO(repoURL, dockerfilePath, makefilePath, tag string) (
 
 // fetchBuildFilesFromGitHub fetches Dockerfile and Makefile from a GitHub repository.
 func fetchBuildFilesFromGitHub(repoURL, dockerfilePath, makefilePath, tag string) ([]byte, []byte, error) {
-	repoInfo, err := repository.FetchRepoInfo(repoURL)
+	repoInfo, err := github.FetchRepoInfo(repoURL)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to fetch repository info: %w", err)
 	}
@@ -206,7 +191,7 @@ func fetchBuildFilesFromGitHub(repoURL, dockerfilePath, makefilePath, tag string
 
 	if dockerfilePath != "" {
 		dockerfileURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s", rawPath, dockerfilePath)
-		content, err := repository.FetchRawContent(dockerfileURL)
+		content, err := github.FetchRawContent(dockerfileURL)
 		if err != nil {
 			log.Printf("⚠️  Warning: failed to fetch Dockerfile from %s: %v\n", dockerfileURL, err)
 		} else {
@@ -216,7 +201,7 @@ func fetchBuildFilesFromGitHub(repoURL, dockerfilePath, makefilePath, tag string
 
 	if makefilePath != "" {
 		makefileURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s", rawPath, makefilePath)
-		content, err := repository.FetchRawContent(makefileURL)
+		content, err := github.FetchRawContent(makefileURL)
 		if err != nil {
 			log.Printf("⚠️  Warning: failed to fetch Makefile from %s: %v\n", makefileURL, err)
 		} else {

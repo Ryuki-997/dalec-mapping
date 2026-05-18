@@ -22,7 +22,7 @@ import (
 	"strings"
 
 	"dalec-mapping/domain/onboarding"
-	"dalec-mapping/infrastructure/repository"
+	"dalec-mapping/infrastructure/github"
 	"dalec-mapping/pipeline"
 	"dalec-mapping/utils"
 
@@ -53,7 +53,7 @@ func FetchOnboardStates(inputPath string) ([]pipeline.State, map[string]bool, er
 // fetchSpecRepoTree fetches the full recursive tree from the spec repo and
 // returns the raw tree entries plus a path-lookup set.
 func fetchSpecRepoTree() ([]interface{}, map[string]bool, error) {
-	data, err := repository.FetchJSON(fmt.Sprintf(
+	data, err := github.FetchJSON(fmt.Sprintf(
 		"repos/%s/%s/git/trees/%s?recursive=1",
 		utils.OnboardOwner, utils.OnboardRepo, utils.OnboardBranch,
 	))
@@ -157,7 +157,7 @@ func splitOnboardPath(onboardPath string) (onboardDir, specRepository string, er
 func fetchOnboardFile(onboardPath, onboardDir, specRepository string) ([]onboarding.ComponentConfig, error) {
 	onboardFileURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s",
 		utils.OnboardOwner, utils.OnboardRepo, utils.OnboardBranch, onboardPath)
-	rawContent, err := repository.FetchRawContent(onboardFileURL)
+	rawContent, err := github.FetchRawContent(onboardFileURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch onboard file %s: %w", onboardPath, err)
 	}
