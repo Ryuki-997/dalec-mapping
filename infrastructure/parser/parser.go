@@ -10,7 +10,11 @@ import (
 
 func ParseOptionalFileInfo(dockerfile, makefile []byte) {
 	ParseDockerfile(dockerfile, &pipeline.Current.Dockerfile)
-	ParseMakefile(makefile, &pipeline.Current.Makefile)
+	imageName := ""
+	if pipeline.Current.Onboard != nil {
+		imageName = pipeline.Current.Onboard.SpecImageName
+	}
+	ParseMakefile(makefile, &pipeline.Current.Makefile, imageName)
 }
 
 func WriteOutput(dalecSpec DalecSpec) error {

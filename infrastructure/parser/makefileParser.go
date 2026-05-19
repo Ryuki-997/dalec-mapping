@@ -16,6 +16,9 @@ var makefileGoBuildRe = regexp.MustCompile(`go\s+build\s+.+?\s+((?:\./)?[a-zA-Z]
 // makefileVarRe matches Makefile variable references: $(VAR) or ${VAR}.
 var makefileVarRe = regexp.MustCompile(`\$\(([A-Za-z_][A-Za-z0-9_]*)\)`)
 
+// makefileTargetRe matches Makefile target lines (e.g. "build-azure-cns:" or "test-aks-node-controller:").
+var makefileTargetRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_.%-]*`)
+
 // shellBuiltins lists shell commands that can trail a go build in compound
 // lines (e.g. "go build ./cmd/foo && popd") and must not be treated as targets.
 var shellBuiltins = map[string]bool{
@@ -23,13 +26,26 @@ var shellBuiltins = map[string]bool{
 	"echo": true, "return": true, "break": true, "continue": true,
 }
 
-func ParseMakefile(makefile []byte, info *contents.MakefileInfo) (*contents.MakefileInfo, error) {
+// ParseMakefile extracts variables and go build commands from a Makefile.
+// When imageName is non-empty, only go build commands under targets whose name
+// contains imageName are extracted (e.g. imageName="azure-cns" matches target "test-azure-cns").
+// When imageName is empty, all go build commands are extracted (backward compat).
+func ParseMakefile(makefile []byte, info *contents.MakefileInfo, imageName string) (*contents.MakefileInfo, error) {
 	scanner := bufio.NewScanner(strings.NewReader(string(makefile)))
+	currentTarget := ""
 
 	for scanner.Scan() {
 		rawLine := scanner.Text()
 		line := strings.TrimSpace(rawLine)
 		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// Detect Makefile target lines (non-indented, contains ":" but not "=").
+		if !strings.HasPrefix(rawLine, "\t") && strings.Contains(line, ":") && !strings.Contains(line, "=") {
+			if m := makefileTargetRe.FindString(line); m != "" {
+				currentTarget = m
+			}
 			continue
 		}
 
@@ -40,6 +56,10 @@ func ParseMakefile(makefile []byte, info *contents.MakefileInfo) (*contents.Make
 
 		// Extract go build package targets from recipe lines.
 		if strings.HasPrefix(rawLine, "\t") && strings.Contains(line, "go build") {
+			// When imageName is set, only extract from targets whose name contains it.
+			if imageName != "" && !strings.Contains(currentTarget, imageName) {
+				continue
+			}
 			// Isolate the go build command from compound shell lines
 			// (e.g. "pushd dir && go build ./cmd/foo && popd").
 			goBuildSegment := line
