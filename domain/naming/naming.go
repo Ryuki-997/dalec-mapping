@@ -21,14 +21,12 @@ type Naming struct {
 	PRTitle         string // e.g. "[Dalec][20260505-72c644] aks-node-controller @ 0.0.1-1"
 }
 
-// Resolve computes all naming outputs from one or more component states sharing
-// the same PR. Pass a single state for standalone components, or multiple states
-// for grouped components. All states share the same DisplayName, BranchName,
-// and PRTitle; SpecFilePath is derived per component individually.
-func Resolve(states []onboarding.ComponentState, prID string) Naming {
-	first := states[0]
-	onboard := first.Onboard
-	tagSet := first.Tag
+// Resolve computes naming outputs from a single component state.
+// BranchName and PRTitle are left empty — call WithPRID to fill them
+// once the per-group prID is known.
+func Resolve(state onboarding.ComponentState) Naming {
+	onboard := state.Onboard
+	tagSet := state.Tag
 
 	version := strings.TrimPrefix(tagSet.Version, "v")
 	versionRevision := fmt.Sprintf("%s-%d", version, tagSet.Revision)
@@ -40,17 +38,21 @@ func Resolve(states []onboarding.ComponentState, prID string) Naming {
 
 	folderPath := deriveFolderPath(onboard)
 	specFilePath := fmt.Sprintf("%s/%s-%s-specfile.yml", onboard.SpecDir(), onboard.SpecImageName, versionRevision)
-	branchName := fmt.Sprintf("dalec/%s/%s/%s", folderPath, versionRevision, prID)
-	prTitle := fmt.Sprintf("[Dalec][%s] %s @ %s", prID, displayName, versionRevision)
 
 	return Naming{
 		DisplayName:     displayName,
 		VersionRevision: versionRevision,
 		FolderPath:      folderPath,
 		SpecFilePath:    specFilePath,
-		BranchName:      branchName,
-		PRTitle:         prTitle,
 	}
+}
+
+// WithPRID returns a copy of the Naming with BranchName and PRTitle populated
+// from the given prID.
+func (n Naming) WithPRID(prID string) Naming {
+	n.BranchName = fmt.Sprintf("dalec/%s/%s/%s", n.FolderPath, n.VersionRevision, prID)
+	n.PRTitle = fmt.Sprintf("[Dalec][%s] %s @ %s", prID, n.DisplayName, n.VersionRevision)
+	return n
 }
 
 // deriveFolderPath computes the branch folder path from OnboardDir by stripping

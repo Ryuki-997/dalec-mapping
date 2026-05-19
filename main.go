@@ -36,7 +36,7 @@ func main() {
 
 	componentStates, existingPaths := workflow.RunFetchOnboard(inputPath)
 	states := workflow.RunResolveTagCache(componentStates, existingPaths)
-	prGroups := processOnboardStates(states)
+	prGroups := processOnboardStates(states, existingPaths)
 	log.Printf("Total PR groups to submit: %d", len(prGroups))
 	submitPRs(prGroups)
 }
@@ -49,7 +49,7 @@ func main() {
 // for each and collecting PR entries keyed by group name.
 // A unique prID is generated per group key so each component+version+revision
 // combination gets its own identifier.
-func processOnboardStates(states []pipeline.State) map[string]*workflow.PREntry {
+func processOnboardStates(states []pipeline.State, existingPaths map[string]bool) map[string]*workflow.PREntry {
 	prGroups := make(map[string]*workflow.PREntry)
 	groupPRIDs := make(map[string]string)
 	var actionLog []utils.ActionEntry
@@ -57,7 +57,7 @@ func processOnboardStates(states []pipeline.State) map[string]*workflow.PREntry 
 	for _, state := range states {
 		onboard := state.Onboard
 
-		comp := processTag(state)
+		comp := processTag(state, existingPaths)
 		if comp == nil {
 			actionLog = append(actionLog, utils.ActionEntry{
 				Component: onboard.SpecImageName,
@@ -116,7 +116,7 @@ func resolveGroupNaming(prGroups map[string]*workflow.PREntry, groupPRIDs map[st
 				Onboard: comp.Onboard,
 				Tag:     onboarding.NewTagSet("", "", comp.Tag, comp.Revision),
 			}
-			comp.Naming = naming.Resolve([]onboarding.ComponentState{componentState}, prID)
+			comp.Naming = naming.Resolve(componentState).WithPRID(prID)
 		}
 	}
 }
@@ -177,7 +177,7 @@ func submitPRs(prGroups map[string]*workflow.PREntry) {
 // ComponentSpec queued for PR creation, or nil if skipped.
 // Naming is left unset — resolved later in processOnboardStates once
 // each PR group has its own unique prID.
-func processTag(state pipeline.State) *workflow.ComponentSpec {
+func processTag(state pipeline.State, existingPaths map[string]bool) *workflow.ComponentSpec {
 	onboard := state.Onboard
 	tagSet := state.Tag
 
@@ -187,8 +187,43 @@ func processTag(state pipeline.State) *workflow.ComponentSpec {
 
 	utils.PrintComponentBanner(onboard.SpecImageName, tagSet.Stripped)
 
+	if comp, handled := checkRevisionBump(onboard, tagSet, existingPaths); handled {
+		return comp
+	}
+
+	action := resolveAction(onboard, tagSet)
+	return dispatchAction(action, onboard, tagSet)
+}
+
+// checkRevisionBump detects whether this tag needs a revision bump or can be
+// skipped entirely. Returns (comp, true) if the tag was handled, (nil, false)
+// if the caller should continue to action resolution.
+func checkRevisionBump(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet, existingPaths map[string]bool) (*workflow.ComponentSpec, bool) {
+	needsRevisionBump, err := workflow.DetectRevisionBump(existingPaths)
+	if err != nil {
+		log.Fatalf("❌ DetectRevisionBump failed: %v", err)
+	}
+	if needsRevisionBump {
+		return bumpRevision(onboard, tagSet), true
+	}
+
+	// DetectRevisionBump returns false when: (a) spec doesn't exist yet, or
+	// (b) spec exists with matching commit. Check existingPaths to distinguish.
+	componentState := onboarding.ComponentState{Onboard: onboard, Tag: tagSet}
+	resolved := naming.Resolve(componentState)
+	if existingPaths[resolved.SpecFilePath] {
+		log.Printf("Skipping %s @ %s — spec already up to date\n", onboard.SpecImageName, tagSet.Stripped)
+		return nil, true
+	}
+
+	return nil, false
+}
+
+// resolveAction discovers build files and determines which pipeline action to take.
+func resolveAction(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet) pipelineAction {
 	log.Printf("─── [%s @ %s] Step 3: Discover Build Files ───", onboard.SpecImageName, tagSet.Stripped)
 	log.Println("Purpose: Checking Dockerfile/Makefile changes vs. existing siblings")
+
 	contentChanged, err := workflow.DiscoverBuildFiles()
 	if err != nil {
 		log.Fatalf("❌ DiscoverBuildFiles failed: %v", err)
@@ -211,6 +246,11 @@ func processTag(state pipeline.State) *workflow.ComponentSpec {
 	log.Printf("Result: contentChanged=%v, firstOnboard=%v -> action=%s", contentChanged, isFirstOnboard, actionLabel)
 	log.Println()
 
+	return action
+}
+
+// dispatchAction executes the resolved pipeline action and returns the result.
+func dispatchAction(action pipelineAction, onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet) *workflow.ComponentSpec {
 	switch action {
 	case actionBumpCommit:
 		return bumpCommit(onboard, tagSet)
@@ -222,15 +262,15 @@ func processTag(state pipeline.State) *workflow.ComponentSpec {
 		}
 		return comp
 	}
-
 	return nil
 }
 
 type pipelineAction int
 
 const (
-	actionBumpCommit pipelineAction = iota // Copy template spec with new commit hash
-	actionGenerate                         // Generate spec → test → PR
+	actionBumpCommit   pipelineAction = iota // Copy template spec with new commit hash + version
+	actionBumpRevision                       // Same version, new commit → increment revision
+	actionGenerate                           // Generate spec → test → PR
 )
 
 // decideAction maps the decision matrix to a pipeline action.
@@ -251,54 +291,50 @@ func bumpCommit(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet) *
 	log.Printf("─── [%s @ %s] Step 4: Bump Commit ───", onboard.SpecImageName, tagSet.Stripped)
 	log.Println("Purpose: Copying template spec with updated commit hash (no content change)")
 
-	templateRevision := tagSet.Revision - 1
+	if err := workflow.BumpCommit(); err != nil {
+		log.Fatalf("❌ Commit bump failed: %v", err)
+	}
 
-	if err := workflow.BumpCommit(tagSet.Full, templateRevision); err != nil {
+	return readSpecResult(onboard, tagSet, true)
+}
+
+func bumpRevision(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet) *workflow.ComponentSpec {
+	log.Printf("─── [%s @ %s] Step 4b: Bump Revision ───", onboard.SpecImageName, tagSet.Stripped)
+	log.Println("Purpose: Same version tag re-pushed with new commit — incrementing revision")
+
+	if err := workflow.BumpRevision(); err != nil {
 		log.Fatalf("❌ Revision bump failed: %v", err)
 	}
 
-	specContent, err := os.ReadFile(utils.SpecPath)
-	if err != nil {
-		log.Fatalf("❌ Failed to read bumped spec for %s @ %s: %v", onboard.SpecImageName, tagSet.Stripped, err)
-	}
-
-	log.Printf("✅ Bump commit complete: %s @ %s-%d", onboard.SpecImageName, tagSet.Version, tagSet.Revision)
-	return &workflow.ComponentSpec{
-		Onboard:     onboard,
-		Tag:         tagSet.Stripped,
-		Revision:    tagSet.Revision,
-		SpecContent: specContent,
-		SpecOnly:    true,
-	}
+	return readSpecResult(onboard, tagSet, true)
 }
 
 func generateWork(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet) (*workflow.ComponentSpec, error) {
 	log.Printf("─── [%s @ %s] Step 5: Generate Spec ───", onboard.SpecImageName, tagSet.Stripped)
 	log.Println("Purpose: Parsing Dockerfile/Makefile and generating full dalec spec from scratch")
 
-	_, err := workflow.GenerateSpec()
-	if err != nil {
+	if _, err := workflow.GenerateSpec(); err != nil {
 		return nil, err
 	}
 
-	// // Test the generated spec by building and running the container image.
-	// if err := workflow.TestImage(utils.SpecPath, onboard.SpecImageName, tagSet.Stripped, resolvedTargets); err != nil {
-	// 	return nil, fmt.Errorf("image test failed for %s @ %s: %w", onboard.SpecImageName, tagSet.Stripped, err)
-	// }
+	return readSpecResult(onboard, tagSet, false), nil
+}
 
+// readSpecResult reads the written spec file and packages it into a ComponentSpec.
+func readSpecResult(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet, specOnly bool) *workflow.ComponentSpec {
 	specContent, err := os.ReadFile(utils.SpecPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read generated spec: %w", err)
+		log.Fatalf("❌ Failed to read spec for %s @ %s: %v", onboard.SpecImageName, tagSet.Stripped, err)
 	}
 
-	log.Printf("✅ Spec generated: %s @ %s-%d", onboard.SpecImageName, tagSet.Version, tagSet.Revision)
+	log.Printf("✅ Spec written: %s @ %s-%d", onboard.SpecImageName, tagSet.Version, tagSet.Revision)
 	return &workflow.ComponentSpec{
 		Onboard:     onboard,
 		Tag:         tagSet.Stripped,
 		Revision:    tagSet.Revision,
 		SpecContent: specContent,
-		SpecOnly:    false,
-	}, nil
+		SpecOnly:    specOnly,
+	}
 }
 
 // ─── Chunk 5 · PATCHING ─────────────────────────────────────────────────────
