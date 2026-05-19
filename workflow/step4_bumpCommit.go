@@ -17,6 +17,7 @@
 package workflow
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"log"
@@ -117,14 +118,17 @@ func updateSpecArgs(specNode *yaml.Node, tag, newCommit string) error {
 
 // writeSpecFile marshals the YAML node and writes it to the local spec path.
 func writeSpecFile(specNode *yaml.Node) error {
-	out, err := yaml.Marshal(specNode)
-	if err != nil {
+	var buf bytes.Buffer
+	encoder := yaml.NewEncoder(&buf)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(specNode); err != nil {
 		return fmt.Errorf("failed to marshal updated spec: %w", err)
 	}
+	encoder.Close()
 	if err := os.MkdirAll(utils.ResultDir, 0755); err != nil {
 		return fmt.Errorf("failed to create result directory: %w", err)
 	}
-	if err := os.WriteFile(utils.SpecPath, out, 0644); err != nil {
+	if err := os.WriteFile(utils.SpecPath, buf.Bytes(), 0644); err != nil {
 		return fmt.Errorf("failed to write updated spec: %w", err)
 	}
 	return nil

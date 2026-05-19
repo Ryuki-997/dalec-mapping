@@ -68,12 +68,15 @@ func (w *DalecSpecWriter) WriteYAML(spec DalecSpec, outputPath string) (string, 
 		rootNode.Content = append(rootNode.Content, keyNode, &valueNode)
 	}
 
-	out, err := yaml.Marshal(rootNode)
-	if err != nil {
+	var yamlBuf bytes.Buffer
+	encoder := yaml.NewEncoder(&yamlBuf)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(rootNode); err != nil {
 		return "", fmt.Errorf("failed to marshal YAML: %w", err)
 	}
+	encoder.Close()
 
-	buf.Write(out)
+	buf.Write(yamlBuf.Bytes())
 	result := buf.String()
 
 	result = strings.TrimPrefix(result, "---\n")
