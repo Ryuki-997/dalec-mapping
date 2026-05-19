@@ -73,10 +73,25 @@ func ParseMakefile(makefile []byte, info *contents.MakefileInfo) (*contents.Make
 			// Only include commands with -o flag (actual binary builds, not compile checks like ./...).
 			normalizedSegment := convertMakefileVarsToShell(goBuildSegment)
 			resolvedSegment := resolveMakefileVars(normalizedSegment, info.Variables)
+			resolvedSegment = convertMakefileVarsToShell(resolvedSegment)
 			binary := parserutils.ParseGoBuildCommand(resolvedSegment)
 			if binary.Name != "" && binary.OutputPath != "" {
+				originalOutputPath := binary.OutputPath
 				binary.OutputPath = normalizeBinaryOutputPath(binary.OutputPath, binary.Name)
-				info.GoBuildCommands = append(info.GoBuildCommands, binary)
+				if binary.BuildCommand != "" && originalOutputPath != binary.OutputPath {
+					binary.BuildCommand = strings.Replace(binary.BuildCommand, originalOutputPath, binary.OutputPath, 1)
+				}
+				replaced := false
+				for i, existing := range info.GoBuildCommands {
+					if existing.Name == binary.Name {
+						info.GoBuildCommands[i] = binary
+						replaced = true
+						break
+					}
+				}
+				if !replaced {
+					info.GoBuildCommands = append(info.GoBuildCommands, binary)
+				}
 			}
 		}
 	}

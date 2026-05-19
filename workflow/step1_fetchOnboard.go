@@ -17,6 +17,7 @@
 package workflow
 
 import (
+	"encoding/base64"
 	"fmt"
 	"log"
 	"strings"
@@ -155,12 +156,23 @@ func splitOnboardPath(onboardPath string) (onboardDir, specRepository string, er
 // fetchOnboardFile fetches a partner-level onboard.yml, unmarshals it into
 // an OnboardFile, and flattens all components into a slice of ComponentConfig.
 func fetchOnboardFile(onboardPath, onboardDir, specRepository string) ([]onboarding.ComponentConfig, error) {
-	onboardFileURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s",
-		utils.OnboardOwner, utils.OnboardRepo, utils.OnboardBranch, onboardPath)
-	rawContent, err := github.FetchRawContent(onboardFileURL)
+	contentsPath := fmt.Sprintf("repos/%s/%s/contents/%s?ref=%s",
+		utils.OnboardOwner, utils.OnboardRepo, onboardPath, utils.OnboardBranch)
+	data, err := github.FetchJSON(contentsPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch onboard file %s: %w", onboardPath, err)
 	}
+
+	encodedContent, ok := data["content"].(string)
+	if !ok {
+		return nil, fmt.Errorf("no content field in response for %s", onboardPath)
+	}
+
+	rawContent, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(encodedContent, "\n", ""))
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode base64 content for %s: %w", onboardPath, err)
+	}
+
 	if len(rawContent) == 0 {
 		return nil, fmt.Errorf("skipping empty onboard file: %s", onboardPath)
 	}

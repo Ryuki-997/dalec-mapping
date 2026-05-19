@@ -2,7 +2,7 @@
 
 ## 1. Problem Statement
 
-**Context:** Upstream DALEC works with open-source CNCF projects. Our primary concern is different — we need **all AKS-managed images to be FIPS compliant**.
+**Context:** Upstream DALEC works with open-source CNCF projects. Our primary concern is different — we need to cover for **AKS-managed images to be FIPS compliant**.
 
 **What partners deal with today:**
 

@@ -49,6 +49,9 @@ var bareVarRe = regexp.MustCompile(`\$([A-Z_][A-Z0-9_]*)`)
 // varRefRe matches ${VAR} or $(VAR) references for scanning referenced args.
 var varRefRe = regexp.MustCompile(`\$[{(]([A-Za-z_][A-Za-z0-9_]*)[})]`)
 
+// parenVarRe matches $(VAR) Makefile-style variable references for conversion to ${VAR}.
+var parenVarRe = regexp.MustCompile(`\$\(([A-Za-z_][A-Za-z0-9_]*)\)`)
+
 // validVarRefRe matches all ${...} variable references (for brace-stripping protection).
 var validVarRefRe = regexp.MustCompile(`\$\{[^}]+\}`)
 
@@ -109,10 +112,11 @@ fi`
 // cleanBuildCommand prepares a raw build command for the Dalec spec:
 //  1. Inlines ldflags — replaces ${LDFLAGS} with the cleaned ldflags string.
 //  2. Strips quotes (single quotes entirely, inner double quotes around $VAR refs).
-//  3. Normalises bare $VAR to ${VAR} for consistency.
-//  4. Strips leading env assignments handled by Dalec (CGO_ENABLED, GOOS, etc.).
-//  5. Strips stray braces (preserving valid ${...} refs).
-//  6. Collapses whitespace and double slashes.
+//  3. Converts Makefile-style $(VAR) to shell-style ${VAR}.
+//  4. Normalises bare $VAR to ${VAR} for consistency.
+//  5. Strips leading env assignments handled by Dalec (CGO_ENABLED, GOOS, etc.).
+//  6. Strips stray braces (preserving valid ${...} refs).
+//  7. Collapses whitespace and double slashes.
 func cleanBuildCommand(cmd, ldflags string) string {
 	if cmd == "" {
 		return ""
@@ -126,13 +130,16 @@ func cleanBuildCommand(cmd, ldflags string) string {
 	cmd = strings.ReplaceAll(cmd, "'", "")
 	cmd = innerQuotedVarRe.ReplaceAllString(cmd, "$1")
 
-	// 3. Normalise bare $VAR to ${VAR}.
+	// 3. Convert Makefile-style $(VAR) to shell-style ${VAR}.
+	cmd = parenVarRe.ReplaceAllString(cmd, "${$1}")
+
+	// 4. Normalise bare $VAR to ${VAR}.
 	cmd = bareVarRe.ReplaceAllString(cmd, "${$1}")
 
-	// 4. Strip leading Dalec-handled env assignments.
+	// 5. Strip leading Dalec-handled env assignments.
 	cmd = stripDalecHandledEnvs(cmd)
 
-	// 5. Protect valid ${...} refs, remove stray braces, restore.
+	// 6. Protect valid ${...} refs, remove stray braces, restore.
 	var placeholders []string
 	cmd = validVarRefRe.ReplaceAllStringFunc(cmd, func(m string) string {
 		key := fmt.Sprintf("__VR%d__", len(placeholders))
@@ -144,7 +151,7 @@ func cleanBuildCommand(cmd, ldflags string) string {
 		cmd = strings.ReplaceAll(cmd, fmt.Sprintf("__VR%d__", i), val)
 	}
 
-	// 6. Collapse whitespace and double slashes.
+	// 7. Collapse whitespace and double slashes.
 	cmd = collapseSpacesRe.ReplaceAllString(cmd, " ")
 	cmd = doubleSlashRe.ReplaceAllString(cmd, "/")
 	return strings.TrimSpace(cmd)

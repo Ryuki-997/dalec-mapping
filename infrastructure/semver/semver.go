@@ -139,19 +139,9 @@ func matchPatternsFromMap(tagsByName map[string]string, regexPatterns []string) 
 	return result
 }
 
-// matchRegexFromMap resolves a single regexTag against a tag map:
-//   - "latest": the single largest semver tag overall
-//   - direct (e.g. v1.6.2): the tag itself if it exists
-//   - regex  (e.g. v1\.6\.\d-main-\d+): all matching tags
+// matchRegexFromMap resolves a single regexTag against a tag map.
+// The pattern is compiled as ^pattern$ and matched against raw tag names.
 func matchRegexFromMap(tagsByName map[string]string, pattern string) []string {
-	if pattern == "latest" {
-		re := regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
-		if name := matchLargestFromMap(tagsByName, re); name != "" {
-			return []string{name}
-		}
-		return nil
-	}
-
 	re, err := regexp.Compile("^" + pattern + "$")
 	if err != nil {
 		log.Printf("⚠️  Invalid regex pattern %q, skipping: %v", pattern, err)
@@ -160,38 +150,18 @@ func matchRegexFromMap(tagsByName map[string]string, pattern string) []string {
 	return matchAllFromMap(tagsByName, re)
 }
 
-// matchAllFromMap returns all tag names from the map that match the regex.
-// Checks the original name first, then falls back to the stripped tag.
+// matchAllFromMap returns all tag names from the map that match the regex exactly.
 func matchAllFromMap(tagsByName map[string]string, re *regexp.Regexp) []string {
 	var matches []string
 	for name := range tagsByName {
-		if re.MatchString(name) || re.MatchString(ToTag(name)) {
+		if re.MatchString(name) {
 			matches = append(matches, name)
 		}
 	}
 	return matches
 }
 
-// matchLargestFromMap returns the name of the largest semver tag matching the regex.
-func matchLargestFromMap(tagsByName map[string]string, re *regexp.Regexp) string {
-	var largestName string
-	var largestNums []int
 
-	for name := range tagsByName {
-		if !re.MatchString(name) && !re.MatchString(ToTag(name)) {
-			continue
-		}
-		nums := parseSemver(name)
-		if nums == nil {
-			continue
-		}
-		if largestNums == nil || compareVersions(nums, largestNums) > 0 {
-			largestName = name
-			largestNums = nums
-		}
-	}
-	return largestName
-}
 
 // ─── Chunk 4 · SEMVER PARSE ─────────────────────────────────────────────────
 

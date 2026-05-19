@@ -291,6 +291,7 @@ func emitPipelineSteps(parts []string, baseDir string, goModDownloads []goModDow
 			continue
 		}
 		step = stripDalecHandledEnvs(step)
+		step = parenVarRe.ReplaceAllString(step, "${$1}")
 		step = bareVarRe.ReplaceAllString(step, "${$1}")
 		step = rewriteGoModCdPaths(step, goModDownloads)
 		step = rewriteRelativeSourceCd(step, goModDownloads)

@@ -69,8 +69,9 @@ func fetchComponentTags(repoURL string) map[string]string {
 // repo tags, constructs a pipeline.State for each actionable match, and returns them.
 func matchTagPatterns(component *onboarding.ComponentConfig, repoTags map[string]string, existingPaths map[string]bool) []pipeline.State {
 	tagPatterns := component.TagPatterns
-	if tagPatterns == nil {
-		tagPatterns = []string{"latest"}
+	if len(tagPatterns) == 0 {
+		log.Printf("⚠️  No tag patterns defined for %s, skipping\n", component.SpecImageName)
+		return nil
 	}
 
 	actionableTags := semver.MatchTagSets(repoTags, tagPatterns, component.SpecDir(), component.SpecImageName, existingPaths)
