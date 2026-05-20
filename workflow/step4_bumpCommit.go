@@ -3,7 +3,7 @@
 //
 //   Handles all spec-bumping paths: detecting whether a revision bump is needed,
 //   performing a revision bump (same version, new commit), and performing a
-//   commit bump (new version, copy from template).
+//   version bump (new version, copy from template).
 //
 //   Chunk 1 · DETECT REVISION BUMP
 //     DetectRevisionBump()
@@ -13,7 +13,7 @@
 //     BumpRevision()
 //       → updateCommitOnly()
 //
-//   Chunk 3 · BUMP COMMIT
+//   Chunk 3 · BUMP VERSION
 //     BumpCommit()
 //       → updateSpecArgs()
 //
@@ -32,7 +32,6 @@ import (
 
 	"dalec-mapping/domain/naming"
 	"dalec-mapping/domain/onboarding"
-	"dalec-mapping/infrastructure/semver"
 	"dalec-mapping/pipeline"
 	"dalec-mapping/utils"
 
@@ -139,22 +138,24 @@ func updateCommitOnly(specNode *yaml.Node, newCommit string) error {
 	return nil
 }
 
-// ─── Chunk 3 · BUMP COMMIT ──────────────────────────────────────────────────
+// ─── Chunk 3 · BUMP VERSION ─────────────────────────────────────────────────
 
-// BumpCommit copies a previous version's spec (the template), updates
-// args.COMMIT and args.VERSION for the new tag, and writes the result to
-// utils.SpecPath. Template is derived from pipeline.Current state.
-func BumpCommit() error {
+// BumpVersion finds the latest existing spec for this component (any version),
+// copies it as a template, updates args.COMMIT and args.VERSION for the new tag,
+// and writes the result to utils.SpecPath.
+func BumpVersion(existingPaths map[string]bool) error {
 	onboard := pipeline.Current.Onboard
 	tagSet := pipeline.Current.Tag
-
-	templateRevision := tagSet.Revision - 1
 	specDir := onboard.SpecDir()
-	templateRemotePath := semver.SpecFilePath(specDir, onboard.SpecImageName, semver.ToTag(tagSet.Full), templateRevision)
 
-	log.Printf("Commit bump for %s @ %s R%d (template: %s)\n", onboard.SpecImageName, tagSet.Stripped, tagSet.Revision, templateRemotePath)
+	templatePath, found := utils.SpecRepoFindLatestVersion(specDir, onboard.SpecImageName, existingPaths)
+	if !found {
+		return fmt.Errorf("no existing spec found for %s to use as template", onboard.SpecImageName)
+	}
 
-	specNode, err := utils.SpecRepoFetchSpec(templateRemotePath)
+	log.Printf("Version bump for %s @ %s (template: %s)\n", onboard.SpecImageName, tagSet.Stripped, templatePath)
+
+	specNode, err := utils.SpecRepoFetchSpec(templatePath)
 	if err != nil {
 		return fmt.Errorf("failed to fetch template spec: %w", err)
 	}
@@ -173,7 +174,7 @@ func BumpCommit() error {
 		return err
 	}
 
-	log.Printf("✅ Commit bump complete — written to %s\n", utils.SpecPath)
+	log.Printf("✅ Version bump complete — written to %s\n", utils.SpecPath)
 	return nil
 }
 
