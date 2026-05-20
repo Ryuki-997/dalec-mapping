@@ -19,7 +19,7 @@ set -uo pipefail
 PATHS=(
     # "specs/containernetworking false"
     # "specs/aks-node-controller true"
-    "specs/aks-secure-tls-bootstrap false"
+    "specs/aks-secure-tls-bootstrap true"
 )
 
 rm -rf ./diff ./generated

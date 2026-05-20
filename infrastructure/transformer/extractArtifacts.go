@@ -77,11 +77,15 @@ func computeArtifactPaths() map[string]interface{} {
 		return paths
 	}
 
-	// Fallback: use Makefile binary name if available, otherwise repo name.
+	// Fallback: use Makefile binary name if available, then component name, otherwise repo name.
 	if len(pipeline.Current.Makefile.GoBuildCommands) > 0 && pipeline.Current.Makefile.GoBuildCommands[0].Name != "" {
 		paths["/go/bin/"+pipeline.Current.Makefile.GoBuildCommands[0].Name] = struct{}{}
 	} else {
-		paths["/go/bin/"+pipeline.Current.RepoInfo.Repo] = struct{}{}
+		binaryName := pipeline.Current.RepoInfo.Repo
+		if pipeline.Current.RepoInfo.ComponentName != "" {
+			binaryName = pipeline.Current.RepoInfo.ComponentName
+		}
+		paths["/go/bin/"+binaryName] = struct{}{}
 	}
 	return paths
 }
