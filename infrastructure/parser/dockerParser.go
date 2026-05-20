@@ -416,6 +416,95 @@ func (p *GoToolchainPin) GoVersion() string {
 
 // ─── Chunk 2 · INTERMEDIATE RUNTIME ─────────────────────────────────────────
 
+// executablePathPrefixes lists directory prefixes that contain executables or
+// shared libraries. Paths under these prefixes indicate the package providing
+// them is needed as a runtime dependency.
+var executablePathPrefixes = []string{
+	"/usr/bin/",
+	"/usr/sbin/",
+	"/usr/local/bin/",
+	"/usr/local/sbin/",
+	"/usr/lib/",
+	"/usr/lib64/",
+	"/lib/",
+	"/lib64/",
+	"/bin/",
+	"/sbin/",
+}
+
+// configDataPathPrefixes lists directory prefixes that contain configuration or
+// data files. When ALL copied paths from a stage fall under these prefixes,
+// the stage's packages are NOT added as runtime deps — installing the full
+// package would create problematic symlinks (e.g. ca-certificates creating
+// /etc/pki/tls) that break containerd mounts on read-only rootfs.
+var configDataPathPrefixes = []string{
+	"/etc/",
+	"/var/",
+	"/usr/share/",
+	"/tmp/",
+}
+
+// isExecutablePath returns true if the path resides under a known
+// executable or library directory prefix.
+func isExecutablePath(path string) bool {
+	normalized := strings.TrimSpace(path)
+	for _, prefix := range executablePathPrefixes {
+		if strings.HasPrefix(normalized, prefix) {
+			return true
+		}
+	}
+	// Exact matches on the directory itself (e.g. COPY --from=x /usr/bin/ /usr/bin/)
+	for _, prefix := range executablePathPrefixes {
+		trimmed := strings.TrimSuffix(prefix, "/")
+		if normalized == trimmed {
+			return true
+		}
+	}
+	return false
+}
+
+// isConfigDataPath returns true if the path resides under a known
+// configuration or data directory prefix.
+func isConfigDataPath(path string) bool {
+	normalized := strings.TrimSpace(path)
+	for _, prefix := range configDataPathPrefixes {
+		if strings.HasPrefix(normalized, prefix) {
+			return true
+		}
+	}
+	for _, prefix := range configDataPathPrefixes {
+		trimmed := strings.TrimSuffix(prefix, "/")
+		if normalized == trimmed {
+			return true
+		}
+	}
+	return false
+}
+
+// hasExecutableCopyPaths returns true if any of the source paths being copied
+// from a stage reside under executable/library directories. When all paths are
+// config/data-only, this returns false — indicating the stage's packages should
+// NOT be added as runtime deps.
+// Unknown paths (not matching any known prefix) are treated as executable
+// (conservative: avoid breaking builds).
+func hasExecutableCopyPaths(sourcePaths []string) bool {
+	for _, sourcePath := range sourcePaths {
+		sourcePath = strings.TrimSpace(sourcePath)
+		if sourcePath == "/" || sourcePath == "." {
+			// Whole-tree copy — assume runtime dep is needed.
+			return true
+		}
+		if isExecutablePath(sourcePath) {
+			return true
+		}
+		// Unknown path that isn't config/data → conservative: treat as executable.
+		if !isConfigDataPath(sourcePath) {
+			return true
+		}
+	}
+	return false
+}
+
 // IntermediateRuntimeDeps holds packages extracted from an intermediate stage.
 type IntermediateRuntimeDeps struct {
 	// StageName is the AS alias of the intermediate stage.
@@ -430,11 +519,15 @@ type IntermediateRuntimeDeps struct {
 // ExtractIntermediateRuntimeDeps analyses Dockerfile stages to find intermediate
 // stages that install packages and are consumed only via COPY --from.
 // Returns the extracted runtime dependency candidates grouped by stage.
+// Stages whose COPY sources are exclusively config/data paths (e.g. /etc/ssl/certs)
+// are excluded — installing their packages creates problematic symlinks.
 func ExtractIntermediateRuntimeDeps(stages []contents.Stage) []IntermediateRuntimeDeps {
 	// Build set of stage names/indices referenced by COPY --from.
 	copyFromTargets := make(map[string]bool)
 	// Track whether the COPY is selective (specific files) vs whole-tree.
 	copyFromSelective := make(map[string]bool)
+	// Collect all source paths per referenced stage for path classification.
+	copyFromSourcePaths := make(map[string][]string)
 
 	for _, stage := range stages {
 		for _, copyInstruction := range stage.Copies {
@@ -443,10 +536,12 @@ func ExtractIntermediateRuntimeDeps(stages []contents.Stage) []IntermediateRunti
 			}
 			copyFromTargets[copyInstruction.From] = true
 
-			// Heuristic: if the source is a specific file path (not / or a top-level dir),
-			// consider it selective. Patterns like /usr/sbin/*tables* or /usr/lib are selective.
 			for _, sourcePath := range copyInstruction.Source {
 				sourcePath = strings.TrimSpace(sourcePath)
+				copyFromSourcePaths[copyInstruction.From] = append(copyFromSourcePaths[copyInstruction.From], sourcePath)
+
+				// Heuristic: if the source is a specific file path (not / or a top-level dir),
+				// consider it selective. Patterns like /usr/sbin/*tables* or /usr/lib are selective.
 				if sourcePath != "/" && sourcePath != "." {
 					copyFromSelective[copyInstruction.From] = true
 				}
@@ -481,6 +576,13 @@ func ExtractIntermediateRuntimeDeps(stages []contents.Stage) []IntermediateRunti
 			continue
 		}
 
+		// Skip stages where all copied paths are config/data (e.g. /etc/ssl/certs).
+		// Installing those packages creates problematic symlinks on read-only rootfs.
+		if !hasExecutableCopyPaths(copyFromSourcePaths[stageRef]) {
+			log.Printf("⚠️  Skipping runtime deps from stage %q: copied paths are config/data only\n", stageRef)
+			continue
+		}
+
 		// Look for package install commands in RUN instructions.
 		packages := extractPackagesFromRuns(stage.Runs)
 		if len(packages) == 0 {
@@ -492,8 +594,6 @@ func ExtractIntermediateRuntimeDeps(stages []contents.Stage) []IntermediateRunti
 			Packages:      packages,
 			SelectiveCopy: copyFromSelective[stageRef],
 		})
-
-
 	}
 
 	return results
