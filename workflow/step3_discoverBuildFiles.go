@@ -51,7 +51,7 @@ func DiscoverBuildFiles() (bool, error) {
 		log.Printf("⚠️  Warning: %v\n", err)
 	}
 
-	loadCachedBuildFiles(onboard)
+	utils.SpecRepoFetchCachedBuildFiles(onboard)
 
 	dockerfilePath := ""
 	if onboard.DockerfileDir != "" {
@@ -120,34 +120,6 @@ func resolveFilePath(dirPath, fileName string) string {
 		return fileName
 	}
 	return path.Clean(dir + "/" + fileName)
-}
-
-// loadCachedBuildFiles fetches the previously-committed Dockerfile/Makefile
-// from the spec repo's onboard directory. These cached files are used to
-// detect content changes during the diff step.
-func loadCachedBuildFiles(component *onboarding.ComponentConfig) {
-	rawBaseURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s",
-		utils.OnboardOwner, utils.OnboardRepo, utils.OnboardBranch)
-
-	dockerfilePath := component.OnboardDir + "/Dockerfile"
-	dockerfileContent, err := github.FetchRawContent(rawBaseURL + "/" + dockerfilePath)
-	if err == nil {
-		component.DockerfileContent = dockerfileContent
-	}
-
-	makefilePath := component.OnboardDir + "/Makefile"
-	makefileContent, err := github.FetchRawContent(rawBaseURL + "/" + makefilePath)
-	if err == nil {
-		component.MakefileContent = makefileContent
-	}
-
-	hasDockerfile := component.DockerfileContent != nil
-	hasMakefile := component.MakefileContent != nil
-	if !hasDockerfile && !hasMakefile {
-		log.Printf("No sibling Dockerfile/Makefile found for %s — treating as first-time onboard\n", component.SpecImageName)
-		return
-	}
-	log.Printf("Found existing siblings for %s (Dockerfile=%v, Makefile=%v) — will diff\n", component.SpecImageName, hasDockerfile, hasMakefile)
 }
 
 // fetchBuildFiles dispatches to the ADO or GitHub fetcher based on the repo URL.

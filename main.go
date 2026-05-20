@@ -38,7 +38,7 @@ func main() {
 	states := workflow.RunResolveTagCache(componentStates, existingPaths)
 	prGroups := processOnboardStates(states, existingPaths)
 	log.Printf("Total PR groups to submit: %d", len(prGroups))
-	submitPRs(prGroups)
+	// submitPRs(prGroups)
 }
 
 
