@@ -27,7 +27,8 @@ When your project produces a single component, define it as a top-level key:
 aks-node-controller:
   repository: https://github.com/Azure/aks-node-controller
   tags:
-    - "^v0\\.0\\.\\d+$"
+    include:
+      - "^v0\\.0\\.\\d+$"
   targets:
     - azlinux3/container
   dockerfile: "."
@@ -46,7 +47,10 @@ When your project produces multiple independent components:
 azure-cns:
   repository: https://github.com/Azure/azure-container-networking
   tags:
-    - "azure-cns/v1\\.6\\..*"
+    include:
+      - "azure-cns/v1\\.6\\..*"
+    exclude:
+      - "azure-cns/v1\\.6\\.0$"  # skip known-broken release
   targets:
     - azlinux3/container
     - windowscross/container
@@ -58,7 +62,8 @@ azure-cns:
 azure-ipam:
   repository: https://github.com/Azure/azure-container-networking
   tags:
-    - "azure-ipam/v0\\.4\\..*"
+    include:
+      - "azure-ipam/v0\\.4\\..*"
   targets:
     - azlinux3/container
   dockerfile: "."
@@ -78,7 +83,8 @@ containernetworking:
   azure-cns:
     repository: https://github.com/Azure/azure-container-networking
     tags:
-      - "^v1\\.6\\.\\d+$"
+      include:
+        - "^v1\\.6\\.\\d+$"
     targets:
       - azlinux3/container
       - windowscross/container
@@ -90,7 +96,10 @@ containernetworking:
   azure-ipam:
     repository: https://github.com/Azure/azure-container-networking
     tags:
-      - "^v1\\.6\\.\\d+$"
+      include:
+        - "^v1\\.6\\.\\d+$"
+      exclude:
+        - "^v1\\.6\\.0$"
     targets:
       - azlinux3/container
     dockerfile: "."

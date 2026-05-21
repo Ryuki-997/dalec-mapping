@@ -117,9 +117,9 @@ func SpecRepoFetchOnboard(onboardPath, onboardDir, specRepository string) ([]onb
 
 	for _, component := range components {
 		if component.SpecRepository != "" {
-			log.Printf("Onboard Data: %s/%s repo=%s tags=%v\n", component.SpecRepository, component.SpecImageName, component.Repository, component.TagPatterns)
+			log.Printf("Onboard Data: %s/%s repo=%s include=%v exclude=%v\n", component.SpecRepository, component.SpecImageName, component.Repository, component.TagPatterns.Include, component.TagPatterns.Exclude)
 		} else {
-			log.Printf("Onboard Data: %s repo=%s tags=%v\n", component.SpecImageName, component.Repository, component.TagPatterns)
+			log.Printf("Onboard Data: %s repo=%s include=%v exclude=%v\n", component.SpecImageName, component.Repository, component.TagPatterns.Include, component.TagPatterns.Exclude)
 		}
 	}
 	return components, nil

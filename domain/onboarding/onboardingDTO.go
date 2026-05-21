@@ -130,12 +130,26 @@ type ComponentState struct {
 	Tag     TagSet
 }
 
+// TagPatterns holds inclusion and exclusion regex patterns for tag resolution.
+// Include is required — at least one pattern must be present for any tags to match.
+// Exclude is optional — any tag matching an exclude pattern is filtered out,
+// even if it also matches an include pattern (deny wins).
+type TagPatterns struct {
+	Include []string `yaml:"include"`
+	Exclude []string `yaml:"exclude,omitempty"`
+}
+
+// HasPatterns returns true when at least one include pattern is defined.
+func (tp TagPatterns) HasPatterns() bool {
+	return len(tp.Include) > 0
+}
+
 // ComponentConfig represents a single component both in the YAML onboard file
 // and at runtime throughout the pipeline.
 type ComponentConfig struct {
-	Repository    string     `yaml:"repository"`
-	TagPatterns   []string   `yaml:"tags"`
-	Targets       []string   `yaml:"targets"`
+	Repository  string      `yaml:"repository"`
+	TagPatterns TagPatterns `yaml:"tags"`
+	Targets     []string    `yaml:"targets"`
 	Reviewers     []string `yaml:"reviewers,omitempty"`
 	DockerfileDir string   `yaml:"dockerfile"`
 	MakefileDir   string     `yaml:"makefile"`

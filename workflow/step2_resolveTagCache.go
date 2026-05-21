@@ -68,15 +68,23 @@ func fetchComponentTags(repoURL string) map[string]string {
 // matchTagPatterns applies the component's tag patterns against the pre-fetched
 // repo tags, constructs a pipeline.State for each actionable match, and returns them.
 func matchTagPatterns(component *onboarding.ComponentConfig, repoTags map[string]string, existingPaths map[string]bool) []pipeline.State {
-	tagPatterns := component.TagPatterns
-	if len(tagPatterns) == 0 {
+	if !component.TagPatterns.HasPatterns() {
 		log.Printf("⚠️  No tag patterns defined for %s, skipping\n", component.SpecImageName)
 		return nil
 	}
 
-	actionableTags := semver.MatchTagSets(repoTags, tagPatterns, component.SpecDir(), component.SpecImageName, existingPaths)
+	includePatterns := component.TagPatterns.Include
+	excludePatterns := component.TagPatterns.Exclude
+
+	resolvedTagNames := semver.ResolveTagPatterns(repoTags, includePatterns, excludePatterns)
+	if len(resolvedTagNames) == 0 {
+		log.Printf("Skipping %s: no tags matched include=%v exclude=%v\n", component.SpecImageName, includePatterns, excludePatterns)
+		return nil
+	}
+
+	actionableTags := semver.MatchTagSets(repoTags, resolvedTagNames, component.SpecDir(), component.SpecImageName, existingPaths)
 	if len(actionableTags) == 0 {
-		log.Printf("Skipping %s: no actionable tags matched patterns %v\n", component.SpecImageName, tagPatterns)
+		log.Printf("Skipping %s: no actionable tags after revision check\n", component.SpecImageName)
 		return nil
 	}
 

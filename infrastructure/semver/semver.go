@@ -9,8 +9,8 @@
 //
 //   Chunk 1 · TAG RESOLVING  FetchRepoTags(), MatchTagSets()
 //   Chunk 2 · TAG FILTERING  SpecFilePath(), FindLatestRevision()
-//   Chunk 3 · PATTERN MATCH  matchPatternsFromMap(), matchRegexFromMap(), matchAllFromMap(), matchLargestFromMap()
-//   Chunk 4 · SEMVER PARSE   ToTag(), parseSemver(), compareVersions()
+//   Chunk 3 · PATTERN MATCH  ResolveTagPatterns(), matchTags()
+//   Chunk 4 · SEMVER PARSE   ToTag(), parseSemver()
 // ═══════════════════════════════════════════════════════════════════════════════
 
 package semver
@@ -43,17 +43,16 @@ func FetchRepoTags(repoURL string) (map[string]string, error) {
 	return github.FetchAllGithubTags(repoURL)
 }
 
-// MatchTagSets matches regex patterns against pre-fetched tags and determines
-// the next revision for each match. Returns actionable tags ready to become
-// TagSet entries. The caller constructs TagSets from the returned data.
-func MatchTagSets(tagsByName map[string]string, regexPatterns []string, specDir, specImage string, treePaths map[string]bool) []ActionableTag {
-	matchedNames := matchPatternsFromMap(tagsByName, regexPatterns)
-	if len(matchedNames) == 0 {
+// MatchTagSets takes a pre-resolved set of tag names (already filtered by
+// include/exclude) and determines the next revision for each. Returns
+// actionable tags ready to become TagSet entries.
+func MatchTagSets(tagsByName map[string]string, resolvedTagNames []string, specDir, specImage string, treePaths map[string]bool) []ActionableTag {
+	if len(resolvedTagNames) == 0 {
 		return nil
 	}
 
 	var actionable []ActionableTag
-	for _, tagName := range matchedNames {
+	for _, tagName := range resolvedTagNames {
 		commitHash := tagsByName[tagName]
 		strippedTag := ToTag(tagName)
 		latestRevision, found := FindLatestRevision(specDir, specImage, strippedTag, treePaths)
@@ -123,45 +122,67 @@ func FindLatestRevision(specDir, specImage, version string, treePaths map[string
 
 // ─── Chunk 3 · PATTERN MATCH ────────────────────────────────────────────────
 
-// matchPatternsFromMap resolves multiple regexTag patterns against a tag map,
-// deduplicating results. Returns matched tag names in deterministic order.
-func matchPatternsFromMap(tagsByName map[string]string, regexPatterns []string) []string {
-	seen := make(map[string]bool)
+// ResolveTagPatterns resolves include and exclude patterns against the fetched
+// tag map. Returns the included tags minus any that match an exclude pattern.
+func ResolveTagPatterns(tagsByName map[string]string, includePatterns, excludePatterns []string) []string {
+	includedTags := matchTags(tagsByName, includePatterns)
+	if len(includedTags) == 0 {
+		return nil
+	}
+
+	excludedTags := matchTags(tagsByName, excludePatterns)
+	if len(excludedTags) == 0 {
+		return includedTags
+	}
+
+	excludeSet := make(map[string]bool, len(excludedTags))
+	for _, tag := range excludedTags {
+		excludeSet[tag] = true
+	}
+
 	var result []string
-	for _, pattern := range regexPatterns {
-		for _, name := range matchRegexFromMap(tagsByName, pattern) {
-			if !seen[name] {
-				seen[name] = true
-				result = append(result, name)
-			}
+	for _, tag := range includedTags {
+		if excludeSet[tag] {
+			log.Printf("Excluded tag %q\n", tag)
+			continue
 		}
+		result = append(result, tag)
 	}
 	return result
 }
 
-// matchRegexFromMap resolves a single regexTag against a tag map.
-// The pattern is compiled as ^pattern$ and matched against raw tag names.
-func matchRegexFromMap(tagsByName map[string]string, pattern string) []string {
-	re, err := regexp.Compile("^" + pattern + "$")
-	if err != nil {
-		log.Printf("⚠️  Invalid regex pattern %q, skipping: %v", pattern, err)
+// matchTags resolves regex patterns against the tag map by compiling them into
+// a single alternation regex and returning all matching tag names.
+func matchTags(tagsByName map[string]string, patterns []string) []string {
+	if len(patterns) == 0 {
 		return nil
 	}
-	return matchAllFromMap(tagsByName, re)
-}
 
-// matchAllFromMap returns all tag names from the map that match the regex exactly.
-func matchAllFromMap(tagsByName map[string]string, re *regexp.Regexp) []string {
-	var matches []string
+	var validPatterns []string
+	for _, pattern := range patterns {
+		if _, err := regexp.Compile(pattern); err != nil {
+			log.Printf("⚠️  Invalid regex pattern %q, skipping: %v", pattern, err)
+			continue
+		}
+		validPatterns = append(validPatterns, pattern)
+	}
+	if len(validPatterns) == 0 {
+		return nil
+	}
+
+	combined, err := regexp.Compile("^(?:" + strings.Join(validPatterns, "|") + ")$")
+	if err != nil {
+		return nil
+	}
+
+	var matched []string
 	for name := range tagsByName {
-		if re.MatchString(name) {
-			matches = append(matches, name)
+		if combined.MatchString(name) {
+			matched = append(matched, name)
 		}
 	}
-	return matches
+	return matched
 }
-
-
 
 // ─── Chunk 4 · SEMVER PARSE ─────────────────────────────────────────────────
 
@@ -193,16 +214,4 @@ func parseSemver(fullTag string) []int {
 	return nums
 }
 
-// compareVersions compares two [major, minor, patch] slices.
-// Returns +1, 0, or -1.
-func compareVersions(a, b []int) int {
-	for i := 0; i < 3; i++ {
-		if a[i] > b[i] {
-			return 1
-		}
-		if a[i] < b[i] {
-			return -1
-		}
-	}
-	return 0
-}
+
