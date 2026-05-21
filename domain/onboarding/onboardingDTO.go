@@ -146,6 +146,12 @@ func (tp TagPatterns) HasPatterns() bool {
 
 // ComponentConfig represents a single component both in the YAML onboard file
 // and at runtime throughout the pipeline.
+//
+// NOTE: The onboard.yml may contain an optional "mar" section with publishing
+// metadata (contactEmail, logoUrl, displayName, description, discoveryPortalReadme).
+// That section is intentionally excluded here — it is consumed by ADO pipelines
+// for MAR (Microsoft Artifact Registry) publishing and has no relevance to
+// specfile generation. yaml.v3 silently discards it during Decode.
 type ComponentConfig struct {
 	Repository  string      `yaml:"repository"`
 	TagPatterns TagPatterns `yaml:"tags"`
