@@ -38,7 +38,11 @@ func main() {
 	states := workflow.RunResolveTagCache(componentStates, existingPaths)
 	prGroups := processOnboardStates(states, existingPaths)
 	log.Printf("Total PR groups to submit: %d", len(prGroups))
-	submitPRs(prGroups)
+	if workflow.SubmitPR {
+		submitPRs(prGroups)
+	} else {
+		log.Println("Dry-run mode: skipping PR submission (use -submit to create PRs)")
+	}
 }
 
 
@@ -59,6 +63,7 @@ func processOnboardStates(states []pipeline.State, existingPaths map[string]bool
 
 		comp := processTag(state, existingPaths)
 		if comp == nil {
+			log.Printf("✅ PASS  %s @ %s [SKIPPED]", onboard.SpecImageName, state.Tag.Stripped)
 			actionLog = append(actionLog, utils.ActionEntry{
 				Component: onboard.SpecImageName,
 				Version:   fmt.Sprintf("%s-%d", state.Tag.Version, state.Tag.Revision),
@@ -67,13 +72,17 @@ func processOnboardStates(states []pipeline.State, existingPaths map[string]bool
 			continue
 		}
 
-		writeGenerated(onboard.SpecImageName, state.Tag.Stripped, comp.SpecContent)
-		diffWithGolden(onboard.SpecImageName, state.Tag.Stripped, comp.SpecContent)
+		writeGenerated(onboard.SpecImageName, state.Tag.Stripped, state.Tag.Revision, comp.SpecContent)
 
 		actionLabel := "GENERATE"
-		if comp.SpecOnly {
+		if comp.RevisionBump {
+			actionLabel = "BUMP REVISION"
+		} else if comp.SpecOnly {
 			actionLabel = "BUMP VERSION"
 		}
+
+		diffWithGolden(onboard.SpecImageName, state.Tag.Stripped, state.Tag.Revision, actionLabel, comp.SpecContent)
+
 		actionLog = append(actionLog, utils.ActionEntry{
 			Component: onboard.SpecImageName,
 			Version:   fmt.Sprintf("%s-%d", state.Tag.Version, state.Tag.Revision),
@@ -217,7 +226,7 @@ func resolveAction(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet
 		return actionSkip
 	}
 
-	// ── New version: discover build files to decide generate vs bump version ──
+	// ── New version: discover build files and decide action ──
 	log.Printf("─── [%s @ %s] Step 3: Discover Build Files ───", onboard.SpecImageName, tagSet.Stripped)
 	log.Println("Purpose: Checking Dockerfile/Makefile changes vs. existing siblings")
 
@@ -226,33 +235,23 @@ func resolveAction(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet
 		log.Fatalf("❌ DiscoverBuildFiles failed: %v", err)
 	}
 
-	isFirstOnboard := onboard.DockerfileContent == nil && onboard.MakefileContent == nil
-
-	// Content changed or first time → must generate from scratch
-	if isFirstOnboard || contentChanged {
-		log.Printf("Result: contentChanged=%v, firstOnboard=%v -> action=GENERATE", contentChanged, isFirstOnboard)
-		log.Println()
-		return actionGenerate
-	}
-
-	// Content unchanged → bump version if a template exists on remote
 	_, templateFound := utils.SpecRepoFindLatestVersion(onboard.SpecDir(), onboard.SpecImageName, existingPaths)
-	if !templateFound {
-		log.Printf("No existing spec found for %s — falling back to generate", onboard.SpecImageName)
+	if templateFound && !contentChanged {
+		log.Printf("Result: templateFound=true, contentChanged=false -> action=BUMP VERSION")
 		log.Println()
-		return actionGenerate
+		return actionBumpVersion
 	}
 
-	log.Printf("Result: contentChanged=%v, firstOnboard=%v -> action=BUMP VERSION", contentChanged, isFirstOnboard)
+	log.Printf("Result: templateFound=%v, contentChanged=%v -> action=GENERATE", templateFound, contentChanged)
 	log.Println()
-	return actionBumpVersion
+	return actionGenerate
 }
 
 // dispatchAction executes the resolved pipeline action and returns the result.
 func dispatchAction(action pipelineAction, onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet, existingPaths map[string]bool) *workflow.ComponentSpec {
 	switch action {
 	case actionBumpRevision:
-		return bumpRevision(onboard, tagSet)
+		return bumpRevision(onboard, tagSet, existingPaths)
 	case actionBumpVersion:
 		return bumpVersion(onboard, tagSet, existingPaths)
 	case actionGenerate:
@@ -288,15 +287,17 @@ func bumpVersion(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet, 
 	return readSpecResult(onboard, tagSet, true)
 }
 
-func bumpRevision(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet) *workflow.ComponentSpec {
+func bumpRevision(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet, existingPaths map[string]bool) *workflow.ComponentSpec {
 	log.Printf("─── [%s @ %s] Step 4b: Bump Revision ───", onboard.SpecImageName, tagSet.Stripped)
 	log.Println("Purpose: Same version tag re-pushed with new commit — incrementing revision")
 
-	if err := workflow.BumpRevision(); err != nil {
+	if err := workflow.BumpRevision(existingPaths); err != nil {
 		log.Fatalf("❌ Revision bump failed: %v", err)
 	}
 
-	return readSpecResult(onboard, tagSet, true)
+	result := readSpecResult(onboard, tagSet, true)
+	result.RevisionBump = true
+	return result
 }
 
 func generateWork(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet) (*workflow.ComponentSpec, error) {

@@ -26,13 +26,33 @@ var shellBuiltins = map[string]bool{
 	"echo": true, "return": true, "break": true, "continue": true,
 }
 
+// targetRecipe pairs a Makefile target name with a go build recipe line found under it.
+type targetRecipe struct {
+	target string
+	line   string
+}
+
 // ParseMakefile extracts variables and go build commands from a Makefile.
-// When imageName is non-empty, only go build commands under targets whose name
-// contains imageName are extracted (e.g. imageName="azure-cns" matches target "test-azure-cns").
+// When imageName is non-empty, a cascading match strategy is applied to select
+// which go build commands to extract:
+//  1. Targets whose name contains imageName (e.g. "build-azure-cns" for imageName="azure-cns")
+//  2. Targets whose name contains "build" (e.g. generic "build:" target)
+//  3. All targets (fallback — accept any go build command)
+//
 // When imageName is empty, all go build commands are extracted (backward compat).
 func ParseMakefile(makefile []byte, info *contents.MakefileInfo, imageName string) (*contents.MakefileInfo, error) {
+	recipes := collectRecipes(makefile, info)
+	matchedRecipes := selectRecipes(recipes, imageName)
+	extractBuildCommands(matchedRecipes, info)
+	return info, nil
+}
+
+// collectRecipes scans the Makefile once, extracting variables into info and
+// collecting all (target, goBuildLine) pairs for later filtering.
+func collectRecipes(makefile []byte, info *contents.MakefileInfo) []targetRecipe {
 	scanner := bufio.NewScanner(strings.NewReader(string(makefile)))
 	currentTarget := ""
+	var recipes []targetRecipe
 
 	for scanner.Scan() {
 		rawLine := scanner.Text()
@@ -54,68 +74,110 @@ func ParseMakefile(makefile []byte, info *contents.MakefileInfo, imageName strin
 			continue
 		}
 
-		// Extract go build package targets from recipe lines.
+		// Collect go build recipe lines with their parent target.
 		if strings.HasPrefix(rawLine, "\t") && strings.Contains(line, "go build") {
-			// When imageName is set, only extract from targets whose name contains it.
-			if imageName != "" && !strings.Contains(currentTarget, imageName) {
-				continue
-			}
-			// Isolate the go build command from compound shell lines
-			// (e.g. "pushd dir && go build ./cmd/foo && popd").
-			goBuildSegment := line
-			if idx := strings.Index(line, "go build"); idx >= 0 {
-				goBuildSegment = line[idx:]
-			}
-			// Strip trailing shell commands chained after the build.
-			for _, sep := range []string{" && ", " || ", " ; "} {
-				if i := strings.Index(goBuildSegment, sep); i > 0 {
-					goBuildSegment = goBuildSegment[:i]
-				}
-			}
-			if m := makefileGoBuildRe.FindStringSubmatch(goBuildSegment); m != nil {
-				target := m[1]
-				if !shellBuiltins[target] {
-					// Normalize file paths (e.g. cmd/client/main.go → ./cmd/client)
-					if strings.HasSuffix(target, ".go") {
-						idx := strings.LastIndex(target, "/")
-						if idx > 0 {
-							target = "./" + strings.TrimPrefix(target[:idx], "./")
-						}
-					}
-					if !strings.HasPrefix(target, "./") {
-						target = "./" + target
-					}
-					info.GoBuildTargets = append(info.GoBuildTargets, target)
-				}
-			}
+			recipes = append(recipes, targetRecipe{target: currentTarget, line: line})
+		}
+	}
+	return recipes
+}
 
-			// Parse the full go build command for Name, OutputPath, LdFlags.
-			// Only include commands with -o flag (actual binary builds, not compile checks like ./...).
-			normalizedSegment := convertMakefileVarsToShell(goBuildSegment)
-			resolvedSegment := resolveMakefileVars(normalizedSegment, info.Variables)
-			resolvedSegment = convertMakefileVarsToShell(resolvedSegment)
-			binary := parserutils.ParseGoBuildCommand(resolvedSegment)
-			if binary.Name != "" && binary.OutputPath != "" {
-				originalOutputPath := binary.OutputPath
-				binary.OutputPath = normalizeBinaryOutputPath(binary.OutputPath, binary.Name)
-				if binary.BuildCommand != "" && originalOutputPath != binary.OutputPath {
-					binary.BuildCommand = strings.Replace(binary.BuildCommand, originalOutputPath, binary.OutputPath, 1)
-				}
-				replaced := false
-				for i, existing := range info.GoBuildCommands {
-					if existing.Name == binary.Name {
-						info.GoBuildCommands[i] = binary
-						replaced = true
-						break
+// selectRecipes applies the cascading match strategy against collected recipes.
+// Returns the subset matching the first successful filter level.
+func selectRecipes(recipes []targetRecipe, imageName string) []targetRecipe {
+	if imageName == "" {
+		return recipes
+	}
+
+	// Level 1: targets containing the component name.
+	byComponentName := filterRecipes(recipes, func(target string) bool {
+		return strings.Contains(target, imageName)
+	})
+	if len(byComponentName) > 0 {
+		return byComponentName
+	}
+
+	// Level 2: targets containing "build".
+	byBuildKeyword := filterRecipes(recipes, func(target string) bool {
+		return strings.Contains(target, "build")
+	})
+	if len(byBuildKeyword) > 0 {
+		return byBuildKeyword
+	}
+
+	// Level 3: accept all targets (default fallback).
+	return recipes
+}
+
+// filterRecipes returns recipes whose target satisfies the predicate.
+func filterRecipes(recipes []targetRecipe, matches func(string) bool) []targetRecipe {
+	var result []targetRecipe
+	for _, recipe := range recipes {
+		if matches(recipe.target) {
+			result = append(result, recipe)
+		}
+	}
+	return result
+}
+
+// extractBuildCommands processes matched recipe lines, populating GoBuildTargets
+// and GoBuildCommands on the MakefileInfo.
+func extractBuildCommands(recipes []targetRecipe, info *contents.MakefileInfo) {
+	for _, recipe := range recipes {
+		// Isolate the go build command from compound shell lines
+		// (e.g. "pushd dir && go build ./cmd/foo && popd").
+		goBuildSegment := recipe.line
+		if idx := strings.Index(recipe.line, "go build"); idx >= 0 {
+			goBuildSegment = recipe.line[idx:]
+		}
+		// Strip trailing shell commands chained after the build.
+		for _, sep := range []string{" && ", " || ", " ; "} {
+			if i := strings.Index(goBuildSegment, sep); i > 0 {
+				goBuildSegment = goBuildSegment[:i]
+			}
+		}
+		if m := makefileGoBuildRe.FindStringSubmatch(goBuildSegment); m != nil {
+			target := m[1]
+			if !shellBuiltins[target] {
+				// Normalize file paths (e.g. cmd/client/main.go → ./cmd/client)
+				if strings.HasSuffix(target, ".go") {
+					idx := strings.LastIndex(target, "/")
+					if idx > 0 {
+						target = "./" + strings.TrimPrefix(target[:idx], "./")
 					}
 				}
-				if !replaced {
-					info.GoBuildCommands = append(info.GoBuildCommands, binary)
+				if !strings.HasPrefix(target, "./") {
+					target = "./" + target
 				}
+				info.GoBuildTargets = append(info.GoBuildTargets, target)
+			}
+		}
+
+		// Parse the full go build command for Name, OutputPath, LdFlags.
+		// Only include commands with -o flag (actual binary builds, not compile checks like ./...).
+		normalizedSegment := convertMakefileVarsToShell(goBuildSegment)
+		resolvedSegment := resolveMakefileVars(normalizedSegment, info.Variables)
+		resolvedSegment = convertMakefileVarsToShell(resolvedSegment)
+		binary := parserutils.ParseGoBuildCommand(resolvedSegment)
+		if binary.Name != "" && binary.OutputPath != "" {
+			originalOutputPath := binary.OutputPath
+			binary.OutputPath = normalizeBinaryOutputPath(binary.OutputPath, binary.Name)
+			if binary.BuildCommand != "" && originalOutputPath != binary.OutputPath {
+				binary.BuildCommand = strings.Replace(binary.BuildCommand, originalOutputPath, binary.OutputPath, 1)
+			}
+			replaced := false
+			for i, existing := range info.GoBuildCommands {
+				if existing.Name == binary.Name {
+					info.GoBuildCommands[i] = binary
+					replaced = true
+					break
+				}
+			}
+			if !replaced {
+				info.GoBuildCommands = append(info.GoBuildCommands, binary)
 			}
 		}
 	}
-	return info, nil
 }
 
 func parseVariable(line string, info *contents.MakefileInfo) {

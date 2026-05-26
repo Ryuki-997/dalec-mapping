@@ -207,13 +207,13 @@ func diffSiblings(onboard *onboarding.ComponentConfig, cachedDF, cachedMF []byte
 
 	changed := false
 	if cachedDF != nil && onboard.DockerfileContent != nil {
-		if !bytes.Equal(onboard.DockerfileContent, cachedDF) {
+		if !bytes.Equal(bytes.TrimRight(onboard.DockerfileContent, "\n"), bytes.TrimRight(cachedDF, "\n")) {
 			log.Printf("Dockerfile changed for %s\n", onboard.SpecImageName)
 			changed = true
 		}
 	}
 	if cachedMF != nil && onboard.MakefileContent != nil {
-		if !bytes.Equal(onboard.MakefileContent, cachedMF) {
+		if !bytes.Equal(bytes.TrimRight(onboard.MakefileContent, "\n"), bytes.TrimRight(cachedMF, "\n")) {
 			log.Printf("Makefile changed for %s\n", onboard.SpecImageName)
 			changed = true
 		}

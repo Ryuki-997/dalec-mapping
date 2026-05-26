@@ -53,7 +53,11 @@ func MatchTagSets(tagsByName map[string]string, resolvedTagNames []string, specD
 
 	var actionable []ActionableTag
 	for _, tagName := range resolvedTagNames {
-		commitHash := tagsByName[tagName]
+		commitHash, exists := tagsByName[tagName]
+		if !exists {
+			log.Printf("⚠️  Resolved tag %q not found in tags cache, skipping\n", tagName)
+			continue
+		}
 		strippedTag := ToTag(tagName)
 		latestRevision, found := FindLatestRevision(specDir, specImage, strippedTag, treePaths)
 

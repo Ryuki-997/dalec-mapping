@@ -28,8 +28,7 @@ func Resolve(state onboarding.ComponentState) Naming {
 	onboard := state.Onboard
 	tagSet := state.Tag
 
-	version := strings.TrimPrefix(tagSet.Version, "v")
-	versionRevision := fmt.Sprintf("%s-%d", version, tagSet.Revision)
+	versionRevision := fmt.Sprintf("%s-%d", tagSet.Stripped, tagSet.Revision)
 
 	displayName := onboard.SpecImageName
 	if onboard.GroupName != "" {

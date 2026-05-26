@@ -42,9 +42,9 @@ func normalizeIndent(content []byte) []byte {
 }
 
 // writeGenerated writes the generated spec content to
-// ./generated/{component}/{component}-{tag}-specfile.yml so it can serve as a
+// ./generated/{component}/{component}-{tag}-{revision}-specfile.yml so it can serve as a
 // cache of the latest run.
-func writeGenerated(component, tag string, specContent []byte) {
+func writeGenerated(component, tag string, revision int, specContent []byte) {
 	specContent = normalizeIndent(specContent)
 	generatedDir := filepath.Join("generated", component)
 	if err := os.MkdirAll(generatedDir, 0o755); err != nil {
@@ -52,7 +52,7 @@ func writeGenerated(component, tag string, specContent []byte) {
 		return
 	}
 
-	fileName := fmt.Sprintf("%s-%s-specfile.yml", component, tag)
+	fileName := fmt.Sprintf("%s-%s-%d-specfile.yml", component, tag, revision)
 	generatedPath := filepath.Join(generatedDir, fileName)
 	if err := os.WriteFile(generatedPath, specContent, 0o644); err != nil {
 		log.Printf("⚠️  Failed to write generated spec %s: %v", generatedPath, err)
@@ -61,21 +61,21 @@ func writeGenerated(component, tag string, specContent []byte) {
 }
 
 // diffWithGolden compares the generated spec content against the golden file
-// at ./correct/{component}/{component}-{tag}-specfile.yml.
+// at ./correct/{component}/{component}-{tag}-{revision}-specfile.yml.
 // Logs PASS if identical, otherwise writes a unified diff to ./diff/.
-func diffWithGolden(component, tag string, specContent []byte) {
+func diffWithGolden(component, tag string, revision int, action string, specContent []byte) {
 	specContent = normalizeIndent(specContent)
-	goldenPath := filepath.Join("correct", component, fmt.Sprintf("%s-%s-specfile.yml", component, tag))
+	goldenPath := filepath.Join("correct", component, fmt.Sprintf("%s-%s-%d-specfile.yml", component, tag, revision))
 
 	goldenContent, err := os.ReadFile(goldenPath)
 	if err != nil {
-		log.Printf("⚠️  SKIP diff for %s @ %s — no golden file at %s", component, tag, goldenPath)
+		log.Printf("⚠️  SKIP diff for %s @ %s [%s] — no golden file at %s", component, tag, action, goldenPath)
 		return
 	}
 	goldenContent = normalizeIndent(goldenContent)
 
 	if string(specContent) == string(goldenContent) {
-		log.Printf("✅ PASS  %s @ %s", component, tag)
+		log.Printf("✅ PASS  %s @ %s [%s]", component, tag, action)
 		return
 	}
 
@@ -123,5 +123,5 @@ func diffWithGolden(component, tag string, specContent []byte) {
 		return
 	}
 
-	log.Printf("❌ FAIL  %s @ %s — diff written to %s", component, tag, diffPath)
+	log.Printf("❌ FAIL  %s @ %s [%s] — diff written to %s", component, tag, action, diffPath)
 }

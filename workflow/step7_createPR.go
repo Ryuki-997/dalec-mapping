@@ -41,12 +41,13 @@ import (
 
 // ComponentSpec holds one component's contribution to a PR.
 type ComponentSpec struct {
-	Onboard     *onboarding.ComponentConfig
-	Tag         string
-	Revision    int
-	SpecContent []byte // generated spec file content
-	SpecOnly    bool
-	Naming      naming.Naming
+	Onboard      *onboarding.ComponentConfig
+	Tag          string
+	Revision     int
+	SpecContent  []byte // generated spec file content
+	SpecOnly     bool
+	RevisionBump bool
+	Naming       naming.Naming
 }
 
 // PREntry represents a single PR to be created — either for one standalone

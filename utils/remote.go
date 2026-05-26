@@ -13,7 +13,7 @@
 //     SpecRepoFetchCachedBuildFiles(component)                         — fetches cached Dockerfile/Makefile siblings          → void (mutates component)
 //     SpecRepoFetchSpec(remotePath)                                    — fetches and parses a spec YAML file                 → (*yaml.Node, error)
 //     SpecRepoFetchCommit(specFilePath)                                — reads args.COMMIT from an existing spec             → (string, error)
-//     SpecRepoFetchLatestRevision(specDir, specImage, tag, revision)   — fetches previous revision spec for same version     → (*yaml.Node, error)
+//     SpecRepoFetchLatestRevision(specDir, specImage, tag, existingPaths)   — fetches latest revision spec for same version     → (*yaml.Node, error)
 //     SpecRepoFindLatestVersion(specDir, specImage, treePaths)         — finds latest spec across all versions               → (string, bool)
 //     FindMapValue(root, key)                                          — YAML node lookup helper                             → *yaml.Node
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -206,19 +206,43 @@ func SpecRepoFetchCommit(specFilePath string) (string, error) {
 	return commitNode.Value, nil
 }
 
-// SpecRepoFetchLatestRevision fetches the previous revision's spec for the same
-// version from the onboard repo. Accepts explicit parameters to avoid circular
-// imports with the pipeline package.
+// SpecRepoFetchLatestRevision finds the highest existing revision for the same
+// version by scanning existingPaths, then fetches that spec from the remote repo.
 //   - specDir: component's onboard directory (e.g. "specs/containernetworking/azure-cns")
 //   - specImage: component image name (e.g. "azure-cns")
 //   - tag: stripped semver tag with v prefix (e.g. "v1.8.5")
-//   - currentRevision: the revision being created (fetches currentRevision-1)
-func SpecRepoFetchLatestRevision(specDir, specImage, tag string, currentRevision int) (*yaml.Node, error) {
-	previousRevision := currentRevision - 1
-	version := strings.TrimPrefix(tag, "v")
-	remotePath := fmt.Sprintf("%s/%s-%s-%d-specfile.yml", specDir, specImage, version, previousRevision)
+//   - existingPaths: O(1) path set from FetchSpecRepoTree/BuildPathIndex
+func SpecRepoFetchLatestRevision(specDir, specImage, tag string, existingPaths map[string]bool) (*yaml.Node, error) {
+	pattern := regexp.MustCompile(
+		fmt.Sprintf(`^%s/%s-%s-(\d+)-specfile\.yml$`,
+			regexp.QuoteMeta(specDir),
+			regexp.QuoteMeta(specImage),
+			regexp.QuoteMeta(tag)),
+	)
 
-	log.Printf("   Template (same version, R%d): %s\n", previousRevision, remotePath)
+	highestRevision := 0
+	found := false
+	for path := range existingPaths {
+		matches := pattern.FindStringSubmatch(path)
+		if matches == nil {
+			continue
+		}
+		revisionNumber, err := strconv.Atoi(matches[1])
+		if err != nil {
+			continue
+		}
+		found = true
+		if revisionNumber > highestRevision {
+			highestRevision = revisionNumber
+		}
+	}
+
+	if !found {
+		return nil, fmt.Errorf("no existing revision found for %s/%s-%s-*-specfile.yml", specDir, specImage, tag)
+	}
+
+	remotePath := fmt.Sprintf("%s/%s-%s-%d-specfile.yml", specDir, specImage, tag, highestRevision)
+	log.Printf("   Template (same version, R%d): %s\n", highestRevision, remotePath)
 	return SpecRepoFetchSpec(remotePath)
 }
 
@@ -232,7 +256,7 @@ func SpecRepoFetchLatestRevision(specDir, specImage, tag string, currentRevision
 // Selects the spec with the highest semver, breaking ties by highest revision.
 func SpecRepoFindLatestVersion(specDir, specImage string, treePaths map[string]bool) (string, bool) {
 	pattern := regexp.MustCompile(
-		fmt.Sprintf(`^%s/%s-(\d+\.\d+\.\d+)-(\d+)-specfile\.yml$`,
+		fmt.Sprintf(`^%s/%s-v(\d+\.\d+\.\d+)-(\d+)-specfile\.yml$`,
 			regexp.QuoteMeta(specDir),
 			regexp.QuoteMeta(specImage)),
 	)

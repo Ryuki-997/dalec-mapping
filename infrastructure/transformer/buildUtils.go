@@ -84,7 +84,7 @@ var doubleSlashRe = regexp.MustCompile(`/{2,}`)
 var dalecHandledEnvs = map[string]bool{
 	"CGO_ENABLED": true, "GOOS": true, "GOARCH": true,
 	"GOARM": true, "GOARM64": true, "OS": true, "ARCH": true,
-	"GO111MODULE": true,
+	"GO111MODULE": true, "GOEXPERIMENT": true,
 }
 
 // standardWorkdirs lists working directories that are always available in the

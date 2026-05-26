@@ -91,13 +91,13 @@ func buildCurrentSpecFilePath() string {
 // BumpRevision copies the latest existing spec for the same version, updates
 // only args.COMMIT with the new tag's commit, and writes the result to
 // utils.SpecPath. The revision number is already incremented in TagSet by step 2.
-func BumpRevision() error {
+func BumpRevision(existingPaths map[string]bool) error {
 	onboard := pipeline.Current.Onboard
 	tagSet := pipeline.Current.Tag
 
 	log.Printf("Revision bump for %s @ %s R%d\n", onboard.SpecImageName, tagSet.Stripped, tagSet.Revision)
 
-	specNode, err := utils.SpecRepoFetchLatestRevision(onboard.SpecDir(), onboard.SpecImageName, tagSet.Stripped, tagSet.Revision)
+	specNode, err := utils.SpecRepoFetchLatestRevision(onboard.SpecDir(), onboard.SpecImageName, tagSet.Stripped, existingPaths)
 	if err != nil {
 		return err
 	}
