@@ -28,20 +28,14 @@ import (
 // ForcePR skips the existing-PR check in CreatePR when true.
 var ForcePR bool
 
-// SubmitPR controls whether PRs are actually submitted. When false, the
-// pipeline runs end-to-end but stops before PR creation.
-var SubmitPR bool
-
 // ParseFlags registers and parses CLI flags, returning the resolved values.
 func ParseFlags() (string, bool) {
 	inputPath := flag.String("path", "", "Input path to search for onboarding files (e.g. containernetworking and containernetworking/azure-cns both work). Omit to fetch all under specs/")
 	patchMode := flag.Bool("patch", false, "Run patching workflow: fetch MCR images and scan for vulnerabilities")
 	force := flag.Bool("force", false, "Force create a PR regardless of whether one already exists")
 	branch := flag.String("branch", "", "Override the onboard branch (defaults to utils.OnboardBranch)")
-	submit := flag.Bool("submit", false, "Submit PRs after pipeline completes (default: dry-run, no PRs created)")
 	flag.Parse()
 	ForcePR = *force
-	SubmitPR = *submit
 	if *branch != "" {
 		utils.OnboardBranch = *branch
 	}

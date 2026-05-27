@@ -38,11 +38,7 @@ func main() {
 	states := workflow.RunResolveTagCache(componentStates, existingPaths)
 	prGroups := processOnboardStates(states, existingPaths)
 	log.Printf("Total PR groups to submit: %d", len(prGroups))
-	if workflow.SubmitPR {
-		submitPRs(prGroups)
-	} else {
-		log.Println("Dry-run mode: skipping PR submission (use -submit to create PRs)")
-	}
+	submitPRs(prGroups)
 }
 
 
@@ -343,18 +339,13 @@ func runPatchWorkflow() {
 		return
 	}
 
-	// Summarize results
-	for _, resultPath := range scanResults {
-		total, high, critical, err := patching.ParseScanResults(resultPath)
-		if err != nil {
-			log.Printf("⚠️  Failed to parse %s: %v\n", resultPath, err)
-			continue
-		}
-		if total == 0 {
-			log.Printf("  ✅ %s: no vulnerabilities\n", resultPath)
-		} else {
-			log.Printf("  ⚠️  %s: %d total (%d high, %d critical)\n", resultPath, total, high, critical)
-		}
+	report, err := patching.BuildPatchReport(scanResults)
+	if err != nil {
+		log.Fatalf("❌ Failed to build patch report: %v", err)
+	}
+
+	if report.TotalReflective == 0 && report.TotalNonReflective == 0 {
+		log.Println("  ✅ No vulnerabilities found across all images")
 	}
 
 	log.Println("Patching workflow complete")

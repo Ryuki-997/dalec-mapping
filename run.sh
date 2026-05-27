@@ -44,7 +44,7 @@ echo ""
 # ── Step 2: Run actual pipeline (always submits PRs) ──
 overall_exit=0
 
-go_args=("-submit")
+go_args=()
 echo "  PR submission: ENABLED"
 if [[ "$force_flag" == true ]]; then
     go_args+=("-force")
