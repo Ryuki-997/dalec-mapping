@@ -10,7 +10,7 @@
 //     SpecRepoFetchTree()                                              — full recursive git tree + path index                → ([]interface{}, map[string]bool, error)
 //     SpecRepoBuildPathIndex(treeEntries)                              — builds path lookup set from tree entries             → map[string]bool
 //     SpecRepoFetchOnboard(onboardPath)                                — fetches and decodes onboard.yml                     → (OnboardFile, error)
-//     SpecRepoFetchCachedBuildFiles(naming)                            — fetches cached Dockerfile/Makefile siblings          → (dockerfileContent, makefileContent []byte)
+//     SpecRepoExtractTemplateVersion(templatePath, n)                  — parses version segment from a spec file path        → (string, error)
 //     SpecRepoFetchSpec(remotePath)                                    — fetches and parses a spec YAML file                 → (*yaml.Node, error)
 //     SpecRepoFetchCommit(specFilePath)                                — reads args.COMMIT from an existing spec             → (string, error)
 //     SpecRepoFetchLatestRevision(n, tag, existingPaths)               — fetches latest revision spec for same version     → (*yaml.Node, error)
@@ -118,31 +118,21 @@ func SpecRepoFetchOnboard(onboardPath string) (onboarding.OnboardFile, error) {
 	return onboardFile, nil
 }
 
-// SpecRepoFetchCachedBuildFiles fetches the previously-committed Dockerfile/Makefile
-// from the spec repo's onboard directory. Returns the raw content for each file
-// (nil when missing). The caller decides where to store the result.
-func SpecRepoFetchCachedBuildFiles(component naming.Naming) (dockerfileContent, makefileContent []byte) {
-	rawBaseURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s",
-		config.OnboardOwner, config.OnboardRepo, config.OnboardBranch)
-
-	dockerfilePath := component.OnboardDir + "/Dockerfile"
-	if content, err := github.FetchRawContent(rawBaseURL + "/" + dockerfilePath); err == nil {
-		dockerfileContent = content
+// SpecRepoExtractTemplateVersion parses the stripped version (no "v") out of
+// a spec file path produced by SpecRepoFindLatestMinorVersion. Expected shape:
+//
+//	<OnboardDir>/<SpecImageName>-<X.Y.Z>-<R>-specfile.yml
+func SpecRepoExtractTemplateVersion(templatePath string, component naming.Naming) (string, error) {
+	pattern := regexp.MustCompile(
+		fmt.Sprintf(`^%s/%s-(\d+\.\d+\.\d+)-\d+-specfile\.yml$`,
+			regexp.QuoteMeta(component.OnboardDir),
+			regexp.QuoteMeta(component.SpecImageName)),
+	)
+	matches := pattern.FindStringSubmatch(templatePath)
+	if matches == nil {
+		return "", fmt.Errorf("template path %q does not match expected spec filename pattern", templatePath)
 	}
-
-	makefilePath := component.OnboardDir + "/Makefile"
-	if content, err := github.FetchRawContent(rawBaseURL + "/" + makefilePath); err == nil {
-		makefileContent = content
-	}
-
-	hasDockerfile := dockerfileContent != nil
-	hasMakefile := makefileContent != nil
-	if !hasDockerfile && !hasMakefile {
-		log.Printf("No sibling Dockerfile/Makefile found for %s — treating as first-time onboard\n", component.SpecImageName)
-		return dockerfileContent, makefileContent
-	}
-	log.Printf("Found existing siblings for %s (Dockerfile=%v, Makefile=%v) — will diff\n", component.SpecImageName, hasDockerfile, hasMakefile)
-	return dockerfileContent, makefileContent
+	return matches[1], nil
 }
 
 // SpecRepoFetchSpec fetches and decodes a spec file from the onboard repo at the

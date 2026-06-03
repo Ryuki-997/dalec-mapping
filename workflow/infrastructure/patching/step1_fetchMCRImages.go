@@ -25,8 +25,6 @@ import (
 	"oras.land/oras-go/v2/registry"
 	"oras.land/oras-go/v2/registry/remote"
 	"oras.land/oras-go/v2/registry/remote/auth"
-
-	"dalec-mapping/config"
 )
 
 // ─── Chunk 1 · ORAS ─────────────────────────────────────────────────────────
@@ -254,7 +252,7 @@ func FetchAndScanACRImages() ([]string, error) {
 		log.Printf("  ✅ Image %s exists\n", imgURL)
 
 		// Run trivy scan on the first (public) tag
-		outputPath := filepath.Join(config.ResultDir, fmt.Sprintf("%s-%s-acr-scan.json", shortName, firstTag))
+		outputPath := filepath.Join("result", fmt.Sprintf("%s-%s-acr-scan.json", shortName, firstTag))
 		if err := ScanImage(imgURL, "os,library", outputPath); err != nil {
 			log.Printf("⚠️  Trivy scan failed for %s: %v\n", imgURL, err)
 			continue

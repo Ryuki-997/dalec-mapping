@@ -1,56 +1,58 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // Discover —
 //
-//   Fetches the source Dockerfile and Makefile for the given tag, compares them
-//   against cached siblings from a previous onboard, and returns whether
-//   content has changed.
+//   Fetches the source Dockerfile and Makefile from the partner repository.
+//   The orchestration layer drives comparison between the new tag's files and
+//   a previous template tag's files by calling FetchBuildFilesAtTag twice.
 //
 //   Functions are ordered by call sequence:
-//     DiscoverBuildFiles()
-//       → loadCachedBuildFiles()
+//     DiscoverBuildFiles()       — fetch new tag's files, store on item
+//     FetchBuildFilesAtTag()     — fetch any tag's files, return bytes only
 //       → fetchBuildFiles()
 //           → fetchBuildFilesFromADO()
 //           → fetchBuildFilesFromGitHub()
-//       → diffSiblings()
 //       → clearResultDirectory()
 // ═══════════════════════════════════════════════════════════════════════════════
 
 package partnerrepo
 
 import (
-	"bytes"
 	"fmt"
 	"log"
 	"os"
 	"path"
 	"strings"
 
-	"dalec-mapping/config"
-	"dalec-mapping/domain/naming"
 	"dalec-mapping/domain/workplan"
 	"dalec-mapping/workflow/infrastructure/ado"
 	"dalec-mapping/workflow/infrastructure/github"
-	"dalec-mapping/workflow/infrastructure/specapi"
 )
 
-// DiscoverBuildFiles fetches the Dockerfile and Makefile from the source repo at the
-// given tag, diffs them against cached siblings, and returns whether content changed.
-// Populates item.BuildFiles.Dockerfile.Source and item.BuildFiles.Makefile.Source.
-func DiscoverBuildFiles(item *workplan.WorkItem) (bool, error) {
+// DiscoverBuildFiles fetches the Dockerfile and Makefile from the source repo
+// at item.Tag.Full and stores them on item.BuildFiles.
+func DiscoverBuildFiles(item *workplan.WorkItem) error {
+	dockerfileContent, makefileContent, err := FetchBuildFilesAtTag(item, item.Tag.Full)
+	if err != nil {
+		return err
+	}
+
+	item.BuildFiles.Dockerfile.Source = dockerfileContent
+	item.BuildFiles.Makefile.Source = makefileContent
+
+	log.Printf("✅ Discover complete for %s @ %s\n", item.Naming.SpecImageName, item.Tag.Full)
+	return nil
+}
+
+// FetchBuildFilesAtTag fetches the Dockerfile and Makefile from the partner
+// repo at the supplied tag without mutating the work item. Used by the
+// orchestration layer to fetch the template version's files for comparison.
+func FetchBuildFilesAtTag(item *workplan.WorkItem, tag string) ([]byte, []byte, error) {
 	component := item.Naming
-	tag := item.Tag.Full
 	repoURL := component.Repository
 
 	log.Println()
-	log.Printf("── Discover: %s @ %s ──\n", component.SpecImageName, tag)
+	log.Printf("── Fetch build files: %s @ %s ──\n", component.SpecImageName, tag)
 	log.Printf("Repository: %s\n", repoURL)
-	log.Println()
-
-	if err := clearResultDirectory(config.ResultDir); err != nil {
-		log.Printf("⚠️  Warning: %v\n", err)
-	}
-
-	cachedDF, cachedMF := specapi.SpecRepoFetchCachedBuildFiles(component)
 
 	dockerfilePath := ""
 	if component.DockerfileDir != "" {
@@ -73,20 +75,8 @@ func DiscoverBuildFiles(item *workplan.WorkItem) (bool, error) {
 
 	log.Printf("  Dockerfile path: %s\n", dockerfilePath)
 	log.Printf("  Makefile path:   %s\n", makefilePath)
-	log.Println()
 
-	dockerfileContent, makefileContent, err := fetchBuildFiles(repoURL, dockerfilePath, makefilePath, tag, component.License)
-	if err != nil {
-		return false, err
-	}
-
-	item.BuildFiles.Dockerfile.Source = dockerfileContent
-	item.BuildFiles.Makefile.Source = makefileContent
-
-	contentChanged := diffSiblings(item, component, cachedDF, cachedMF)
-
-	log.Printf("Output: contentChanged=%v\n", contentChanged)
-	return contentChanged, nil
+	return fetchBuildFiles(repoURL, dockerfilePath, makefilePath, tag, component.License)
 }
 
 // resolveFilePath resolves a partner-provided path to a full file path.
@@ -191,37 +181,8 @@ func fetchBuildFilesFromGitHub(repoURL, dockerfilePath, makefilePath, tag, confi
 	return dockerfileContent, makefileContent, nil
 }
 
-// diffSiblings compares the freshly-fetched Dockerfile/Makefile (on
-// item.BuildFiles.Dockerfile.Source / item.BuildFiles.Makefile.Source) against
-// cached versions and returns true if content has changed. Only compares files
-// that have both a fresh and cached version (skips files where either side is
-// nil/empty).
-func diffSiblings(item *workplan.WorkItem, component naming.Naming, cachedDF, cachedMF []byte) bool {
-	if cachedDF == nil && cachedMF == nil {
-		return false
-	}
-
-	freshDF := item.BuildFiles.Dockerfile.Source
-	freshMF := item.BuildFiles.Makefile.Source
-	changed := false
-	if cachedDF != nil && freshDF != nil {
-		if !bytes.Equal(bytes.TrimRight(freshDF, "\n"), bytes.TrimRight(cachedDF, "\n")) {
-			log.Printf("Dockerfile changed for %s\n", component.SpecImageName)
-			changed = true
-		}
-	}
-	if cachedMF != nil && freshMF != nil {
-		if !bytes.Equal(bytes.TrimRight(freshMF, "\n"), bytes.TrimRight(cachedMF, "\n")) {
-			log.Printf("Makefile changed for %s\n", component.SpecImageName)
-			changed = true
-		}
-	}
-
-	if !changed {
-		log.Printf("✅ Build files unchanged for %s\n", component.SpecImageName)
-	}
-	return changed
-}
+// diffSiblings was removed: comparison now lives in the orchestration layer
+// using SpecRepoFetchBuildFilesForVersion to fetch the per-version snapshot.
 
 // clearResultDirectory removes all contents from the result directory.
 func clearResultDirectory(resultDir string) error {

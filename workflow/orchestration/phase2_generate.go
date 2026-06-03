@@ -1,9 +1,13 @@
 package orchestration
 
 import (
+	"bytes"
+	"fmt"
 	"log"
+	"strings"
 
 	"dalec-mapping/domain/buildresult"
+	"dalec-mapping/domain/tagcache"
 	"dalec-mapping/domain/workplan"
 	"dalec-mapping/workflow/foundations/logging"
 	"dalec-mapping/workflow/infrastructure/specapi"
@@ -65,7 +69,7 @@ const (
 // Order of checks:
 //  1. Same version already exists with matching commit → skip
 //  2. Same version exists with different commit       → bump revision
-//  3. Different version (no content change) + template exists → bump version
+//  3. Different version + template's BuildFiles match the new tag's source → bump version
 //  4. Otherwise                                       → generate
 //
 // tagSet.Revision is the NEXT revision to create (NextRevision = latest+1 when a
@@ -85,23 +89,74 @@ func resolveAction(item *workplan.WorkItem, existingPaths map[string]bool) pipel
 	}
 
 	log.Printf("─── [%s @ %s] Discover build files ───", item.Naming.SpecImageName, item.Tag.Stripped)
-	log.Println("Purpose: Checking Dockerfile/Makefile changes vs. existing siblings")
+	log.Println("Purpose: Fetching partner-repo Dockerfile/Makefile for this tag")
 
-	contentChanged, err := partnerrepo.DiscoverBuildFiles(item)
-	if err != nil {
+	if err := partnerrepo.DiscoverBuildFiles(item); err != nil {
 		log.Fatalf("❌ DiscoverBuildFiles failed: %v", err)
 	}
 
-	_, templateFound := specapi.SpecRepoFindLatestMinorVersion(item.Naming, item.Tag.Stripped, existingPaths)
-	if templateFound && !contentChanged {
-		log.Printf("Result: templateFound=true, contentChanged=false -> action=BUMP VERSION")
+	templatePath, templateFound := specapi.SpecRepoFindLatestMinorVersion(item.Naming, item.Tag.Stripped, existingPaths)
+	if !templateFound {
+		log.Printf("Result: templateFound=false -> action=GENERATE")
+		log.Println()
+		return actionGenerate
+	}
+
+	templateVersion, err := specapi.SpecRepoExtractTemplateVersion(templatePath, item.Naming)
+	if err != nil {
+		log.Fatalf("❌ SpecRepoExtractTemplateVersion failed: %v", err)
+	}
+
+	templateTag, err := deriveTemplateTag(item, templateVersion)
+	if err != nil {
+		log.Printf("⚠️  Template tag not in cache (%v) — forcing GENERATE", err)
+		log.Println()
+		return actionGenerate
+	}
+
+	templateDF, templateMF, err := partnerrepo.FetchBuildFilesAtTag(item, templateTag)
+	if err != nil {
+		log.Fatalf("❌ FetchBuildFilesAtTag(%s) failed: %v", templateTag, err)
+	}
+
+	if buildFilesMatch(item, templateDF, templateMF) {
+		log.Printf("Result: template=%s @ %s, BuildFiles match -> action=BUMP VERSION", templatePath, templateTag)
 		log.Println()
 		return actionBumpVersion
 	}
 
-	log.Printf("Result: templateFound=%v, contentChanged=%v -> action=GENERATE", templateFound, contentChanged)
+	log.Printf("Result: template=%s @ %s, BuildFiles differ -> action=GENERATE", templatePath, templateTag)
 	log.Println()
 	return actionGenerate
+}
+
+// buildFilesMatch returns true when the freshly-fetched partner Dockerfile and
+// Makefile (on item.BuildFiles.*.Source) byte-equal the template tag's files
+// after trimming trailing newlines.
+func buildFilesMatch(item *workplan.WorkItem, templateDF, templateMF []byte) bool {
+	freshDF := item.BuildFiles.Dockerfile.Source
+	freshMF := item.BuildFiles.Makefile.Source
+
+	if len(templateDF) == 0 && len(templateMF) == 0 {
+		log.Printf("⚠️  Template tag has no Dockerfile/Makefile — forcing GENERATE")
+		return false
+	}
+
+	if len(templateDF) > 0 {
+		if len(freshDF) == 0 || !bytes.Equal(bytes.TrimRight(freshDF, "\n"), bytes.TrimRight(templateDF, "\n")) {
+			log.Printf("Dockerfile changed for %s\n", item.Naming.SpecImageName)
+			return false
+		}
+	}
+	if len(templateMF) > 0 {
+		if len(freshMF) == 0 || !bytes.Equal(bytes.TrimRight(freshMF, "\n"), bytes.TrimRight(templateMF, "\n")) {
+			log.Printf("Makefile changed for %s\n", item.Naming.SpecImageName)
+			return false
+		}
+	}
+
+	log.Printf("✅ Build files unchanged for %s\n", item.Naming.SpecImageName)
+	return true
 }
 
 // ─── Action dispatch ────────────────────────────────────────────────────────
@@ -158,6 +213,25 @@ func runGenerate(item *workplan.WorkItem) buildresult.BuildResult {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+// deriveTemplateTag resolves the full repo tag for a different version of the
+// same component, using the workitem's own tag as a reference for the repo's
+// tag-prefix convention (e.g. "azure-ipam/v" vs "v"). targetVersion is the
+// stripped semver with no "v" prefix (e.g. "0.4.0"). The candidate is looked
+// up against tagcache.Cache so phase 2 only proceeds when the tag actually
+// exists in the partner repo.
+func deriveTemplateTag(item *workplan.WorkItem, targetVersion string) (string, error) {
+	repoTags, ok := tagcache.Cache[item.Naming.Repository]
+	if !ok {
+		return "", fmt.Errorf("no cached tags for repo %s", item.Naming.Repository)
+	}
+	prefix := strings.TrimSuffix(item.Tag.Full, item.Tag.Stripped)
+	candidate := prefix + "v" + targetVersion
+	if _, ok := repoTags[candidate]; !ok {
+		return "", fmt.Errorf("template tag %s not found in repo tags for %s", candidate, item.Naming.Repository)
+	}
+	return candidate, nil
+}
 
 // newSpecResult packages encoded spec bytes into a buildresult.BuildResult.
 func newSpecResult(item *workplan.WorkItem, outcome buildresult.Outcome, specContent []byte) buildresult.BuildResult {

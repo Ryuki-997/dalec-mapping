@@ -145,26 +145,29 @@ func collectFiles(components []prbatch.BatchComponent) ([]string, []fileEntry) {
 	return names, files
 }
 
-// collectSiblingFiles returns Dockerfile and Makefile entries when not in spec-only mode.
-// Version bumps reuse the upstream sources unchanged, so we skip writing them.
+// collectSiblingFiles returns per-version BuildFiles snapshot entries for the
+// component. Skipped for revision bumps (same version → snapshot unchanged) and
+// when the work item has no in-memory build-file sources.
 func collectSiblingFiles(comp prbatch.BatchComponent) []fileEntry {
-	if comp.Result.Outcome == buildresult.OutcomeBumpVersion {
+	if comp.Result.Outcome == buildresult.OutcomeBumpRevision {
 		return nil
 	}
 
 	buildFiles := comp.Result.Item.BuildFiles
 	dir := comp.Naming.OnboardDir
+	imageName := comp.Naming.SpecImageName
+	version := comp.Result.Item.Tag.Version
 
 	var files []fileEntry
 	if len(buildFiles.Dockerfile.Source) > 0 {
 		files = append(files, fileEntry{
-			Path:    fmt.Sprintf("%s/Dockerfile", dir),
+			Path:    fmt.Sprintf("%s/BuildFiles/%s-%s.dockerfile", dir, imageName, version),
 			Content: buildFiles.Dockerfile.Source,
 		})
 	}
 	if len(buildFiles.Makefile.Source) > 0 {
 		files = append(files, fileEntry{
-			Path:    fmt.Sprintf("%s/Makefile", dir),
+			Path:    fmt.Sprintf("%s/BuildFiles/%s-%s.mk", dir, imageName, version),
 			Content: buildFiles.Makefile.Source,
 		})
 	}
