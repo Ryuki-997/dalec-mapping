@@ -8,7 +8,7 @@
 //     regexTag = "v0\.4\.\d+"         (onboard pattern that matches a family)
 //
 //   Chunk 1 · TAG RESOLVING  FetchRepoTags(), MatchTagSets()
-//   Chunk 2 · TAG FILTERING  SpecFilePath(), FindLatestRevision()
+//   Chunk 2 · TAG FILTERING  FindLatestRevision()
 //   Chunk 3 · PATTERN MATCH  ResolveTagPatterns(), matchTags()
 //   Chunk 4 · SEMVER PARSE   ToTag(), parseSemver()
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -85,26 +85,13 @@ type ActionableTag struct {
 	NextRevision int    // The revision number to create (e.g. 1 for new, 2 for second revision)
 }
 
-// SpecFilePath returns the remote path for a spec file at the given revision.
-// Format: {n.OnboardDir}/{n.SpecImageName}-{version}-{revision}-specfile.yml
-// version may be supplied with or without a leading "v" — it is stripped internally.
-func SpecFilePath(n naming.Naming, version string, revision int) string {
-	version = strings.TrimPrefix(version, "v")
-	return fmt.Sprintf("%s/%s-%s-%d-specfile.yml", n.OnboardDir, n.SpecImageName, version, revision)
-}
-
 // FindLatestRevision scans the tree paths for the highest revision number
 // of a spec file matching {n.SpecImageName}-{version}-{n}-specfile.yml.
 // version may be supplied with or without a leading "v" — it is stripped internally.
 // Returns (0, false) when no matching revision exists.
 func FindLatestRevision(n naming.Naming, version string, treePaths map[string]bool) (int, bool) {
 	version = strings.TrimPrefix(version, "v")
-	pattern := regexp.MustCompile(
-		fmt.Sprintf(`^%s/%s-%s-(\d+)-specfile\.yml$`,
-			regexp.QuoteMeta(n.OnboardDir),
-			regexp.QuoteMeta(n.SpecImageName),
-			regexp.QuoteMeta(version)),
-	)
+	pattern := n.SpecFilePathRegex(regexp.QuoteMeta(version), `(\d+)`)
 
 	highest := 0
 	found := false

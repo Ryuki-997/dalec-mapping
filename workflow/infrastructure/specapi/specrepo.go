@@ -24,7 +24,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -32,9 +31,22 @@ import (
 	"dalec-mapping/domain/naming"
 	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/workflow/infrastructure/github"
+	"dalec-mapping/workflow/infrastructure/semver"
 
 	"gopkg.in/yaml.v3"
 )
+
+// OnboardAPIPath builds a GitHub REST path scoped to the managed spec
+// repository (config.OnboardOwner/config.OnboardRepo). suffixFmt is treated
+// as a fmt format string applied to args.
+//
+// Example:
+//
+//	OnboardAPIPath("issues/%d/labels", prNumber)
+//	→ "repos/<onboardOwner>/<onboardRepo>/issues/123/labels"
+func OnboardAPIPath(suffixFmt string, args ...any) string {
+	return github.RepoAPIPath(config.OnboardOwner, config.OnboardRepo, suffixFmt, args...)
+}
 
 // SpecRepoFetchTree fetches the full recursive git tree from the spec repo.
 // Uses config.OnboardOwner/config.OnboardRepo/config.OnboardBranch constants to target the remote.
@@ -43,10 +55,7 @@ import (
 //   - existingPaths: O(1) lookup set of every file path in the repo
 //   - error: non-nil on API failure or unexpected response format
 func SpecRepoFetchTree() ([]interface{}, map[string]bool, error) {
-	data, err := github.FetchJSON(fmt.Sprintf(
-		"repos/%s/%s/git/trees/%s?recursive=1",
-		config.OnboardOwner, config.OnboardRepo, config.OnboardBranch,
-	))
+	data, err := github.FetchJSON(OnboardAPIPath("git/trees/%s?recursive=1", config.OnboardBranch))
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to fetch onboard data: %w", err)
 	}
@@ -87,8 +96,7 @@ func SpecRepoBuildPathIndex(treeEntries []interface{}) map[string]bool {
 func SpecRepoFetchOnboard(onboardPath string) (onboarding.OnboardFile, error) {
 	var onboardFile onboarding.OnboardFile
 
-	contentsPath := fmt.Sprintf("repos/%s/%s/contents/%s?ref=%s",
-		config.OnboardOwner, config.OnboardRepo, onboardPath, config.OnboardBranch)
+	contentsPath := OnboardAPIPath("contents/%s?ref=%s", onboardPath, config.OnboardBranch)
 	data, err := github.FetchJSON(contentsPath)
 	if err != nil {
 		return onboardFile, fmt.Errorf("failed to fetch onboard file %s: %w", onboardPath, err)
@@ -112,7 +120,7 @@ func SpecRepoFetchOnboard(onboardPath string) (onboarding.OnboardFile, error) {
 		return onboardFile, fmt.Errorf("failed to unmarshal %s: %w", onboardPath, err)
 	}
 
-	if len(onboardFile.Standalone) == 0 && len(onboardFile.Groups) == 0 {
+	if len(onboardFile.Components) == 0 {
 		return onboardFile, fmt.Errorf("no components found in %s", onboardPath)
 	}
 	return onboardFile, nil
@@ -123,11 +131,7 @@ func SpecRepoFetchOnboard(onboardPath string) (onboarding.OnboardFile, error) {
 //
 //	<OnboardDir>/<SpecImageName>-<X.Y.Z>-<R>-specfile.yml
 func SpecRepoExtractTemplateVersion(templatePath string, component naming.Naming) (string, error) {
-	pattern := regexp.MustCompile(
-		fmt.Sprintf(`^%s/%s-(\d+\.\d+\.\d+)-\d+-specfile\.yml$`,
-			regexp.QuoteMeta(component.OnboardDir),
-			regexp.QuoteMeta(component.SpecImageName)),
-	)
+	pattern := component.SpecFilePathRegex(`(\d+\.\d+\.\d+)`, `\d+`)
 	matches := pattern.FindStringSubmatch(templatePath)
 	if matches == nil {
 		return "", fmt.Errorf("template path %q does not match expected spec filename pattern", templatePath)
@@ -139,8 +143,7 @@ func SpecRepoExtractTemplateVersion(templatePath string, component naming.Naming
 // given path. Returns the parsed YAML document node.
 //   - remotePath: repo-relative path to the specfile (e.g. "specs/foo/bar-1.0.0-1-specfile.yml")
 func SpecRepoFetchSpec(remotePath string) (*yaml.Node, error) {
-	fileData, err := github.FetchJSON(fmt.Sprintf("repos/%s/%s/contents/%s?ref=%s",
-		config.OnboardOwner, config.OnboardRepo, remotePath, config.OnboardBranch))
+	fileData, err := github.FetchJSON(OnboardAPIPath("contents/%s?ref=%s", remotePath, config.OnboardBranch))
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch spec %s: %w", remotePath, err)
 	}
@@ -194,36 +197,13 @@ func SpecRepoFetchCommit(specFilePath string) (string, error) {
 //     the prefix is trimmed internally to match the remote storage convention.
 //   - existingPaths: O(1) path set from FetchSpecRepoTree/BuildPathIndex
 func SpecRepoFetchLatestRevision(n naming.Naming, tag string, existingPaths map[string]bool) (*yaml.Node, error) {
-	version := strings.TrimPrefix(tag, "v")
-	pattern := regexp.MustCompile(
-		fmt.Sprintf(`^%s/%s-%s-(\d+)-specfile\.yml$`,
-			regexp.QuoteMeta(n.OnboardDir),
-			regexp.QuoteMeta(n.SpecImageName),
-			regexp.QuoteMeta(version)),
-	)
-
-	highestRevision := 0
-	found := false
-	for path := range existingPaths {
-		matches := pattern.FindStringSubmatch(path)
-		if matches == nil {
-			continue
-		}
-		revisionNumber, err := strconv.Atoi(matches[1])
-		if err != nil {
-			continue
-		}
-		found = true
-		if revisionNumber > highestRevision {
-			highestRevision = revisionNumber
-		}
-	}
-
+	highestRevision, found := semver.FindLatestRevision(n, tag, existingPaths)
 	if !found {
+		version := strings.TrimPrefix(tag, "v")
 		return nil, fmt.Errorf("no existing revision found for %s/%s-%s-*-specfile.yml", n.OnboardDir, n.SpecImageName, version)
 	}
 
-	remotePath := fmt.Sprintf("%s/%s-%s-%d-specfile.yml", n.OnboardDir, n.SpecImageName, version, highestRevision)
+	remotePath := n.SpecFilePathAt(tag, highestRevision)
 	log.Printf("   Template (same version, R%d): %s\n", highestRevision, remotePath)
 	return SpecRepoFetchSpec(remotePath)
 }
@@ -255,7 +235,7 @@ func SpecRepoFindLatestMinorVersion(n naming.Naming, targetTag string, treePaths
 		return "", false
 	}
 
-	candidates := collectSameMajorCandidates(n.OnboardDir, n.SpecImageName, targetMajor, treePaths)
+	candidates := collectSameMajorCandidates(n, targetMajor, treePaths)
 	if len(candidates) == 0 {
 		return "", false
 	}
@@ -274,16 +254,12 @@ type specCandidate struct {
 	revision int
 }
 
-// collectSameMajorCandidates returns every spec for (specDir, specImage) whose
+// collectSameMajorCandidates returns every spec for the given Naming whose
 // major version equals targetMajor. Paths that do not match the canonical
 // "<dir>/<image>-X.Y.Z-R-specfile.yml" shape are silently skipped. Remote spec
 // files are stored without a leading "v" on the version component.
-func collectSameMajorCandidates(specDir, specImage string, targetMajor int, treePaths map[string]bool) []specCandidate {
-	pattern := regexp.MustCompile(
-		fmt.Sprintf(`^%s/%s-(\d+\.\d+\.\d+)-(\d+)-specfile\.yml$`,
-			regexp.QuoteMeta(specDir),
-			regexp.QuoteMeta(specImage)),
-	)
+func collectSameMajorCandidates(n naming.Naming, targetMajor int, treePaths map[string]bool) []specCandidate {
+	pattern := n.SpecFilePathRegex(`(\d+\.\d+\.\d+)`, `(\d+)`)
 
 	candidates := make([]specCandidate, 0)
 	for filePath := range treePaths {

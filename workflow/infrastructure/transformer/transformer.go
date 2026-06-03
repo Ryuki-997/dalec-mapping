@@ -8,8 +8,8 @@ import (
 
 // onboardBuildTargets returns the validated build targets as typed BuildTarget values.
 func onboardBuildTargets(item *workplan.WorkItem) []contents.BuildTarget {
-	targets := make([]contents.BuildTarget, len(item.Naming.Targets))
-	for i, t := range item.Naming.Targets {
+	targets := make([]contents.BuildTarget, len(item.Component.Targets))
+	for i, t := range item.Component.Targets {
 		targets[i] = contents.BuildTarget(t)
 	}
 	return targets
@@ -22,11 +22,6 @@ func TransformToDalec(item *workplan.WorkItem) parser.DalecSpec {
 
 	// Add syntax header (special comment format)
 	spec["# syntax"] = "ghcr.io/project-dalec/dalec/frontend:0.20"
-
-	// Detect pinned Go toolchain image from Dockerfile stages and store version.
-	if pin := parser.DetectGoToolchainPin(item.BuildFiles.Dockerfile.Stages); pin != nil {
-		item.BuildFiles.RepoInfo.GoVersion = pin.GoVersion()
-	}
 
 	// Detect go mod download patterns once — shared across build, sources, and args.
 	goModDownloads := detectGoModDownloads(item)

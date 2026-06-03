@@ -19,7 +19,6 @@ package partnerrepo
 import (
 	"fmt"
 	"log"
-	"os"
 	"path"
 	"strings"
 
@@ -39,7 +38,7 @@ func DiscoverBuildFiles(item *workplan.WorkItem) error {
 	item.BuildFiles.Dockerfile.Source = dockerfileContent
 	item.BuildFiles.Makefile.Source = makefileContent
 
-	log.Printf("✅ Discover complete for %s @ %s\n", item.Naming.SpecImageName, item.Tag.Full)
+	log.Printf("✅ Discover complete for %s\n", item.Naming.SpecFileName)
 	return nil
 }
 
@@ -48,19 +47,20 @@ func DiscoverBuildFiles(item *workplan.WorkItem) error {
 // orchestration layer to fetch the template version's files for comparison.
 func FetchBuildFilesAtTag(item *workplan.WorkItem, tag string) ([]byte, []byte, error) {
 	component := item.Naming
-	repoURL := component.Repository
+	cfg := item.Component
+	repoURL := cfg.Repository
 
 	log.Println()
 	log.Printf("── Fetch build files: %s @ %s ──\n", component.SpecImageName, tag)
 	log.Printf("Repository: %s\n", repoURL)
 
 	dockerfilePath := ""
-	if component.DockerfileDir != "" {
-		dockerfilePath = resolveFilePath(component.DockerfileDir, "Dockerfile")
+	if cfg.DockerfileDir != "" {
+		dockerfilePath = resolveFilePath(cfg.DockerfileDir, "Dockerfile")
 	}
 	makefilePath := ""
-	if component.MakefileDir != "" {
-		makefilePath = resolveFilePath(component.MakefileDir, "Makefile")
+	if cfg.MakefileDir != "" {
+		makefilePath = resolveFilePath(cfg.MakefileDir, "Makefile")
 	}
 
 	componentPath := extractComponentPath(repoURL)
@@ -76,7 +76,7 @@ func FetchBuildFilesAtTag(item *workplan.WorkItem, tag string) ([]byte, []byte, 
 	log.Printf("  Dockerfile path: %s\n", dockerfilePath)
 	log.Printf("  Makefile path:   %s\n", makefilePath)
 
-	return fetchBuildFiles(repoURL, dockerfilePath, makefilePath, tag, component.License)
+	return fetchBuildFiles(repoURL, dockerfilePath, makefilePath, tag)
 }
 
 // resolveFilePath resolves a partner-provided path to a full file path.
@@ -107,16 +107,16 @@ func resolveFilePath(dirPath, fileName string) string {
 }
 
 // fetchBuildFiles dispatches to the ADO or GitHub fetcher based on the repo URL.
-func fetchBuildFiles(repoURL, dockerfilePath, makefilePath, tag, configuredLicense string) ([]byte, []byte, error) {
+func fetchBuildFiles(repoURL, dockerfilePath, makefilePath, tag string) ([]byte, []byte, error) {
 	if ado.IsADORepo(repoURL) {
-		return fetchBuildFilesFromADO(repoURL, dockerfilePath, makefilePath, tag, configuredLicense)
+		return fetchBuildFilesFromADO(repoURL, dockerfilePath, makefilePath, tag)
 	}
-	return fetchBuildFilesFromGitHub(repoURL, dockerfilePath, makefilePath, tag, configuredLicense)
+	return fetchBuildFilesFromGitHub(repoURL, dockerfilePath, makefilePath, tag)
 }
 
 // fetchBuildFilesFromADO fetches Dockerfile and Makefile from an ADO repository.
-func fetchBuildFilesFromADO(repoURL, dockerfilePath, makefilePath, tag, configuredLicense string) ([]byte, []byte, error) {
-	if _, err := ado.FetchADORepoInfo(repoURL, configuredLicense); err != nil {
+func fetchBuildFilesFromADO(repoURL, dockerfilePath, makefilePath, tag string) ([]byte, []byte, error) {
+	if _, _, err := ado.FetchADORepoInfo(repoURL); err != nil {
 		return nil, nil, fmt.Errorf("failed to fetch repository info: %w", err)
 	}
 
@@ -144,8 +144,8 @@ func fetchBuildFilesFromADO(repoURL, dockerfilePath, makefilePath, tag, configur
 }
 
 // fetchBuildFilesFromGitHub fetches Dockerfile and Makefile from a GitHub repository.
-func fetchBuildFilesFromGitHub(repoURL, dockerfilePath, makefilePath, tag, configuredLicense string) ([]byte, []byte, error) {
-	repoInfo, err := github.FetchRepoInfo(repoURL, configuredLicense)
+func fetchBuildFilesFromGitHub(repoURL, dockerfilePath, makefilePath, tag string) ([]byte, []byte, error) {
+	repoInfo, _, err := github.FetchRepoInfo(repoURL)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to fetch repository info: %w", err)
 	}
@@ -183,18 +183,6 @@ func fetchBuildFilesFromGitHub(repoURL, dockerfilePath, makefilePath, tag, confi
 
 // diffSiblings was removed: comparison now lives in the orchestration layer
 // using SpecRepoFetchBuildFilesForVersion to fetch the per-version snapshot.
-
-// clearResultDirectory removes all contents from the result directory.
-func clearResultDirectory(resultDir string) error {
-	if _, err := os.Stat(resultDir); os.IsNotExist(err) {
-		return nil
-	}
-	if err := os.RemoveAll(resultDir); err != nil {
-		return fmt.Errorf("failed to clear result directory: %w", err)
-	}
-	log.Printf("Cleared result directory: %s\n", resultDir)
-	return nil
-}
 
 // extractComponentPath returns the component subdirectory from a repository URL.
 // Returns "" when the URL has no component suffix (i.e. the project lives at root).

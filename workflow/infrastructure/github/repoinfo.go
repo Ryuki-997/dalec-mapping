@@ -6,39 +6,34 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path"
 	"strings"
 
 	"dalec-mapping/domain/repository"
 )
 
 // FetchRepoInfo fetches repository metadata from the GitHub API.
-// configuredLicense overrides the license detected from the GitHub API when non-empty.
-func FetchRepoInfo(repoPath, configuredLicense string) (*repository.RepoInfo, error) {
+// Returns the RepoInfo, the GitHub-reported SPDX license ("" when GitHub has
+// none), and an error. Callers apply their own license fallback.
+func FetchRepoInfo(repoPath string) (*repository.RepoInfo, string, error) {
 	baseRef, componentPath := SplitGitHubComponent(repoPath)
 	owner, repo, branch := fetchRepositorySegments(baseRef)
-
-	componentName := ""
-	if componentPath != "" {
-		componentName = path.Base(componentPath)
-	}
 
 	info := &repository.RepoInfo{
 		Owner:         owner,
 		Repo:          repo,
 		Branch:        branch,
 		ComponentPath: componentPath,
-		ComponentName: componentName,
 		GitURL:        fmt.Sprintf("https://github.com/%s/%s", owner, repo),
 	}
 
-	if err := fetchRepoMetadata(info, configuredLicense); err != nil {
-		return nil, fmt.Errorf("failed to fetch repo metadata: %w", err)
+	fetchedLicense, err := fetchRepoMetadata(info)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to fetch repo metadata: %w", err)
 	}
 	if err := fetchSourceGenerator(info); err != nil {
-		return nil, fmt.Errorf("failed to fetch source generator: %w", err)
+		return nil, "", fmt.Errorf("failed to fetch source generator: %w", err)
 	}
-	return info, nil
+	return info, fetchedLicense, nil
 }
 
 // fetchRepositorySegments extracts the repository segments from a GitHub URL or path.
@@ -50,7 +45,7 @@ func fetchRepositorySegments(repo string) (owner, name, branch string) {
 
 	parts := strings.Split(repo, "/")
 	if len(parts) == 2 {
-		repoData, err := FetchJSON(fmt.Sprintf("repos/%s/%s", parts[0], parts[1]))
+		repoData, err := FetchJSON(RepoAPIPath(parts[0], parts[1], ""))
 		if err != nil {
 			log.Printf("Error: failed to fetch repo info for %s: %v\n", repo, err)
 			os.Exit(1)

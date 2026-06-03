@@ -89,7 +89,7 @@ func extractADODomain(gitURL string) string {
 // adoGoModAuth returns the value for a gomod generate entry.
 // For ADO Go repos it includes an auth block keyed by the ADO domain;
 // for all other repos it returns an empty map.
-func adoGoModAuth(repoInfo *domainRepo.RepoInfo) map[string]interface{} {
+func adoGoModAuth(repoInfo domainRepo.RepoInfo) map[string]interface{} {
 	if ado.IsADORepo(repoInfo.GitURL) && repoInfo.Generator == domainRepo.GoModGenerator {
 		domain := extractADODomain(repoInfo.GitURL)
 		return map[string]interface{}{
@@ -192,10 +192,7 @@ func buildSubmoduleSources(item *workplan.WorkItem, sources map[string]interface
 // literal `cd <subdir> &&` in binary build commands and pipeline steps.
 // When a ComponentPath is set, only subpaths that fall within
 // the component directory (DFS) are included.
-func collectGoModSubpaths(item *workplan.WorkItem, spec *contents.DockerSpec) []string {
-	if spec == nil {
-		return nil
-	}
+func collectGoModSubpaths(item *workplan.WorkItem, spec contents.DockerSpec) []string {
 	repoInfo := item.BuildFiles.RepoInfo
 
 	seen := map[string]bool{}
@@ -237,7 +234,7 @@ func collectGoModSubpaths(item *workplan.WorkItem, spec *contents.DockerSpec) []
 // (legacy) and `cd /go/pkg/mod/<module>@<version>` patterns and returns
 // parsed info for each.
 func detectGoModDownloads(item *workplan.WorkItem) []goModDownloadInfo {
-	if item.BuildFiles.Spec == nil {
+	if len(item.BuildFiles.Spec.PipelineSteps) == 0 && len(item.BuildFiles.Spec.Binaries) == 0 {
 		return nil
 	}
 	repoInfo := item.BuildFiles.RepoInfo

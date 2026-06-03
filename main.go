@@ -24,7 +24,7 @@ import (
 // ═══════════════════════════════════════════════════════════════════════════════
 
 func main() {
-	inputPath, patchMode := orchestration.ParseFlags()
+	inputPath, patchMode, noPublish := orchestration.ParseFlags()
 	orchestration.LoadEnv()
 
 	if patchMode {
@@ -41,6 +41,11 @@ func main() {
 	// ── Observers: local cache, golden diff, action log ──
 	observeResults(results)
 
+	if noPublish {
+		log.Println("⚠️  -no-publish set: skipping Phase 3 (PR publishing)")
+		return
+	}
+
 	// ── Phase 3: Group results, resolve naming, publish PRs ──
 	batches := orchestration.GroupIntoBatches(results, naming.GeneratePRID)
 	log.Printf("Total PR groups to submit: %d", len(batches))
@@ -48,7 +53,7 @@ func main() {
 		log.Printf("Group: %s, Components: %d", batch.Key, len(batch.Components))
 	}
 
-	outcomes := orchestration.Publish(batches)
+	outcomes := orchestration.Publish(batches, plan.ExistingPaths)
 	orchestration.PrintPublishSummary(outcomes)
 }
 

@@ -55,7 +55,7 @@ func computeArtifactPaths(item *workplan.WorkItem) map[string]interface{} {
 	paths := make(map[string]interface{})
 
 	// Wrapper pipeline: the LAST go build output from pipeline steps is the final artifact.
-	if item.BuildFiles.Spec != nil && len(item.BuildFiles.Spec.PipelineSteps) > 0 {
+	if len(item.BuildFiles.Spec.PipelineSteps) > 0 {
 		if wrapperPath := lastGoBuildOutputInPipeline(item.BuildFiles.Spec.PipelineSteps); wrapperPath != "" {
 			paths[filepath.ToSlash(wrapperPath)] = struct{}{}
 			return paths
@@ -63,7 +63,7 @@ func computeArtifactPaths(item *workplan.WorkItem) map[string]interface{} {
 	}
 
 	// Standard case: derive from binaries.
-	if item.BuildFiles.Spec != nil && len(item.BuildFiles.Spec.Binaries) > 0 {
+	if len(item.BuildFiles.Spec.Binaries) > 0 {
 		epBase := canonicalBase(item.BuildFiles.Spec.Symlink)
 		for _, bin := range item.BuildFiles.Spec.Binaries {
 			p := resolveOutputPath(bin)
@@ -82,8 +82,8 @@ func computeArtifactPaths(item *workplan.WorkItem) map[string]interface{} {
 		paths["/go/bin/"+item.BuildFiles.Makefile.GoBuildCommands[0].Name] = struct{}{}
 	} else {
 		binaryName := item.BuildFiles.RepoInfo.Repo
-		if item.BuildFiles.RepoInfo.ComponentName != "" {
-			binaryName = item.BuildFiles.RepoInfo.ComponentName
+		if item.Component.Name != "" {
+			binaryName = item.Component.Name
 		}
 		paths["/go/bin/"+binaryName] = struct{}{}
 	}

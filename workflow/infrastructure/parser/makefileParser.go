@@ -92,12 +92,12 @@ func selectRecipes(recipes []targetRecipe, imageName string) []targetRecipe {
 		return recipes
 	}
 
-	// Level 1: targets containing the component name.
-	byComponentName := filterRecipes(recipes, func(target string) bool {
+	// Level 1: targets containing the spec image name.
+	bySpecImageName := filterRecipes(recipes, func(target string) bool {
 		return strings.Contains(target, imageName)
 	})
-	if len(byComponentName) > 0 {
-		return byComponentName
+	if len(bySpecImageName) > 0 {
+		return bySpecImageName
 	}
 
 	// Level 2: targets containing "build".

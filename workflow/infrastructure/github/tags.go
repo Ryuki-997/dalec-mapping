@@ -15,7 +15,7 @@ func FetchAllGithubTags(repoURL string) (map[string]string, error) {
 	allTags := map[string]string{}
 	page := 1
 	for {
-		pageData, err := FetchJSONArray(fmt.Sprintf("repos/%s/%s/tags?per_page=100&page=%d", owner, repo, page))
+		pageData, err := FetchJSONArray(RepoAPIPath(owner, repo, "tags?per_page=100&page=%d", page))
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch tags for %s/%s (page %d): %w", owner, repo, page, err)
 		}

@@ -764,26 +764,27 @@ var lineContinuationRe = LineContinuationRe
 // ─── Chunk 5 · MAIN ─────────────────────────────────────────────────────────
 
 // ExtractStaticBuildValues derives a DockerSpec from the parsed Dockerfile.
-// Returns nil if no Dockerfile stages are available or no Go builder stage is found.
-func ExtractStaticBuildValues(dockerfile contents.DockerfileInfo) *contents.DockerSpec {
+// Returns a zero-value DockerSpec if no Dockerfile stages are available or no
+// Go builder stage is found.
+func ExtractStaticBuildValues(dockerfile contents.DockerfileInfo) contents.DockerSpec {
 	stages := dockerfile.Stages
 	globalArgs := dockerfile.Args
 
 	if len(stages) == 0 {
-		return nil
+		return contents.DockerSpec{}
 	}
 
 	builderIdx := findBuilderStage(stages)
 	if builderIdx < 0 {
 		log.Println("⚠️  Static extractor: no Go builder stage found")
-		return nil
+		return contents.DockerSpec{}
 	}
 
 	binaries := extractGoBinaries(stages[builderIdx], globalArgs)
 	pipelineSteps := extractPipelineSteps(stages, builderIdx)
 	entrypoint, symlink := resolveEntrypoint(stages, binaries)
 
-	spec := &contents.DockerSpec{
+	spec := contents.DockerSpec{
 		Binaries:      binaries,
 		PipelineSteps: pipelineSteps,
 		Entrypoint:    entrypoint,

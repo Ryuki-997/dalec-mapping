@@ -2,7 +2,26 @@ package github
 
 // ─── Chunk 1 · URL PARSING ──────────────────────────────────────────────────
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
+
+// RepoAPIPath builds a GitHub REST path of the form
+// "repos/<owner>/<repo>/<suffix>". suffixFmt is treated as a fmt format
+// string applied to args (use a plain string when no args are needed).
+//
+// Example:
+//
+//	RepoAPIPath("foo", "bar", "git/trees/%s?recursive=1", branch)
+//	→ "repos/foo/bar/git/trees/main?recursive=1"
+func RepoAPIPath(owner, repo, suffixFmt string, args ...any) string {
+	base := "repos/" + owner + "/" + repo
+	if suffixFmt == "" {
+		return base
+	}
+	return base + "/" + fmt.Sprintf(suffixFmt, args...)
+}
 
 // SplitGitHubComponent splits a GitHub path (owner/repo or owner/repo/component/...)
 // into its base ref and an optional component subdirectory.

@@ -187,12 +187,11 @@ func fallbackBuildStep(item *workplan.WorkItem, cdTarget, buildTarget string) ([
 // Uses the first parsed binary name when available, then Makefile binaries,
 // then the component name (if set), otherwise the repo name.
 func resolveFallbackBinaryName(item *workplan.WorkItem) string {
-	repoInfo := item.BuildFiles.RepoInfo
-	binaryName := repoInfo.Repo
-	if repoInfo.ComponentName != "" {
-		binaryName = repoInfo.ComponentName
+	binaryName := item.BuildFiles.RepoInfo.Repo
+	if item.Component.Name != "" {
+		binaryName = item.Component.Name
 	}
-	if item.BuildFiles.Spec != nil && len(item.BuildFiles.Spec.Binaries) > 0 && item.BuildFiles.Spec.Binaries[0].Name != "" {
+	if len(item.BuildFiles.Spec.Binaries) > 0 && item.BuildFiles.Spec.Binaries[0].Name != "" {
 		binaryName = item.BuildFiles.Spec.Binaries[0].Name
 	} else if len(item.BuildFiles.Makefile.GoBuildCommands) > 0 && item.BuildFiles.Makefile.GoBuildCommands[0].Name != "" {
 		binaryName = item.BuildFiles.Makefile.GoBuildCommands[0].Name
@@ -272,7 +271,7 @@ func parseBuildLines(rawCmds []string, baseDir string, goModDownloads []goModDow
 // wrapper Dockerfile stages) to the command parts. Handles directory navigation,
 // copy injection, env stripping, and go-mod path rewriting.
 func emitPipelineSteps(item *workplan.WorkItem, parts []string, baseDir string, goModDownloads []goModDownloadInfo, submodCopies map[string][]string) []string {
-	if item.BuildFiles.Spec == nil || len(item.BuildFiles.Spec.PipelineSteps) == 0 {
+	if len(item.BuildFiles.Spec.PipelineSteps) == 0 {
 		return parts
 	}
 
@@ -377,7 +376,7 @@ func emitDeferredBuilds(parts []string, deferredLines []buildLine, submodCopies 
 // "dropgz" when binaries[0].Name is "azure-ipam"). BIN_SUFFIX is injected so the same
 // step works for both Linux (BIN_SUFFIX="") and windowscross (BIN_SUFFIX=".exe").
 func rawBuildCommands(item *workplan.WorkItem, goModDownloads []goModDownloadInfo) []string {
-	if item.BuildFiles.Spec == nil {
+	if len(item.BuildFiles.Spec.Binaries) == 0 {
 		return makefileBuildCommands(item)
 	}
 

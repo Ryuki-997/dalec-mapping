@@ -4,10 +4,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
-	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/domain/tags"
 )
 
@@ -15,59 +15,109 @@ import (
 // component+tag combination through the pipeline. It is organised in three
 // sections so the data flow is explicit:
 //
-//   - Embedded ComponentConfig — the immutable YAML fields parsed from the
-//     partner's onboard.yml (Repository, Targets, License, ...).
-//   - Runtime — values populated by Phase 1 when an onboard file is walked
-//     per-component (OnboardDir, SpecImageName, SpecRepository, GroupName).
+//   - Runtime — the sole input populated externally during Phase 1 when an
+//     onboard file is walked per-component (OnboardDir).
+//   - Atomic — the smallest derived naming units (SpecRepository,
+//     SpecImageName). Populated by DeriveAtomic from OnboardDir. These are
+//     the canonical names used by logs and by code that needs partner /
+//     component identity without the rest of the generated set.
 //   - Generated — values produced by Construct (and WithPRID) from the
-//     embedded + runtime sections (DisplayName, FolderPath, BranchName, ...).
+//     atomic section + the resolved tag + the component's group name.
 type Naming struct {
-	// ─── Embedded: YAML config from onboard.yml ─────────────────────────────
-	onboarding.ComponentConfig
-
 	// ─── Runtime: populated by Phase 1 per-component walk ───────────────────
 
 	// OnboardDir is the component's directory in the spec repo
 	// (e.g. "specs/containernetworking/azure-cns").
 	OnboardDir string
 
-	// SpecImageName is the component's image name as it appears in the
-	// onboard.yml mapping key (e.g. "azure-cns").
-	SpecImageName string
+	// ─── Atomic: smallest derived naming units (populated by DeriveAtomic) ──
 
-	// SpecRepository is the partner name used in specfile content
-	// (e.g. "containernetworking"). Empty for solo standalone components.
+	// SpecRepository is the partner folder name beneath "specs/"
+	// (e.g. "containernetworking"). For single-component partner folders
+	// this equals the SpecImageName.
 	SpecRepository string
 
-	// GroupName is the group key from onboard.yml; empty for standalone components.
-	GroupName string
+	// SpecImageName is the component's leaf folder name
+	// (e.g. "azure-cns"). Matches the onboard.yml mapping key.
+	SpecImageName string
 
 	// ─── Generated: filled by Construct / WithPRID ──────────────────────────
 
-	DisplayName     string // GroupName if grouped, else SpecImageName
+	DisplayName     string // GroupName supplied to Construct (equals SpecImageName for standalone components)
 	VersionRevision string // e.g. "0.0.1-1"
-	FolderPath      string // OnboardDir with "specs/" prefix stripped
+	SpecFileName    string // e.g. "aks-node-controller-0.0.1-1-specfile.yml" (<SpecImageName>-<VersionRevision>-specfile.yml)
+	FolderPath      string // OnboardDir with "specs/" prefix stripped (and component leaf stripped for grouped components)
 	SpecFilePath    string // e.g. "specs/aks-node-controller/aks-node-controller-0.0.1-1-specfile.yml"
 	BranchName      string // e.g. "dalec/containernetworking/azure-ipam/0.0.1-1/20260505-72c644"
 	PRTitle         string // e.g. "[Dalec][20260505-72c644] aks-node-controller @ 0.0.1-1"
 }
 
-// Construct fills the generated section in-place from the embedded
-// ComponentConfig and the runtime section using the resolved tag. BranchName
-// and PRTitle remain empty until WithPRID is called.
+// DeriveAtomic fills the atomic section in-place from OnboardDir.
+// SpecImageName is the last path segment; SpecRepository is the partner
+// folder name immediately under "specs/". Safe to call repeatedly.
+func (n *Naming) DeriveAtomic() {
+	specRepository, specImageName := splitOnboardDir(n.OnboardDir)
+	n.SpecRepository = specRepository
+	n.SpecImageName = specImageName
+}
+
+// splitOnboardDir returns (specRepository, specImageName) derived from an
+// onboard directory path. specImageName is the last path segment;
+// specRepository is the immediately enclosing directory name. For a
+// single-segment path (e.g. "aks-node-controller"), both equal that segment.
+func splitOnboardDir(onboardDir string) (string, string) {
+	trimmed := strings.TrimPrefix(onboardDir, "specs/")
+	segments := strings.Split(trimmed, "/")
+	specImageName := segments[len(segments)-1]
+	specRepository := specImageName
+	if len(segments) >= 2 {
+		specRepository = segments[len(segments)-2]
+	}
+	return specRepository, specImageName
+}
+
+// Construct fills the generated section in-place from the atomic section,
+// the resolved tag, and the component's group name. groupName is the
+// onboard.yml group key for grouped components, or the component name for
+// standalone components — it is always non-empty. BranchName and PRTitle
+// remain empty until WithPRID is called.
 //
 // Spec file paths and version labels use the numeric semver (no "v" prefix)
 // to match the remote spec repo's storage convention.
-func (n *Naming) Construct(tagSet tags.Set) {
+func (n *Naming) Construct(tagSet tags.Set, groupName string) {
 	n.VersionRevision = fmt.Sprintf("%s-%d", tagSet.Version, tagSet.Revision)
+	n.DisplayName = groupName
+	n.SpecFileName = fmt.Sprintf("%s-%s-specfile.yml", n.SpecImageName, n.VersionRevision)
+	n.FolderPath = n.deriveFolderPath(groupName)
+	n.SpecFilePath = fmt.Sprintf("%s/%s", n.OnboardDir, n.SpecFileName)
+}
 
-	n.DisplayName = n.SpecImageName
-	if n.GroupName != "" {
-		n.DisplayName = n.GroupName
-	}
+// SpecFilePathAt returns the spec file path for an arbitrary (version, revision)
+// pair using this Naming's OnboardDir and SpecImageName. The version is
+// stripped of any leading "v" to match the remote storage convention.
+// Useful for callers that need to address a different revision than the one
+// currently bound to the Naming (e.g. the prior revision during a bump).
+func (n Naming) SpecFilePathAt(version string, revision int) string {
+	version = strings.TrimPrefix(version, "v")
+	return fmt.Sprintf("%s/%s-%s-%d-specfile.yml", n.OnboardDir, n.SpecImageName, version, revision)
+}
 
-	n.FolderPath = n.deriveFolderPath()
-	n.SpecFilePath = fmt.Sprintf("%s/%s-%s-specfile.yml", n.OnboardDir, n.SpecImageName, n.VersionRevision)
+// SpecFilePathRegex compiles a regex anchored to this component's OnboardDir
+// and SpecImageName that matches spec file paths of the shape:
+//
+//	<OnboardDir>/<SpecImageName>-<versionPattern>-<revisionPattern>-specfile.yml
+//
+// versionPattern and revisionPattern are raw regex fragments — typically
+// capture groups like `(\d+\.\d+\.\d+)` or fixed strings (callers are
+// responsible for quoting concrete values via regexp.QuoteMeta).
+func (n Naming) SpecFilePathRegex(versionPattern, revisionPattern string) *regexp.Regexp {
+	return regexp.MustCompile(fmt.Sprintf(
+		`^%s/%s-%s-%s-specfile\.yml$`,
+		regexp.QuoteMeta(n.OnboardDir),
+		regexp.QuoteMeta(n.SpecImageName),
+		versionPattern,
+		revisionPattern,
+	))
 }
 
 // WithPRID returns a copy of the Naming with BranchName and PRTitle populated
@@ -79,17 +129,18 @@ func (n Naming) WithPRID(prID string) Naming {
 }
 
 // deriveFolderPath computes the branch folder path from OnboardDir by stripping
-// the "specs/" prefix. For grouped components, the trailing component name is
-// removed so the branch represents the group-level folder.
+// the "specs/" prefix. For grouped components (groupName != SpecImageName),
+// the trailing component name is removed so the branch represents the
+// group-level folder.
 //
 // Examples:
 //
 //	standalone single:  OnboardDir="specs/aks-node-controller"            → "aks-node-controller"
 //	standalone multi:   OnboardDir="specs/containernetworking/azure-ipam" → "containernetworking/azure-ipam"
 //	grouped component:  OnboardDir="specs/containernetworking/azure-cns"  → "containernetworking"
-func (n *Naming) deriveFolderPath() string {
+func (n *Naming) deriveFolderPath(groupName string) string {
 	folderPath := strings.TrimPrefix(n.OnboardDir, "specs/")
-	if n.GroupName != "" {
+	if groupName != n.SpecImageName {
 		folderPath = strings.TrimSuffix(folderPath, "/"+n.SpecImageName)
 	}
 	return folderPath

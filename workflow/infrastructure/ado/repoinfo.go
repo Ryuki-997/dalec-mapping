@@ -5,7 +5,6 @@ package ado
 import (
 	"fmt"
 	"net/url"
-	"path"
 	"strings"
 
 	domainRepo "dalec-mapping/domain/repository"
@@ -14,9 +13,9 @@ import (
 // FetchADORepoInfo assembles a RepoInfo by querying the ADO repository
 // remotely via git ls-remote. The repoURL may contain a component path
 // (e.g. _git/repo/comp/path) which is extracted and stored on RepoInfo.
-// configuredLicense is the SPDX identifier from the component config;
-// when empty, defaults to "proprietary".
-func FetchADORepoInfo(repoURL, configuredLicense string) (*domainRepo.RepoInfo, error) {
+// ADO has no license API, so the returned license is always "" and callers
+// apply their own fallback.
+func FetchADORepoInfo(repoURL string) (*domainRepo.RepoInfo, string, error) {
 	baseURL, componentPath := SplitADOComponent(repoURL)
 
 	// Resolve default branch from the symbolic ref of HEAD.
@@ -31,28 +30,16 @@ func FetchADORepoInfo(repoURL, configuredLicense string) (*domainRepo.RepoInfo, 
 		}
 	}
 
-	componentName := ""
-	if componentPath != "" {
-		componentName = path.Base(componentPath)
-	}
-
-	license := configuredLicense
-	if license == "" {
-		license = "proprietary"
-	}
-
 	info := &domainRepo.RepoInfo{
 		Owner:         adoOrg(baseURL),
 		Repo:          adoRepoName(baseURL),
 		Branch:        branch,
 		ComponentPath: componentPath,
-		ComponentName: componentName,
 		GitURL:        baseURL,
 		Description:   fmt.Sprintf("This is the %s project.", adoRepoName(baseURL)),
-		License:       license,
 	}
 
-	return info, nil
+	return info, "", nil
 }
 
 // adoRepoName extracts the repository name from an ADO git URL

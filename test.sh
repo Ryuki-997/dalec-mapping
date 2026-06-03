@@ -86,13 +86,13 @@ for section in "${SECTIONS[@]}"; do
 
     echo "════════════════════════════════════════"
     echo "  Section: ${spec_path} (expected action: ${expected_action})"
-    echo "  Running: go run . -branch=SpecfileTest -path=${spec_path} ${force_arg}"
+    echo "  Running: go run . -no-publish -branch=SpecfileTest -path=${spec_path} ${force_arg}"
     echo "════════════════════════════════════════"
     echo ""
 
     # Run the pipeline, streaming output and capturing diffWithGolden results.
     # diffWithGolden runs per component×tag right after spec generation.
-    go run . -branch=SpecfileTest -path="${spec_path}" ${force_arg} 2>&1 | while IFS= read -r line; do
+    go run . -no-publish -branch=SpecfileTest -path="${spec_path}" ${force_arg} 2>&1 | while IFS= read -r line; do
         echo "$line"
 
         # ✅ PASS  {component} @ {tag} [{action}]

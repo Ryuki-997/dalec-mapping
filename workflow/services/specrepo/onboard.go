@@ -108,11 +108,11 @@ func filterOnboardFile(entry interface{}, inputPath string) (string, bool) {
 	return entryPath, true
 }
 
-// splitOnboardPath extracts the onboard directory and partner name from an
-// onboard.yml path like "<prefix>/<partner>/onboard.yml" and returns a
-// workplan.WorkItem seeded with the path-derived Naming runtime fields
-// (OnboardDir, SpecRepository). Per-component fields (SpecImageName,
-// GroupName) and the embedded ComponentConfig are filled later by
+// splitOnboardPath extracts the onboard directory from an onboard.yml path
+// like "<prefix>/<partner>/onboard.yml" and returns a workplan.WorkItem
+// seeded with the path-derived Naming runtime field (OnboardDir).
+// The atomic section (SpecRepository, SpecImageName) and the embedded
+// OnboardingComponent (including Name + GroupName) are filled later by
 // walkOnboardFile.
 func splitOnboardPath(onboardPath string) (workplan.WorkItem, error) {
 	segments := strings.Split(onboardPath, "/")
@@ -122,8 +122,7 @@ func splitOnboardPath(onboardPath string) (workplan.WorkItem, error) {
 	}
 	return workplan.WorkItem{
 		Naming: naming.Naming{
-			OnboardDir:     strings.Join(segments[:segmentCount-1], "/"),
-			SpecRepository: segments[segmentCount-2],
+			OnboardDir: strings.Join(segments[:segmentCount-1], "/"),
 		},
 	}, nil
 }

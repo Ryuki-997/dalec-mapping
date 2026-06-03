@@ -221,14 +221,14 @@ func runGenerate(item *workplan.WorkItem) buildresult.BuildResult {
 // up against tagcache.Cache so phase 2 only proceeds when the tag actually
 // exists in the partner repo.
 func deriveTemplateTag(item *workplan.WorkItem, targetVersion string) (string, error) {
-	repoTags, ok := tagcache.Cache[item.Naming.Repository]
+	repoTags, ok := tagcache.Cache[item.Component.Repository]
 	if !ok {
-		return "", fmt.Errorf("no cached tags for repo %s", item.Naming.Repository)
+		return "", fmt.Errorf("no cached tags for repo %s", item.Component.Repository)
 	}
 	prefix := strings.TrimSuffix(item.Tag.Full, item.Tag.Stripped)
 	candidate := prefix + "v" + targetVersion
 	if _, ok := repoTags[candidate]; !ok {
-		return "", fmt.Errorf("template tag %s not found in repo tags for %s", candidate, item.Naming.Repository)
+		return "", fmt.Errorf("template tag %s not found in repo tags for %s", candidate, item.Component.Repository)
 	}
 	return candidate, nil
 }

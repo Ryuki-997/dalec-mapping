@@ -12,62 +12,60 @@ import (
 
 // OnboardFile is the top-level structure of a partner's onboard.yml.
 // Top-level keys are either:
-//   - Standalone components: the value has a "repository" field
-//   - Groups: the value is a map of component names → ComponentConfig
+//   - Standalone components: the value has a "repository" field. The
+//     resulting component carries Name=GroupName=key.
+//   - Groups: the value is a map of component names → OnboardingComponent.
+//     Each resulting component carries Name=inner-key and GroupName=outer-key.
 //
 // The format auto-detects based on whether "repository" appears in the value.
 // Targets are validated during unmarshalling — components with no supported
-// targets are dropped from the resulting maps.
+// targets are dropped from the resulting slice.
 type OnboardFile struct {
-	Standalone map[string]ComponentConfig            // top-level entries with "repository"
-	Groups     map[string]map[string]ComponentConfig // top-level entries that are groups of components
+	Components []OnboardingComponent
 }
 
 // UnmarshalYAML implements custom unmarshalling to auto-detect standalone
 // components vs groups based on whether "repository" is present. Targets on
-// each decoded ComponentConfig are validated inline; components that end up
-// with no valid targets are skipped with a warning.
+// each decoded OnboardingComponent are validated inline; components that end up
+// with no valid targets are skipped with a warning. Name and GroupName are
+// stamped onto each component from its YAML keys.
 func (f *OnboardFile) UnmarshalYAML(value *yaml.Node) error {
 	if value.Kind != yaml.MappingNode {
 		return fmt.Errorf("onboard file must be a YAML mapping")
 	}
-
-	f.Standalone = make(map[string]ComponentConfig)
-	f.Groups = make(map[string]map[string]ComponentConfig)
 
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		keyNode := value.Content[i]
 		valNode := value.Content[i+1]
 		name := keyNode.Value
 
-		// Try decoding as a single ComponentConfig first.
-		var comp ComponentConfig
+		// Try decoding as a single OnboardingComponent first.
+		var comp OnboardingComponent
 		if err := valNode.Decode(&comp); err == nil && comp.Repository != "" {
 			comp.Targets = validateTargets(name, comp.Targets)
 			if len(comp.Targets) == 0 {
 				continue
 			}
-			f.Standalone[name] = comp
+			comp.Name = name
+			comp.GroupName = name
+			f.Components = append(f.Components, comp)
 			continue
 		}
 
-		// Otherwise treat it as a group: map[string]ComponentConfig.
-		var group map[string]ComponentConfig
+		// Otherwise treat it as a group: map[string]OnboardingComponent.
+		var group map[string]OnboardingComponent
 		if err := valNode.Decode(&group); err != nil {
 			return fmt.Errorf("key %q is neither a component (no repository) nor a valid group: %w", name, err)
 		}
-		validatedGroup := make(map[string]ComponentConfig, len(group))
-		for componentName, cfg := range group {
-			cfg.Targets = validateTargets(componentName, cfg.Targets)
+		for specImageName, cfg := range group {
+			cfg.Targets = validateTargets(specImageName, cfg.Targets)
 			if len(cfg.Targets) == 0 {
 				continue
 			}
-			validatedGroup[componentName] = cfg
+			cfg.Name = specImageName
+			cfg.GroupName = name
+			f.Components = append(f.Components, cfg)
 		}
-		if len(validatedGroup) == 0 {
-			continue
-		}
-		f.Groups[name] = validatedGroup
 	}
 
 	return nil

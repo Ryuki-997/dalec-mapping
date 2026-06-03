@@ -79,13 +79,8 @@ func GroupIntoBatches(results []buildresult.BuildResult, idGen PRIDGenerator) []
 }
 
 func groupKeyOf(result buildresult.BuildResult) prbatch.PRGroupKey {
-	component := result.Item.Naming
-	groupName := component.SpecImageName
-	if component.GroupName != "" {
-		groupName = component.GroupName
-	}
 	return prbatch.PRGroupKey{
-		GroupName: groupName,
+		GroupName: result.Item.Component.GroupName,
 		Tag:       result.Item.Tag.Stripped,
 	}
 }
@@ -94,20 +89,22 @@ func groupKeyOf(result buildresult.BuildResult) prbatch.PRGroupKey {
 
 // Publish opens one PR per batch and returns the outcomes (including
 // failures) in batch order. Continues past per-batch errors.
-func Publish(batches []prbatch.PRBatch) []PublishOutcome {
+// existingPaths is the spec-repo path index from Phase 1; it is used to skip
+// BuildFiles snapshot files that already exist remotely.
+func Publish(batches []prbatch.PRBatch, existingPaths map[string]bool) []PublishOutcome {
 	log.Println("═══ Phase 3: Publish ═══")
 	log.Println("─── Create pull requests ───")
 	log.Printf("  Groups to submit: %d", len(batches))
 
 	outcomes := make([]PublishOutcome, 0, len(batches))
 	for _, batch := range batches {
-		outcomes = append(outcomes, publishBatch(batch))
+		outcomes = append(outcomes, publishBatch(batch, existingPaths))
 	}
 	return outcomes
 }
 
-func publishBatch(batch prbatch.PRBatch) PublishOutcome {
-	url, created, err := specrepo.CreatePR(batch)
+func publishBatch(batch prbatch.PRBatch, existingPaths map[string]bool) PublishOutcome {
+	url, created, err := specrepo.CreatePR(batch, existingPaths)
 	if err != nil {
 		log.Printf("❌ PR creation failed for %s: %v", batch.Key, err)
 		return PublishOutcome{Key: batch.Key, Err: err}

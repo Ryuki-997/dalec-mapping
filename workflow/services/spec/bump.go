@@ -30,7 +30,6 @@ import (
 
 	"dalec-mapping/domain/tagcache"
 	"dalec-mapping/domain/workplan"
-	"dalec-mapping/workflow/infrastructure/semver"
 	"dalec-mapping/workflow/infrastructure/specapi"
 
 	"gopkg.in/yaml.v3"
@@ -47,13 +46,14 @@ import (
 // Revision > 1 (i.e. a prior same-version spec is known to exist).
 func DetectRevisionBump(item *workplan.WorkItem, existingPaths map[string]bool) (bool, error) {
 	component := item.Naming
+	cfg := item.Component
 	tagSet := item.Tag
 
 	priorRevision := tagSet.Revision - 1
 	if priorRevision < 1 {
 		priorRevision = 1
 	}
-	specFilePath := semver.SpecFilePath(component, tagSet.Version, priorRevision)
+	specFilePath := component.SpecFilePathAt(tagSet.Version, priorRevision)
 
 	if !existingPaths[specFilePath] {
 		return false, nil
@@ -64,18 +64,18 @@ func DetectRevisionBump(item *workplan.WorkItem, existingPaths map[string]bool) 
 		return false, fmt.Errorf("failed to read existing spec commit: %w", err)
 	}
 
-	currentCommit, err := tagcache.Lookup(component.Repository, tagSet.Full)
+	currentCommit, err := tagcache.Lookup(cfg.Repository, tagSet.Full)
 	if err != nil {
 		return false, fmt.Errorf("failed to resolve current commit for tag %s: %w", tagSet.Full, err)
 	}
 
 	if existingCommit == currentCommit {
-		log.Printf("   Spec already up to date for %s @ %s (commit %s)\n", component.SpecImageName, tagSet.Stripped, currentCommit)
+		log.Printf("   Spec already up to date for %s (commit %s)\n", component.SpecFileName, currentCommit)
 		return false, nil
 	}
 
-	log.Printf("   Revision bump needed for %s @ %s: commit %s → %s\n",
-		component.SpecImageName, tagSet.Stripped, existingCommit, currentCommit)
+	log.Printf("   Revision bump needed for %s: commit %s → %s\n",
+		component.SpecFileName, existingCommit, currentCommit)
 	return true, nil
 }
 
@@ -86,16 +86,17 @@ func DetectRevisionBump(item *workplan.WorkItem, existingPaths map[string]bool) 
 // bytes. The revision number is already incremented in TagSet by step 2.
 func BumpRevision(item *workplan.WorkItem, existingPaths map[string]bool) ([]byte, error) {
 	component := item.Naming
+	cfg := item.Component
 	tagSet := item.Tag
 
-	log.Printf("Revision bump for %s @ %s R%d\n", component.SpecImageName, tagSet.Stripped, tagSet.Revision)
+	log.Printf("Revision bump for %s\n", component.SpecFileName)
 
 	specNode, err := specapi.SpecRepoFetchLatestRevision(component, tagSet.Stripped, existingPaths)
 	if err != nil {
 		return nil, err
 	}
 
-	newCommit, err := tagcache.Lookup(component.Repository, tagSet.Full)
+	newCommit, err := tagcache.Lookup(cfg.Repository, tagSet.Full)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve commit for tag %s: %w", tagSet.Full, err)
 	}
@@ -139,21 +140,22 @@ func updateCommitOnly(specNode *yaml.Node, newCommit string) error {
 // and returns the encoded spec bytes.
 func BumpVersion(item *workplan.WorkItem, existingPaths map[string]bool) ([]byte, error) {
 	component := item.Naming
+	cfg := item.Component
 	tagSet := item.Tag
 
 	templatePath, found := specapi.SpecRepoFindLatestMinorVersion(component, tagSet.Stripped, existingPaths)
 	if !found {
-		return nil, fmt.Errorf("no same-minor-version spec found for %s @ %s to use as template", component.SpecImageName, tagSet.Stripped)
+		return nil, fmt.Errorf("no same-minor-version spec found for %s to use as template", component.SpecFileName)
 	}
 
-	log.Printf("Version bump for %s @ %s (template: %s)\n", component.SpecImageName, tagSet.Stripped, templatePath)
+	log.Printf("Version bump for %s (template: %s)\n", component.SpecFileName, templatePath)
 
 	specNode, err := specapi.SpecRepoFetchSpec(templatePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch template spec: %w", err)
 	}
 
-	newCommit, err := tagcache.Lookup(component.Repository, tagSet.Full)
+	newCommit, err := tagcache.Lookup(cfg.Repository, tagSet.Full)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve commit for tag %s: %w", tagSet.Full, err)
 	}

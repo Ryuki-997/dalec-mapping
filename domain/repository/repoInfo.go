@@ -39,11 +39,9 @@ type RepoInfo struct {
 	Repo          string
 	Branch        string
 	ComponentPath string // component subdirectory within the repo (e.g. "test/node-problem-detector")
-	ComponentName string // leaf name of the component (e.g. "node-problem-detector")
 	GitURL        string
 	Description   string
 	Version       string
-	License       string
 	LatestCommit  string
 	GoVersion     string // Go toolchain version detected from the Dockerfile (e.g. "1.24")
 	Generator     SourceGenerator

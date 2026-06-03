@@ -14,7 +14,6 @@ package patching
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -330,52 +329,3 @@ func ScanImage(imageURL, pkgTypes, outputPath string) error {
 	return nil
 }
 
-// ParseScanResults reads a trivy JSON output file, logs every vulnerability
-// found, and returns aggregate counts.
-func ParseScanResults(path string) (total int, high int, critical int, err error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("failed to read scan results: %w", err)
-	}
-
-	var report struct {
-		Results []struct {
-			Target          string `json:"Target"`
-			Vulnerabilities []struct {
-				VulnerabilityID  string `json:"VulnerabilityID"`
-				PkgName          string `json:"PkgName"`
-				InstalledVersion string `json:"InstalledVersion"`
-				FixedVersion     string `json:"FixedVersion"`
-				Severity         string `json:"Severity"`
-				Title            string `json:"Title"`
-			} `json:"Vulnerabilities"`
-		} `json:"Results"`
-	}
-	if err := json.Unmarshal(data, &report); err != nil {
-		return 0, 0, 0, fmt.Errorf("failed to parse scan results: %w", err)
-	}
-
-	for _, result := range report.Results {
-		if len(result.Vulnerabilities) == 0 {
-			continue
-		}
-		log.Printf("  ── Target: %s (%d vulnerabilities) ──\n", result.Target, len(result.Vulnerabilities))
-		for _, v := range result.Vulnerabilities {
-			total++
-			switch v.Severity {
-			case "HIGH":
-				high++
-			case "CRITICAL":
-				critical++
-			}
-			fixed := v.FixedVersion
-			if fixed == "" {
-				fixed = "(no fix)"
-			}
-			log.Printf("    [%s] %s — %s %s → %s | %s\n",
-				v.Severity, v.VulnerabilityID, v.PkgName, v.InstalledVersion, fixed, v.Title)
-		}
-	}
-
-	return total, high, critical, nil
-}

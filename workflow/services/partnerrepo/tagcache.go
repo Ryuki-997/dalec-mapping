@@ -44,7 +44,7 @@ func ResolveTagCache(file onboarding.OnboardFile, base workplan.WorkItem, existi
 	for _, componentItem := range componentItems {
 		logOnboardData(componentItem)
 
-		repoTags := fetchComponentTags(componentItem.Naming.Repository)
+		repoTags := fetchComponentTags(componentItem.Component.Repository)
 		if len(repoTags) == 0 {
 			continue
 		}
@@ -58,44 +58,20 @@ func ResolveTagCache(file onboarding.OnboardFile, base workplan.WorkItem, existi
 }
 
 // walkOnboardFile flattens an OnboardFile into a slice of WorkItems with the
-// Naming runtime section populated. The base WorkItem carries the
-// path-derived runtime fields (Naming.OnboardDir, Naming.SpecRepository);
-// per-component fields (SpecImageName, GroupName) and the embedded
-// ComponentConfig are filled here. The single-standalone rule (when an
-// onboard file has exactly one standalone component whose name matches the
-// partner folder, omit the partner prefix from paths) is applied here.
+// Naming runtime+atomic sections and OnboardingComponent populated. The base
+// WorkItem carries the partner-level Naming.OnboardDir; per-component
+// OnboardDir, atomic naming, and Component are filled here.
 func walkOnboardFile(file onboarding.OnboardFile, base workplan.WorkItem) []workplan.WorkItem {
 	var items []workplan.WorkItem
 
-	onboardDir := base.Naming.OnboardDir
-	specRepository := base.Naming.SpecRepository
+	partnerOnboardDir := base.Naming.OnboardDir
 
-	singleStandalone := len(file.Standalone) == 1 && len(file.Groups) == 0
-
-	for name, cfg := range file.Standalone {
+	for _, comp := range file.Components {
 		item := base
-		item.Naming.ComponentConfig = cfg
-		item.Naming.SpecImageName = name
-		if singleStandalone && name == specRepository {
-			item.Naming.SpecRepository = ""
-			item.Naming.OnboardDir = onboardDir
-		} else {
-			item.Naming.SpecRepository = specRepository
-			item.Naming.OnboardDir = fmt.Sprintf("%s/%s", onboardDir, name)
-		}
+		item.Component = comp
+		item.Naming.OnboardDir = fmt.Sprintf("%s/%s", partnerOnboardDir, comp.Name)
+		item.Naming.DeriveAtomic()
 		items = append(items, item)
-	}
-
-	for groupName, group := range file.Groups {
-		for name, cfg := range group {
-			item := base
-			item.Naming.ComponentConfig = cfg
-			item.Naming.SpecImageName = name
-			item.Naming.SpecRepository = specRepository
-			item.Naming.OnboardDir = fmt.Sprintf("%s/%s", onboardDir, name)
-			item.Naming.GroupName = groupName
-			items = append(items, item)
-		}
 	}
 
 	return items
@@ -105,15 +81,16 @@ func walkOnboardFile(file onboarding.OnboardFile, base workplan.WorkItem) []work
 // resolved from the onboard.yml entry.
 func logOnboardData(item workplan.WorkItem) {
 	naming := item.Naming
+	cfg := item.Component
 	if naming.SpecRepository != "" {
 		log.Printf("Onboard Data: %s/%s repo=%s include=%v exclude=%v\n",
-			naming.SpecRepository, naming.SpecImageName, naming.Repository,
-			naming.TagPatterns.Include, naming.TagPatterns.Exclude)
+			naming.SpecRepository, naming.SpecImageName, cfg.Repository,
+			cfg.TagPatterns.Include, cfg.TagPatterns.Exclude)
 		return
 	}
 	log.Printf("Onboard Data: %s repo=%s include=%v exclude=%v\n",
-		naming.SpecImageName, naming.Repository,
-		naming.TagPatterns.Include, naming.TagPatterns.Exclude)
+		naming.SpecImageName, cfg.Repository,
+		cfg.TagPatterns.Include, cfg.TagPatterns.Exclude)
 }
 
 // fetchComponentTags returns the tag→commit map for a repository URL.
@@ -143,13 +120,14 @@ func fetchComponentTags(repoURL string) map[string]string {
 // tag, and the generated section of its Naming is filled via Construct.
 func matchTagPatterns(componentItem workplan.WorkItem, repoTags map[string]string, existingPaths map[string]bool) []workplan.WorkItem {
 	naming := componentItem.Naming
-	if !naming.TagPatterns.HasPatterns() {
+	cfg := componentItem.Component
+	if !cfg.TagPatterns.HasPatterns() {
 		log.Printf("⚠️  No tag patterns defined for %s, skipping\n", naming.SpecImageName)
 		return nil
 	}
 
-	includePatterns := naming.TagPatterns.Include
-	excludePatterns := naming.TagPatterns.Exclude
+	includePatterns := cfg.TagPatterns.Include
+	excludePatterns := cfg.TagPatterns.Exclude
 
 	resolvedTagNames := semver.ResolveTagPatterns(repoTags, includePatterns, excludePatterns)
 	if len(resolvedTagNames) == 0 {
@@ -169,11 +147,11 @@ func matchTagPatterns(componentItem workplan.WorkItem, repoTags map[string]strin
 		tagSet := tags.NewSet(actionableTag.Name, "", strippedTag, actionableTag.NextRevision)
 
 		item := componentItem
-		item.Naming.Construct(tagSet)
+		item.Naming.Construct(tagSet, componentItem.Component.GroupName)
 		item.Tag = tagSet
 
 		items = append(items, item)
-		log.Printf("Queued: %s @ %s (R%d)\n", naming.SpecImageName, actionableTag.Name, actionableTag.NextRevision)
+		log.Printf("Queued: %s\n", item.Naming.SpecFileName)
 	}
 	return items
 }

@@ -10,12 +10,13 @@ import (
 	"dalec-mapping/domain/repository"
 )
 
-// fetchRepoMetadata acquires default branch, description, URL, and license.
-// configuredLicense overrides the license detected from the GitHub API when non-empty.
-func fetchRepoMetadata(info *repository.RepoInfo, configuredLicense string) error {
-	data, err := FetchJSON(fmt.Sprintf("repos/%s/%s", info.Owner, info.Repo))
+// fetchRepoMetadata acquires default branch, description, URL, and the
+// GitHub-reported SPDX license. The returned license is "" when GitHub has
+// none; callers apply their own fallback (e.g. "proprietary").
+func fetchRepoMetadata(info *repository.RepoInfo) (string, error) {
+	data, err := FetchJSON(RepoAPIPath(info.Owner, info.Repo, ""))
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	if info.Branch == "" {
@@ -36,19 +37,12 @@ func fetchRepoMetadata(info *repository.RepoInfo, configuredLicense string) erro
 		info.GitURL = url
 	}
 
-	info.License = "proprietary"
-	if license, ok := data["license"].(map[string]interface{}); ok {
-		if spdxID, ok := license["spdx_id"].(string); ok && spdxID != "NOASSERTION" {
-			info.License = spdxID
+	if licenseData, ok := data["license"].(map[string]interface{}); ok {
+		if spdxID, ok := licenseData["spdx_id"].(string); ok && spdxID != "NOASSERTION" {
+			return spdxID, nil
 		}
 	}
-
-	// Component config override takes priority over GitHub API detection.
-	if configuredLicense != "" {
-		info.License = configuredLicense
-	}
-
-	return nil
+	return "", nil
 }
 
 // fetchSourceGenerator detects the project's build system by scanning the repo tree.
@@ -62,7 +56,7 @@ func fetchSourceGenerator(info *repository.RepoInfo) error {
 		dirGenerators[m.FileName] = m.Generator
 	}
 
-	data, err := FetchJSON(fmt.Sprintf("repos/%s/%s/git/trees/%s?recursive=1", info.Owner, info.Repo, info.Branch))
+	data, err := FetchJSON(RepoAPIPath(info.Owner, info.Repo, "git/trees/%s?recursive=1", info.Branch))
 	if err != nil {
 		return fmt.Errorf("failed to fetch repository tree: %w", err)
 	}

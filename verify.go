@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -43,22 +42,19 @@ func normalizeIndent(content []byte) []byte {
 }
 
 // writeGenerated writes the generated spec content to
-// ./generated/{component}/{component}-{tag}-{revision}-specfile.yml so it can serve as a
+// ./generated/{component}/{SpecFileName} so it can serve as a
 // cache of the latest run.
 func writeGenerated(result buildresult.BuildResult) {
-	component := result.Item.Naming.SpecImageName
-	tag := result.Item.Tag.Stripped
-	revision := result.Item.Tag.Revision
+	naming := result.Item.Naming
 	specContent := normalizeIndent(result.SpecContent)
 
-	generatedDir := filepath.Join("generated", component)
+	generatedDir := filepath.Join("generated", naming.SpecImageName)
 	if err := os.MkdirAll(generatedDir, 0o755); err != nil {
 		log.Printf("⚠️  Failed to create generated directory %s: %v", generatedDir, err)
 		return
 	}
 
-	fileName := fmt.Sprintf("%s-%s-%d-specfile.yml", component, tag, revision)
-	generatedPath := filepath.Join(generatedDir, fileName)
+	generatedPath := filepath.Join(generatedDir, naming.SpecFileName)
 	if err := os.WriteFile(generatedPath, specContent, 0o644); err != nil {
 		log.Printf("⚠️  Failed to write generated spec %s: %v", generatedPath, err)
 		return
@@ -66,29 +62,28 @@ func writeGenerated(result buildresult.BuildResult) {
 }
 
 // diffWithGolden compares the generated spec content against the golden file
-// at ./correct/{component}/{component}-{tag}-{revision}-specfile.yml.
+// at ./correct/{component}/{SpecFileName}.
 // Logs PASS if identical, FAIL if not, SKIP if no golden exists. The pipeline
 // emits structured log lines that test.sh parses for pass/fail accounting.
 func diffWithGolden(result buildresult.BuildResult) {
-	component := result.Item.Naming.SpecImageName
+	naming := result.Item.Naming
 	tag := result.Item.Tag.Stripped
-	revision := result.Item.Tag.Revision
 	action := result.Outcome.String()
 	specContent := normalizeIndent(result.SpecContent)
 
-	goldenPath := filepath.Join("correct", component, fmt.Sprintf("%s-%s-%d-specfile.yml", component, tag, revision))
+	goldenPath := filepath.Join("correct", naming.SpecImageName, naming.SpecFileName)
 
 	goldenContent, err := os.ReadFile(goldenPath)
 	if err != nil {
-		log.Printf("⚠️  SKIP diff for %s @ %s [%s] — no golden file", component, tag, action)
+		log.Printf("⚠️  SKIP diff for %s @ %s [%s] — no golden file", naming.SpecImageName, tag, action)
 		return
 	}
 	goldenContent = normalizeIndent(goldenContent)
 
 	if string(specContent) == string(goldenContent) {
-		log.Printf("✅ PASS  %s @ %s [%s]", component, tag, action)
+		log.Printf("✅ PASS  %s @ %s [%s]", naming.SpecImageName, tag, action)
 		return
 	}
 
-	log.Printf("❌ FAIL  %s @ %s [%s] — golden mismatch", component, tag, action)
+	log.Printf("❌ FAIL  %s @ %s [%s] — golden mismatch", naming.SpecImageName, tag, action)
 }
