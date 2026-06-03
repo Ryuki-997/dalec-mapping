@@ -1,330 +1,85 @@
 package main
 
 import (
-	"dalec-mapping/domain/naming"
-	"dalec-mapping/domain/onboarding"
-	"dalec-mapping/patching"
-	"dalec-mapping/pipeline"
-	"dalec-mapping/utils"
-	"dalec-mapping/workflow"
-	"fmt"
 	"log"
-	"os"
+
+	"dalec-mapping/domain/buildresult"
+	"dalec-mapping/domain/naming"
+	"dalec-mapping/workflow/foundations/logging"
+	"dalec-mapping/workflow/infrastructure/patching"
+	"dalec-mapping/workflow/orchestration"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Main — Dalec Spec Pipeline
+// Main — Dalec Spec Pipeline (wiring only)
 //
-//   Chunk 1 · ENTRY       main(), parseFlags(), loadEnv(), fetchOnboardStates()
-//   Chunk 2 · ORCHESTRATION processOnboardFiles(), submitPRs()
-//   Chunk 3 · PIPELINE    processTag(), decideAction()
-//   Chunk 4 · ACTIONS     bumpVersion(), generateWork()
-//   Chunk 5 · PATCHING    runPatchWorkflow()
+//   Three explicit phases, each with a typed input and output:
+//
+//     Phase 1  Resolve   ()                → workplan.WorkPlan
+//     Phase 2  Generate  workplan.WorkPlan          → []buildresult.BuildResult
+//     Phase 3  Publish   []buildresult.BuildResult     → batches → []PublishOutcome
+//
+//   Per-spec side effects (golden diff, local cache write, action log) live
+//   between phases 2 and 3 as pure observers over the buildresult.BuildResult slice.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// ─── Chunk 1 · ENTRY ────────────────────────────────────────────────────────
-
 func main() {
-	inputPath, patchMode := workflow.ParseFlags()
-
-	workflow.LoadEnv()
+	inputPath, patchMode := orchestration.ParseFlags()
+	orchestration.LoadEnv()
 
 	if patchMode {
 		runPatchWorkflow()
 		return
 	}
 
-	componentStates, existingPaths := workflow.RunFetchOnboard(inputPath)
-	states := workflow.RunResolveTagCache(componentStates, existingPaths)
-	prGroups := processOnboardStates(states, existingPaths)
-	log.Printf("Total PR groups to submit: %d", len(prGroups))
-	submitPRs(prGroups)
+	// ── Phase 1: Resolve onboard files and tag patterns into flat work items ──
+	plan := orchestration.Resolve(inputPath)
+
+	// ── Phase 2: Generate spec per item (no PR/grouping logic) ──
+	results := orchestration.Generate(plan)
+
+	// ── Observers: local cache, golden diff, action log ──
+	observeResults(results)
+
+	// ── Phase 3: Group results, resolve naming, publish PRs ──
+	batches := orchestration.GroupIntoBatches(results, naming.GeneratePRID)
+	log.Printf("Total PR groups to submit: %d", len(batches))
+	for _, batch := range batches {
+		log.Printf("Group: %s, Components: %d", batch.Key, len(batch.Components))
+	}
+
+	outcomes := orchestration.Publish(batches)
+	orchestration.PrintPublishSummary(outcomes)
 }
 
-
-
-// ─── Chunk 2 · ORCHESTRATION ─────────────────────────────────────────────────
-
-// processOnboardStates iterates all pre-expanded states, running the pipeline
-// for each and collecting PR entries keyed by group name.
-// A unique prID is generated per group key so each component+version+revision
-// combination gets its own identifier.
-func processOnboardStates(states []pipeline.State, existingPaths map[string]bool) map[string]*workflow.PREntry {
-	prGroups := make(map[string]*workflow.PREntry)
-	groupPRIDs := make(map[string]string)
-	var actionLog []utils.ActionEntry
-
-	for _, state := range states {
-		onboard := state.Onboard
-
-		comp := processTag(state, existingPaths)
-		if comp == nil {
-			log.Printf("✅ PASS  %s @ %s [SKIPPED]", onboard.SpecImageName, state.Tag.Stripped)
-			actionLog = append(actionLog, utils.ActionEntry{
-				Component: onboard.SpecImageName,
-				Version:   fmt.Sprintf("%s-%d", state.Tag.Version, state.Tag.Revision),
-				Action:    "SKIPPED",
-			})
-			continue
-		}
-
-		writeGenerated(onboard.SpecImageName, state.Tag.Stripped, state.Tag.Revision, comp.SpecContent)
-
-		actionLabel := "GENERATE"
-		if comp.RevisionBump {
-			actionLabel = "BUMP REVISION"
-		} else if comp.SpecOnly {
-			actionLabel = "BUMP VERSION"
-		}
-
-		diffWithGolden(onboard.SpecImageName, state.Tag.Stripped, state.Tag.Revision, actionLabel, comp.SpecContent)
-
-		actionLog = append(actionLog, utils.ActionEntry{
-			Component: onboard.SpecImageName,
-			Version:   fmt.Sprintf("%s-%d", state.Tag.Version, state.Tag.Revision),
-			Action:    actionLabel,
+// observeResults runs side effects that happen once per buildresult.BuildResult but are
+// not part of publishing: write the local generated copy, diff against the
+// golden file, and accumulate the action log.
+func observeResults(results []buildresult.BuildResult) {
+	actionLog := make([]logging.ActionEntry, 0, len(results))
+	for _, result := range results {
+		item := result.Item
+		actionLog = append(actionLog, logging.ActionEntry{
+			Component: item.Naming.SpecImageName,
+			Version:   item.Naming.VersionRevision,
+			Action:    result.Outcome.String(),
 		})
 
-		groupName := onboard.SpecImageName
-		if onboard.GroupName != "" {
-			groupName = onboard.GroupName
-		}
-		groupKey := fmt.Sprintf("%s@%s", groupName, state.Tag.Stripped)
-		if prGroups[groupKey] == nil {
-			prGroups[groupKey] = &workflow.PREntry{GroupName: onboard.GroupName}
-			groupPRIDs[groupKey] = naming.GeneratePRID()
-			log.Printf("Assigned PR ID %s to group %s", groupPRIDs[groupKey], groupKey)
-		}
-		prGroups[groupKey].Components = append(prGroups[groupKey].Components, *comp)
-	}
-
-	// Resolve naming for each group now that per-group prIDs are assigned.
-	resolveGroupNaming(prGroups, groupPRIDs)
-
-	utils.PrintActionLog(actionLog)
-
-	for groupKey, entry := range prGroups {
-		log.Printf("Group: %s, Components: %d\n", groupKey, len(entry.Components))
-	}
-
-	return prGroups
-}
-
-// resolveGroupNaming computes Naming for every component in each PR group
-// using the group's unique prID.
-func resolveGroupNaming(prGroups map[string]*workflow.PREntry, groupPRIDs map[string]string) {
-	for groupKey, entry := range prGroups {
-		prID := groupPRIDs[groupKey]
-		for componentIndex := range entry.Components {
-			comp := &entry.Components[componentIndex]
-			componentState := onboarding.ComponentState{
-				Onboard: comp.Onboard,
-				Tag:     onboarding.NewTagSet("", "", comp.Tag, comp.Revision),
-			}
-			comp.Naming = naming.Resolve(componentState).WithPRID(prID)
-		}
-	}
-}
-
-// submitPRs creates one PR per group (or standalone component) and logs results.
-func submitPRs(prGroups map[string]*workflow.PREntry) {
-	log.Println("═══ Step 7: Create Pull Requests ═══")
-	log.Println("Purpose: Creating PRs for generated/bumped specs")
-	log.Printf("  Groups to submit: %d", len(prGroups))
-
-	type prResult struct {
-		url     string
-		files   []string
-		created bool
-	}
-	var results []prResult
-
-	for groupName, entry := range prGroups {
-		prURL, created, err := workflow.CreatePR(*entry)
-		if err != nil {
-			log.Printf("❌ PR creation failed for %s: %v", groupName, err)
+		switch result.Outcome {
+		case buildresult.OutcomeSkipped:
+			log.Printf("✅ PASS  %s @ %s [SKIPPED]", item.Naming.SpecImageName, item.Tag.Stripped)
+			continue
+		case buildresult.OutcomeFailed:
 			continue
 		}
-		var specPaths []string
-		for _, comp := range entry.Components {
-			specPaths = append(specPaths, comp.Naming.SpecFilePath)
-		}
-		results = append(results, prResult{url: prURL, files: specPaths, created: created})
-	}
 
-	createdCount := 0
-	skippedCount := 0
-	for _, result := range results {
-		if result.created {
-			createdCount++
-		} else {
-			skippedCount++
-		}
+		writeGenerated(result)
+		diffWithGolden(result)
 	}
-
-	log.Printf("PR Summary (%d created, %d skipped — already open):", createdCount, skippedCount)
-	for i, result := range results {
-		label := "created"
-		if !result.created {
-			label = "existing"
-		}
-		log.Printf("  PR #%d [%s]: %s", i+1, label, result.url)
-		for _, file := range result.files {
-			log.Printf("    - %s", file)
-		}
-	}
-	log.Println()
+	logging.PrintActionLog(actionLog)
 }
 
-// ─── Chunk 3 · PIPELINE ─────────────────────────────────────────────────────
-
-// processTag runs the full pipeline for a single tag and returns a
-// ComponentSpec queued for PR creation, or nil if skipped.
-// Naming is left unset — resolved later in processOnboardStates once
-// each PR group has its own unique prID.
-func processTag(state pipeline.State, existingPaths map[string]bool) *workflow.ComponentSpec {
-	onboard := state.Onboard
-	tagSet := state.Tag
-
-	pipeline.Reset()
-	pipeline.Current.Onboard = onboard
-	pipeline.Current.Tag = tagSet
-
-	utils.PrintComponentBanner(onboard.SpecImageName, tagSet.Stripped)
-
-	action := resolveAction(onboard, tagSet, existingPaths)
-	if action == actionSkip {
-		return nil
-	}
-	return dispatchAction(action, onboard, tagSet, existingPaths)
-}
-
-// resolveAction is the single decision point for what happens to a (component, tag) pair.
-// It checks — in order:
-//  1. Same version already exists with matching commit → skip
-//  2. Same version exists with different commit       → bump revision
-//  3. Different version (no content change) + template exists → bump version
-//  4. Otherwise                                       → generate
-func resolveAction(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet, existingPaths map[string]bool) pipelineAction {
-	// ── Check if this exact version already exists on remote ──
-	componentState := onboarding.ComponentState{Onboard: onboard, Tag: tagSet}
-	resolved := naming.Resolve(componentState)
-
-	if existingPaths[resolved.SpecFilePath] {
-		needsRevisionBump, err := workflow.DetectRevisionBump(existingPaths)
-		if err != nil {
-			log.Fatalf("❌ DetectRevisionBump failed: %v", err)
-		}
-		if needsRevisionBump {
-			return actionBumpRevision
-		}
-		log.Printf("Skipping %s @ %s — spec already up to date\n", onboard.SpecImageName, tagSet.Stripped)
-		return actionSkip
-	}
-
-	// ── New version: discover build files and decide action ──
-	log.Printf("─── [%s @ %s] Step 3: Discover Build Files ───", onboard.SpecImageName, tagSet.Stripped)
-	log.Println("Purpose: Checking Dockerfile/Makefile changes vs. existing siblings")
-
-	contentChanged, err := workflow.DiscoverBuildFiles()
-	if err != nil {
-		log.Fatalf("❌ DiscoverBuildFiles failed: %v", err)
-	}
-
-	_, templateFound := utils.SpecRepoFindLatestVersion(onboard.SpecDir(), onboard.SpecImageName, existingPaths)
-	if templateFound && !contentChanged {
-		log.Printf("Result: templateFound=true, contentChanged=false -> action=BUMP VERSION")
-		log.Println()
-		return actionBumpVersion
-	}
-
-	log.Printf("Result: templateFound=%v, contentChanged=%v -> action=GENERATE", templateFound, contentChanged)
-	log.Println()
-	return actionGenerate
-}
-
-// dispatchAction executes the resolved pipeline action and returns the result.
-func dispatchAction(action pipelineAction, onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet, existingPaths map[string]bool) *workflow.ComponentSpec {
-	switch action {
-	case actionBumpRevision:
-		return bumpRevision(onboard, tagSet, existingPaths)
-	case actionBumpVersion:
-		return bumpVersion(onboard, tagSet, existingPaths)
-	case actionGenerate:
-		comp, err := generateWork(onboard, tagSet)
-		if err != nil {
-			log.Printf("⚠️  Skipping %s @ %s: %v", onboard.SpecImageName, tagSet.Full, err)
-			return nil
-		}
-		return comp
-	}
-	return nil
-}
-
-type pipelineAction int
-
-const (
-	actionSkip         pipelineAction = iota // Spec already up to date — no action needed
-	actionBumpVersion                         // Copy template spec with new commit hash + version
-	actionBumpRevision                       // Same version, new commit → increment revision
-	actionGenerate                           // Generate spec → test → PR
-)
-
-// ─── Chunk 4 · ACTIONS ──────────────────────────────────────────────────────
-
-func bumpVersion(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet, existingPaths map[string]bool) *workflow.ComponentSpec {
-	log.Printf("─── [%s @ %s] Step 4: Bump Version ───", onboard.SpecImageName, tagSet.Stripped)
-	log.Println("Purpose: Copying template spec with updated commit hash (no content change)")
-
-	if err := workflow.BumpVersion(existingPaths); err != nil {
-		log.Fatalf("❌ Version bump failed: %v", err)
-	}
-
-	return readSpecResult(onboard, tagSet, true)
-}
-
-func bumpRevision(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet, existingPaths map[string]bool) *workflow.ComponentSpec {
-	log.Printf("─── [%s @ %s] Step 4b: Bump Revision ───", onboard.SpecImageName, tagSet.Stripped)
-	log.Println("Purpose: Same version tag re-pushed with new commit — incrementing revision")
-
-	if err := workflow.BumpRevision(existingPaths); err != nil {
-		log.Fatalf("❌ Revision bump failed: %v", err)
-	}
-
-	result := readSpecResult(onboard, tagSet, true)
-	result.RevisionBump = true
-	return result
-}
-
-func generateWork(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet) (*workflow.ComponentSpec, error) {
-	log.Printf("─── [%s @ %s] Step 5: Generate Spec ───", onboard.SpecImageName, tagSet.Stripped)
-	log.Println("Purpose: Parsing Dockerfile/Makefile and generating full dalec spec from scratch")
-
-	if _, err := workflow.GenerateSpec(); err != nil {
-		return nil, err
-	}
-
-	return readSpecResult(onboard, tagSet, false), nil
-}
-
-// readSpecResult reads the written spec file and packages it into a ComponentSpec.
-func readSpecResult(onboard *onboarding.ComponentConfig, tagSet onboarding.TagSet, specOnly bool) *workflow.ComponentSpec {
-	specContent, err := os.ReadFile(utils.SpecPath)
-	if err != nil {
-		log.Fatalf("❌ Failed to read spec for %s @ %s: %v", onboard.SpecImageName, tagSet.Stripped, err)
-	}
-
-	log.Printf("✅ Spec written: %s @ %s-%d", onboard.SpecImageName, tagSet.Version, tagSet.Revision)
-	return &workflow.ComponentSpec{
-		Onboard:     onboard,
-		Tag:         tagSet.Stripped,
-		Revision:    tagSet.Revision,
-		SpecContent: specContent,
-		SpecOnly:    specOnly,
-	}
-}
-
-// ─── Chunk 5 · PATCHING ─────────────────────────────────────────────────────
+// ─── Patching workflow (separate from the spec pipeline) ────────────────────
 
 func runPatchWorkflow() {
 	log.Println("Running patching workflow — scanning ACR images for vulnerabilities")

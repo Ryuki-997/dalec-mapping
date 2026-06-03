@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"dalec-mapping/domain/buildresult"
 )
 
 // normalizeIndent round-trips spec content through a yaml encoder with 2-space
@@ -44,8 +45,12 @@ func normalizeIndent(content []byte) []byte {
 // writeGenerated writes the generated spec content to
 // ./generated/{component}/{component}-{tag}-{revision}-specfile.yml so it can serve as a
 // cache of the latest run.
-func writeGenerated(component, tag string, revision int, specContent []byte) {
-	specContent = normalizeIndent(specContent)
+func writeGenerated(result buildresult.BuildResult) {
+	component := result.Item.Naming.SpecImageName
+	tag := result.Item.Tag.Stripped
+	revision := result.Item.Tag.Revision
+	specContent := normalizeIndent(result.SpecContent)
+
 	generatedDir := filepath.Join("generated", component)
 	if err := os.MkdirAll(generatedDir, 0o755); err != nil {
 		log.Printf("⚠️  Failed to create generated directory %s: %v", generatedDir, err)
@@ -62,14 +67,20 @@ func writeGenerated(component, tag string, revision int, specContent []byte) {
 
 // diffWithGolden compares the generated spec content against the golden file
 // at ./correct/{component}/{component}-{tag}-{revision}-specfile.yml.
-// Logs PASS if identical, otherwise writes a unified diff to ./diff/.
-func diffWithGolden(component, tag string, revision int, action string, specContent []byte) {
-	specContent = normalizeIndent(specContent)
+// Logs PASS if identical, FAIL if not, SKIP if no golden exists. The pipeline
+// emits structured log lines that test.sh parses for pass/fail accounting.
+func diffWithGolden(result buildresult.BuildResult) {
+	component := result.Item.Naming.SpecImageName
+	tag := result.Item.Tag.Stripped
+	revision := result.Item.Tag.Revision
+	action := result.Outcome.String()
+	specContent := normalizeIndent(result.SpecContent)
+
 	goldenPath := filepath.Join("correct", component, fmt.Sprintf("%s-%s-%d-specfile.yml", component, tag, revision))
 
 	goldenContent, err := os.ReadFile(goldenPath)
 	if err != nil {
-		log.Printf("⚠️  SKIP diff for %s @ %s [%s] — no golden file at %s", component, tag, action, goldenPath)
+		log.Printf("⚠️  SKIP diff for %s @ %s [%s] — no golden file", component, tag, action)
 		return
 	}
 	goldenContent = normalizeIndent(goldenContent)
@@ -79,49 +90,5 @@ func diffWithGolden(component, tag string, revision int, action string, specCont
 		return
 	}
 
-	// Write actual output to a temp file for diff
-	actualPath, err := os.CreateTemp("", "spec-actual-*.yml")
-	if err != nil {
-		log.Printf("⚠️  Failed to create temp file for diff: %v", err)
-		return
-	}
-	defer os.Remove(actualPath.Name())
-
-	if _, err := actualPath.Write(specContent); err != nil {
-		actualPath.Close()
-		log.Printf("⚠️  Failed to write temp file for diff: %v", err)
-		return
-	}
-	actualPath.Close()
-
-	// Write normalized golden to a temp file so diff output shows only content differences
-	goldenTmp, err := os.CreateTemp("", "spec-golden-*.yml")
-	if err != nil {
-		log.Printf("⚠️  Failed to create temp file for golden diff: %v", err)
-		return
-	}
-	defer os.Remove(goldenTmp.Name())
-
-	if _, err := goldenTmp.Write(goldenContent); err != nil {
-		goldenTmp.Close()
-		log.Printf("⚠️  Failed to write golden temp file for diff: %v", err)
-		return
-	}
-	goldenTmp.Close()
-
-	diffOutput, _ := exec.Command("diff", "-u", goldenTmp.Name(), actualPath.Name()).Output()
-
-	if err := os.MkdirAll("diff", 0o755); err != nil {
-		log.Printf("⚠️  Failed to create diff directory: %v", err)
-		return
-	}
-
-	diffFileName := fmt.Sprintf("%s-%s.diff", component, tag)
-	diffPath := filepath.Join("diff", diffFileName)
-	if err := os.WriteFile(diffPath, diffOutput, 0o644); err != nil {
-		log.Printf("⚠️  Failed to write diff file: %v", err)
-		return
-	}
-
-	log.Printf("❌ FAIL  %s @ %s [%s] — diff written to %s", component, tag, action, diffPath)
+	log.Printf("❌ FAIL  %s @ %s [%s] — golden mismatch", component, tag, action)
 }

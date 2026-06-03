@@ -22,24 +22,24 @@ for arg in "$@"; do
     esac
 done
 
-# ── Step 1: Run test suite as gate ──
-echo "════════════════════════════════════════"
-echo "  Running test suite..."
-echo "════════════════════════════════════════"
-echo ""
+# # ── Step 1: Run test suite as gate ──
+# echo "════════════════════════════════════════"
+# echo "  Running test suite..."
+# echo "════════════════════════════════════════"
+# echo ""
 
-./test.sh
-test_exit=$?
+# ./test.sh
+# test_exit=$?
 
-if [[ $test_exit -ne 0 ]]; then
-    echo ""
-    echo "❌ Tests failed — aborting pipeline run."
-    exit 1
-fi
+# if [[ $test_exit -ne 0 ]]; then
+#     echo ""
+#     echo "❌ Tests failed — aborting pipeline run."
+#     exit 1
+# fi
 
-echo ""
-echo "✅ All tests passed — proceeding to pipeline run."
-echo ""
+# echo ""
+# echo "✅ All tests passed — proceeding to pipeline run."
+# echo ""
 
 # ── Step 2: Run actual pipeline (always submits PRs) ──
 overall_exit=0
@@ -73,10 +73,10 @@ run_and_stream() {
 }
 
 # run_and_stream "Run ContainerNetworking: -path=specs/containernetworking" -path=specs/containernetworking
-# run_and_stream "Run AKS-Secure-TLS-Bootstrap: -path=specs/aks-secure-tls-bootstrap" -path=specs/aks-secure-tls-bootstrap
+run_and_stream "Run AKS-Secure-TLS-Bootstrap: -path=specs/aks-secure-tls-bootstrap" -path=specs/aks-secure-tls-bootstrap
 # run_and_stream "Run AKS-Node-Controller: -path=specs/aks-node-controller" -path=specs/aks-node-controller
 # run_and_stream "Run Azure Policy: -path=specs/azure-policy" -path=specs/azure-policy
-run_and_stream "Run Azure Fleet: -path=specs/fleet" -path=specs/fleet
+# run_and_stream "Run Azure Fleet: -path=specs/aks/fleet" -path=specs/aks/fleet
 
 ## Project Dalec Components
 

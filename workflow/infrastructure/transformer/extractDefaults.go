@@ -1,0 +1,301 @@
+package transformer
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// extractDefaults.go — Generates top-level metadata + args for a Dalec spec.
+//
+//   Chunk 1 · ORCHESTRATION          extractDefaultsSection()
+//     Writes metadata into the spec map and returns the resolved args map.
+//     Calls → extractMetadata(), extractArgs()
+//
+//   Chunk 2 · METADATA               extractMetadata()
+//     Fixed fields: name, packager, vendor, license, website, description,
+//     version, revision.
+//
+//   Chunk 3 · ARGS ASSEMBLY          extractArgs()
+//     Builds the top-level args map from defaults, Dockerfile ARGs, and
+//     Makefile variables that are actually referenced in build commands.
+//     Calls → effectiveMakefileInfo(), mergeDockerfileArgs(), mergeMakefileVars()
+//
+//   Chunk 4 · VARIABLE RESOLUTION    expandVarRefs()
+//     Iteratively expands $(VAR)/${VAR} references using Makefile + Dockerfile values.
+//     Strips Make built-in function calls. Exits on unresolvable references.
+//     Decomposes into: parseNextVarRef() → stripMakeFuncCall() | substituteVar()
+//     Helpers: findVarRefStart(), isMakeFunction(), resolveVarRef()
+// ═══════════════════════════════════════════════════════════════════════════════
+
+import (
+	"log"
+	"os"
+	"strings"
+
+	"dalec-mapping/domain/contents"
+	"dalec-mapping/domain/workplan"
+)
+
+// selfHandledArgs lists variables that are emitted with fixed logic and must not
+// be overridden by Dockerfile ARG values or Makefile variable promotion.
+var selfHandledArgs = map[string]bool{
+	"OS":         true,
+	"OS_VERSION": true,
+	"VERSION":    true,
+	"TARGETARCH": true,
+	"TARGETOS":   true,
+	"GOOS":       true,
+	"GOARCH":     true,
+}
+
+// makeFunctions lists Make built-in function names that cannot be resolved at
+// spec-generation time and should be stripped during variable expansion.
+var makeFunctions = []string{
+	"shell ", "wildcard ", "patsubst ", "subst ", "strip ",
+	"findstring ", "filter ", "filter-out ", "sort ", "word ",
+	"wordlist ", "words ", "firstword ", "lastword ", "dir ",
+	"notdir ", "suffix ", "basename ", "addsuffix ", "addprefix ",
+	"join ", "realpath ", "abspath ", "if ", "or ", "and ",
+	"foreach ", "call ", "eval ", "origin ", "flavor ", "value ",
+	"error ", "warning ", "info ",
+}
+
+// ─── Chunk 1 · METADATA ──────────────────────────────────────────────────────
+
+// extractMetadata writes the fixed metadata fields into the spec map.
+func extractMetadata(item *workplan.WorkItem, spec map[string]interface{}) {
+	repoInfo := item.BuildFiles.RepoInfo
+	subject := item.Naming
+
+	spec["name"] = strings.ToLower(subject.SpecImageName)
+	spec["packager"] = "Azure Container Upstream"
+	spec["vendor"] = "Microsoft Corporation"
+	spec["license"] = repoInfo.License
+	spec["website"] = repoInfo.GitURL
+	spec["description"] = repoInfo.Description
+	spec["version"] = "${VERSION}"
+	spec["revision"] = "${REVISION}"
+}
+
+// ─── Chunk 3 · ARGS ASSEMBLY ─────────────────────────────────────────────────
+
+// extractArgs builds the top-level args map.
+// referencedVars is the set of variable names actually used in build commands/ldflags;
+// only Makefile variables in this set are promoted to args with their resolved values.
+func extractArgs(item *workplan.WorkItem, referencedVars map[string]bool, goModDownloads []goModDownloadInfo) map[string]interface{} {
+	repoInfo := item.BuildFiles.RepoInfo
+
+	args := map[string]interface{}{
+		"REVISION": item.Tag.Revision,
+		"VERSION":  repoInfo.Version,
+		"COMMIT":   repoInfo.LatestCommit,
+		"GOPROXY":  "direct",
+		// Emitted as blank — BuildKit injects actual values at build time.
+		"TARGETOS":   "",
+		"TARGETARCH": "",
+	}
+
+	mi := initializeMakefile(item)
+	args = mergeDockerfileArgs(item, args, mi)
+	args = mergeMakefileVars(args, mi, referencedVars)
+	args = mergeSubmoduleVars(item, args, mi, goModDownloads)
+
+	return args
+}
+
+func initializeMakefile(item *workplan.WorkItem) *contents.MakefileInfo {
+	mi := &contents.MakefileInfo{Variables: make(map[string]string)}
+	for k, v := range item.BuildFiles.Makefile.Variables {
+		mi.Variables[k] = v
+	}
+	mi.Variables["ARCH"] = ""
+	mi.Variables["OS"] = ""
+	mi.Variables["TARGETARCH"] = ""
+	mi.Variables["TARGETOS"] = ""
+	return mi
+}
+
+// mergeDockerfileArgs folds Dockerfile ARG values into args, resolving any
+// nested Makefile variable references. Empty-after-resolution values are dropped.
+func mergeDockerfileArgs(item *workplan.WorkItem, args map[string]interface{}, makefileInfo *contents.MakefileInfo) map[string]interface{} {
+	for k, v := range item.BuildFiles.Dockerfile.Args {
+		if selfHandledArgs[k] {
+			continue
+		}
+		value := v
+		if value == "" {
+			value = makefileInfo.Variables[k]
+		}
+		value = expandVarRefs(item, makefileInfo, value)
+		if value == "" {
+			continue
+		}
+		args[k] = value
+	}
+	return args
+}
+
+// mergeMakefileVars promotes Makefile variables that are actually referenced in
+// build commands into args, resolving their values.
+func mergeMakefileVars(args map[string]interface{}, makefileInfo *contents.MakefileInfo, referencedVars map[string]bool) map[string]interface{} {
+	for varName := range referencedVars {
+		if selfHandledArgs[varName] {
+			continue
+		}
+		if _, exists := args[varName]; exists {
+			continue
+		}
+		if rawValue, exists := makefileInfo.Variables[varName]; exists {
+			resolved := expandVarRefs(nil, makefileInfo, rawValue)
+			args[varName] = resolved
+		}
+	}
+	return args
+}
+
+// mergeSubmoduleVars promotes version variables referenced by detected
+// go mod download submodules. These are "used" variables — their presence
+// in a source commit field means they must appear in args.
+// Resolves from Dockerfile ARGs first, then Makefile variables.
+func mergeSubmoduleVars(item *workplan.WorkItem, args map[string]interface{}, makefileInfo *contents.MakefileInfo, goModDownloads []goModDownloadInfo) map[string]interface{} {
+	for _, dl := range goModDownloads {
+		varName := strings.Trim(dl.VersionVar, "${}()")
+		if varName == "" {
+			continue
+		}
+		if _, exists := args[varName]; exists {
+			continue
+		}
+		// Resolve from Dockerfile ARGs first, then Makefile variables.
+		value, found := item.BuildFiles.Dockerfile.Args[varName]
+		if !found {
+			value, found = makefileInfo.Variables[varName]
+		}
+		if !found {
+			continue
+		}
+		value = expandVarRefs(item, makefileInfo, value)
+		args[varName] = value
+	}
+	return args
+}
+
+// ─── Chunk 4 · VARIABLE RESOLUTION ───────────────────────────────────────────
+
+// varRef describes a single $(VAR) or ${VAR} reference found in a string.
+type varRef struct {
+	pos      int    // index of the leading '$'
+	key      string // variable name between delimiters
+	openTok  string // "$(" or "${"
+	closeTok string // ")" or "}"
+	span     int    // total length of the reference including delimiters
+	escaped  bool   // true when preceded by another '$' (e.g. $${VAR})
+}
+
+// expandVarRefs iteratively expands all $(VAR)/${VAR} references in value
+// using Makefile variables and Dockerfile ARGs. Make built-in function calls
+// (e.g. $(shell ...)) are stripped rather than expanded.
+// item may be nil when only Makefile variables are available.
+func expandVarRefs(item *workplan.WorkItem, makefileInfo *contents.MakefileInfo, value string) string {
+	for {
+		ref, ok := parseNextVarRef(value)
+		if !ok || ref.escaped {
+			break
+		}
+
+		if isMakeFunction(ref.key) {
+			value = stripMakeFuncCall(value, ref)
+			continue
+		}
+
+		value = substituteVar(item, value, ref, makefileInfo)
+	}
+
+	return value
+}
+
+// parseNextVarRef finds the earliest $( or ${ reference in value, extracts the
+// key name, and returns a populated varRef. Returns (_, false) when no reference
+// exists. Exits on malformed syntax (missing closing delimiter).
+func parseNextVarRef(value string) (varRef, bool) {
+	pos, openTok, closeTok := findVarRefStart(value)
+	if pos == -1 {
+		return varRef{}, false
+	}
+
+	if pos > 0 && value[pos-1] == '$' {
+		return varRef{escaped: true}, true
+	}
+
+	endOff := strings.Index(value[pos:], closeTok)
+	if endOff == -1 {
+		log.Printf("Broken makefile variable reference in value: %s\n", value)
+		os.Exit(1)
+	}
+
+	key := value[pos+2 : pos+endOff]
+	return varRef{
+		pos:      pos,
+		key:      key,
+		openTok:  openTok,
+		closeTok: closeTok,
+		span:     endOff + len(closeTok),
+	}, true
+}
+
+// stripMakeFuncCall removes a Make built-in function call (e.g. $(shell ...))
+// from value and trims any resulting leading slashes or whitespace.
+func stripMakeFuncCall(value string, ref varRef) string {
+	value = value[:ref.pos] + value[ref.pos+ref.span:]
+	value = strings.TrimLeft(value, "/")
+	return strings.TrimSpace(value)
+}
+
+// substituteVar replaces every occurrence of the variable reference in value
+// with its resolved value from Makefile variables or Dockerfile ARGs.
+// Exits if the variable cannot be resolved.
+func substituteVar(item *workplan.WorkItem, value string, ref varRef, makefileInfo *contents.MakefileInfo) string {
+	replacement, ok := resolveVarRef(item, ref.key, makefileInfo)
+	if !ok {
+		log.Printf("Undefined makefile variable %s referenced in value: %s\n", ref.key, value)
+		os.Exit(1)
+	}
+
+	value = strings.ReplaceAll(value, ref.openTok+ref.key+ref.closeTok, replacement)
+	return value
+}
+
+// findVarRefStart finds the earliest $( or ${ in value.
+// Returns (index, openToken, closeToken) or (-1, "", "") if none found.
+func findVarRefStart(value string) (int, string, string) {
+	pi := strings.Index(value, "$(")
+	bi := strings.Index(value, "${")
+	switch {
+	case pi == -1 && bi == -1:
+		return -1, "", ""
+	case pi != -1 && (bi == -1 || pi < bi):
+		return pi, "$(", ")"
+	default:
+		return bi, "${", "}"
+	}
+}
+
+// isMakeFunction reports whether key begins with a known Make built-in function name.
+func isMakeFunction(key string) bool {
+	for _, fn := range makeFunctions {
+		if strings.HasPrefix(key, fn) {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveVarRef looks up key first in makefileInfo.Variables, then in Dockerfile Args.
+// item may be nil when no Dockerfile context is available.
+func resolveVarRef(item *workplan.WorkItem, key string, makefileInfo *contents.MakefileInfo) (string, bool) {
+	if v, ok := makefileInfo.Variables[key]; ok {
+		return v, true
+	}
+	if item != nil {
+		if v, ok := item.BuildFiles.Dockerfile.Args[key]; ok {
+			return v, true
+		}
+	}
+	return "", false
+}

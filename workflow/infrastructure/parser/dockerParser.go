@@ -1,0 +1,1070 @@
+package parser
+
+import (
+	"fmt"
+	"log"
+	"os"
+	"path"
+	"regexp"
+	"strings"
+
+	"dalec-mapping/domain/contents"
+
+	"github.com/moby/buildkit/frontend/dockerfile/parser"
+)
+
+/*
+How Buildkit Parser Works:
+==========================
+
+Instead of manually parsing Dockerfile syntax, we use buildkit's parser which:
+1. Handles all Dockerfile syntax rules (backslashes, quotes, JSON arrays, etc.)
+2. Returns an AST (Abstract Syntax Tree)
+3. We just walk the tree and extract structured data
+
+The AST has this structure:
+- result.AST.Children = array of instruction nodes (FROM, RUN, COPY, etc.)
+- Each node has:
+  * node.Value = instruction name (e.g., "FROM", "RUN")
+  * node.Next = linked list of arguments
+  * node.Flags = flags like --platform=, --from=
+  * node.Attributes = metadata like whether it's JSON format
+
+Example:
+  Dockerfile: FROM --platform=linux/amd64 golang:1.21 AS builder
+  Buildkit gives us:
+    node.Value = "FROM"
+    node.Flags = ["--platform=linux/amd64"]
+    node.Next.Value = "golang:1.21"
+    node.Next.Next.Value = "AS"
+    node.Next.Next.Next.Value = "builder"
+*/
+
+// ParseDockerfile uses buildkit parser to parse a Dockerfile
+// The buildkit parser handles all the complex parsing for us
+func ParseDockerfile(dockerfile []byte) (contents.DockerfileInfo, error) {
+	info := contents.DockerfileInfo{
+		Args:   make(map[string]string),
+		Labels: make(map[string]string),
+		Stages: []contents.Stage{},
+	}
+
+	// Create a temporary file to store the Dockerfile content
+	tmpFile, err := os.CreateTemp("", "Dockerfile")
+	if err != nil {
+		return info, fmt.Errorf("failed to create temporary file: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	defer tmpFile.Close()
+
+	// Write the dockerfile content to the temporary file
+	if _, err := tmpFile.Write(dockerfile); err != nil {
+		return info, fmt.Errorf("failed to write to temporary file: %w", err)
+	}
+
+	// Reset file pointer to the beginning
+	if _, err := tmpFile.Seek(0, 0); err != nil {
+		return info, fmt.Errorf("failed to seek in temporary file: %w", err)
+	}
+
+	// Docker buildkit parses the entire Dockerfile and returns an AST
+	result, err := parser.Parse(tmpFile)
+	if err != nil {
+		return info, fmt.Errorf("failed to parse Dockerfile: %w", err)
+	}
+
+	var currentStage *contents.Stage
+
+	// Walk the AST - each child is a Dockerfile instruction
+	for _, node := range result.AST.Children {
+		instruction := strings.ToUpper(node.Value)
+
+		// Add raw instruction to current stage if it exists
+		if currentStage != nil {
+			rawInst := contents.RawInstruction{
+				Type:  instruction,
+				Args:  []string{},
+				Flags: make(map[string]string),
+			}
+
+			// Collect arguments
+			for currentNode := node.Next; currentNode != nil; currentNode = currentNode.Next {
+				rawInst.Args = append(rawInst.Args, currentNode.Value)
+			}
+
+			// Collect flags
+			if node.Flags == nil {
+				continue
+			}
+
+			for _, flag := range node.Flags {
+				if !strings.Contains(flag, "=") {
+					continue
+				}
+				parts := strings.SplitN(flag, "=", 2)
+				key := strings.TrimPrefix(parts[0], "--")
+				rawInst.Flags[key] = parts[1]
+			}
+
+			currentStage.Instructions = append(currentStage.Instructions, rawInst)
+		}
+
+		switch instruction {
+		case "FROM":
+			currentStage = parseFromInstruction(node)
+			info.Stages = append(info.Stages, *currentStage)
+			// Update pointer to the stage in the slice
+			currentStage = &info.Stages[len(info.Stages)-1]
+
+		case "ARG":
+			key, value := parseKeyValue(node.Next)
+			// Preserve a valued global ARG when a stage re-declares without a default.
+			// Docker inherits the global default in this case (ARG FOO inside a stage).
+			if value != "" || info.Args[key] == "" {
+				info.Args[key] = value
+			}
+			if currentStage != nil {
+				currentStage.Args[key] = value
+			}
+
+		case "ENV":
+			if currentStage != nil {
+				key, value := parseKeyValue(node.Next)
+				currentStage.Env[key] = value
+			}
+
+		case "WORKDIR":
+			if currentStage != nil && node.Next != nil {
+				currentStage.Workdir = node.Next.Value
+			}
+
+		case "RUN":
+			if currentStage != nil {
+				// buildkit already parsed the command for us
+				cmd := reconstructCommand(node.Next)
+				currentStage.Runs = append(currentStage.Runs, cmd)
+			}
+
+		case "COPY", "ADD":
+			if currentStage != nil {
+				copy := parseCopyInstruction(node, instruction)
+				currentStage.Copies = append(currentStage.Copies, copy)
+			}
+
+		case "ENTRYPOINT":
+			if currentStage != nil {
+				currentStage.Entrypoint = parseCommandArray(node)
+			}
+
+		case "CMD":
+			if currentStage != nil {
+				currentStage.Cmd = parseCommandArray(node)
+			}
+
+		case "EXPOSE":
+			if currentStage != nil && node.Next != nil {
+				currentStage.Expose = append(currentStage.Expose, node.Next.Value)
+			}
+
+		case "LABEL":
+			key, value := parseKeyValue(node.Next)
+			info.Labels[key] = strings.Trim(value, "\"")
+		}
+	}
+
+	return info, nil
+}
+
+// parseFromInstruction extracts information from a FROM instruction
+// Example: FROM --platform=linux/amd64 golang:1.21 AS builder
+func parseFromInstruction(node *parser.Node) *contents.Stage {
+	stage := &contents.Stage{
+		Args:         make(map[string]string),
+		Env:          make(map[string]string),
+		Copies:       []contents.CopyInstruction{},
+		Runs:         []string{},
+		Expose:       []string{},
+		Instructions: []contents.RawInstruction{},
+	}
+
+	// Check for flags (buildkit already parsed them)
+	if node.Flags != nil {
+		for _, flag := range node.Flags {
+			if strings.HasPrefix(flag, "--platform=") {
+				stage.Platform = strings.TrimPrefix(flag, "--platform=")
+			}
+		}
+	}
+
+	// Get base image (first argument)
+	if node.Next != nil {
+		stage.From = node.Next.Value
+
+		// Check for "AS <name>" clause
+		nextArg := node.Next.Next
+		if nextArg != nil && strings.ToUpper(nextArg.Value) == "AS" && nextArg.Next != nil {
+			stage.Name = nextArg.Next.Value
+		}
+	}
+
+	return stage
+}
+
+// parseCopyInstruction extracts COPY/ADD instruction details
+// Example: COPY --from=builder /app/bin /usr/local/bin
+func parseCopyInstruction(node *parser.Node, instType string) contents.CopyInstruction {
+	copy := contents.CopyInstruction{
+		Type:   instType,
+		Source: []string{},
+	}
+
+	// Check for --from flag (buildkit already parsed it)
+	if node.Flags != nil {
+		for _, flag := range node.Flags {
+			if strings.HasPrefix(flag, "--from=") {
+				copy.From = strings.TrimPrefix(flag, "--from=")
+			}
+		}
+	}
+
+	// Walk through arguments: all but last are sources, last is dest
+	var args []string
+	for n := node.Next; n != nil; n = n.Next {
+		args = append(args, n.Value)
+	}
+
+	if len(args) > 0 {
+		copy.Dest = args[len(args)-1]
+		copy.Source = args[:len(args)-1]
+	}
+
+	return copy
+}
+
+// parseCommandArray handles both JSON and shell format commands
+// buildkit tells us if it's JSON via node.Attributes["json"]
+func parseCommandArray(node *parser.Node) []string {
+	// Check if buildkit detected JSON format (e.g., ["cmd", "arg1", "arg2"])
+	if node.Attributes != nil && node.Attributes["json"] {
+		var result []string
+		for currentNode := node.Next; currentNode != nil; currentNode = currentNode.Next {
+			result = append(result, currentNode.Value)
+		}
+		return result
+	}
+
+	// Shell format - wrap in shell
+	command := reconstructCommand(node.Next)
+	if command != "" {
+		return []string{"/bin/sh", "-c", command}
+	}
+	return nil
+}
+
+// reconstructCommand joins node values back into a single command string
+func reconstructCommand(node *parser.Node) string {
+	var parts []string
+	for currentNode := node; currentNode != nil; currentNode = currentNode.Next {
+		parts = append(parts, currentNode.Value)
+	}
+	return strings.Join(parts, " ")
+}
+
+// parseKeyValue extracts key=value or key value pairs
+func parseKeyValue(node *parser.Node) (string, string) {
+	if node == nil {
+		return "", ""
+	}
+
+	fullValue := reconstructCommand(node)
+
+	// Try splitting on =
+	if strings.Contains(fullValue, "=") {
+		parts := strings.SplitN(fullValue, "=", 2)
+		return parts[0], parts[1]
+	}
+
+	// Try splitting on space
+	parts := strings.SplitN(fullValue, " ", 2)
+	if len(parts) == 2 {
+		return parts[0], parts[1]
+	}
+
+	return fullValue, ""
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DOCKERFILE ANALYSIS — Analyses multi-stage Dockerfiles for patterns
+// that map to Dalec spec fields.
+//
+//   Chunk 1 · GO TOOLCHAIN PIN         DetectGoToolchainPin()
+//     Detects FROM stages that reference a Go SDK image and extracts the
+//     digest/tag. Dalec does not support pinning the Go toolchain — this is
+//     emitted as a spec-level comment for traceability.
+//
+//   Chunk 2 · INTERMEDIATE RUNTIME     ExtractIntermediateRuntimeDeps()
+//     Detects intermediate stages that install packages (tdnf, apt-get, …)
+//     and are only consumed via COPY --from. Extracts the package names and
+//     returns them as runtime dependency candidates.
+//
+//   Chunk 3 · FINAL LINUX BASE         DetectFinalLinuxBase()
+//     Identifies the final Linux stage's base image reference for use in
+//     image.bases[].rootfs.image.ref.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// goImagePatterns matches common Go SDK image references.
+var goImagePatterns = []string{
+	"mcr.microsoft.com/oss/go/microsoft/golang",
+	"golang",
+	"docker.io/library/golang",
+	"docker.io/golang",
+}
+
+// pkgInstallRe matches package manager install commands and captures the
+// package list. Supports tdnf, yum, dnf, apt-get, and apk.
+var pkgInstallRe = regexp.MustCompile(
+	`(?:tdnf|yum|dnf|apt-get|apk)\s+(?:install|add)\s+(?:-\S+\s+)*(.+)`)
+
+// windowsImageIndicators are substrings that identify a Windows base image.
+var windowsImageIndicators = []string{
+	"nanoserver", "servercore", "windows",
+}
+
+// ─── Chunk 1 · GO TOOLCHAIN PIN ─────────────────────────────────────────────
+
+// GoToolchainPin holds information about a pinned Go build image.
+type GoToolchainPin struct {
+	// StageName is the AS alias of the Go stage (e.g. "go", "builder").
+	StageName string
+	// ImageRef is the full FROM reference (e.g. "mcr.microsoft.com/oss/go/microsoft/golang@sha256:6a56...").
+	ImageRef string
+	// Digest is the @sha256:... portion, if present.
+	Digest string
+	// Tag is the :tag portion, if present (e.g. "1.24-azurelinux3.0").
+	Tag string
+}
+
+// DetectGoToolchainPin scans Dockerfile stages for Go SDK base images and
+// returns pin information. Returns nil if no Go stage is found.
+func DetectGoToolchainPin(stages []contents.Stage) *GoToolchainPin {
+	for _, stage := range stages {
+		ref := stage.From
+		if !IsGoImage(ref) {
+			continue
+		}
+
+		pin := &GoToolchainPin{
+			StageName: stage.Name,
+			ImageRef:  ref,
+		}
+
+		// Extract digest (@sha256:...)
+		if idx := strings.Index(ref, "@"); idx >= 0 {
+			pin.Digest = ref[idx+1:]
+		}
+
+		// Extract tag (:tag) — present with or without digest.
+		// E.g. "golang:1.24@sha256:..." has both tag and digest.
+		// Strip the digest first to find the tag.
+		refNoDigest := ref
+		if idx := strings.Index(refNoDigest, "@"); idx >= 0 {
+			refNoDigest = refNoDigest[:idx]
+		}
+		if idx := strings.LastIndex(refNoDigest, ":"); idx >= 0 {
+			pin.Tag = refNoDigest[idx+1:]
+		}
+
+		return pin
+	}
+	return nil
+}
+
+// IsGoImage checks whether an image reference matches a known Go SDK image.
+func IsGoImage(ref string) bool {
+	lower := strings.ToLower(ref)
+	for _, pattern := range goImagePatterns {
+		// Match the base image name before any tag/digest separator.
+		base := lower
+		if idx := strings.Index(base, "@"); idx >= 0 {
+			base = base[:idx]
+		}
+		if idx := strings.LastIndex(base, ":"); idx >= 0 {
+			base = base[:idx]
+		}
+		if base == pattern {
+			return true
+		}
+	}
+	return false
+}
+
+// GoVersion extracts the Go version string from the pin.
+// For tags like "1.24-azurelinux3.0", returns "1.24".
+// For digest-only pins, returns "" (version cannot be determined from digest alone).
+func (p *GoToolchainPin) GoVersion() string {
+	if p == nil {
+		return ""
+	}
+	if p.Tag != "" {
+		// Tag format: "1.24-azurelinux3.0" or "1.24.1" or "1.24"
+		// Extract the version prefix before any distro suffix.
+		version := p.Tag
+		if idx := strings.Index(version, "-"); idx >= 0 {
+			version = version[:idx]
+		}
+		return version
+	}
+	return ""
+}
+
+// ─── Chunk 2 · INTERMEDIATE RUNTIME ─────────────────────────────────────────
+
+// executablePathPrefixes lists directory prefixes that contain executables or
+// shared libraries. Paths under these prefixes indicate the package providing
+// them is needed as a runtime dependency.
+var executablePathPrefixes = []string{
+	"/usr/bin/",
+	"/usr/sbin/",
+	"/usr/local/bin/",
+	"/usr/local/sbin/",
+	"/usr/lib/",
+	"/usr/lib64/",
+	"/lib/",
+	"/lib64/",
+	"/bin/",
+	"/sbin/",
+}
+
+// configDataPathPrefixes lists directory prefixes that contain configuration or
+// data files. When ALL copied paths from a stage fall under these prefixes,
+// the stage's packages are NOT added as runtime deps — installing the full
+// package would create problematic symlinks (e.g. ca-certificates creating
+// /etc/pki/tls) that break containerd mounts on read-only rootfs.
+var configDataPathPrefixes = []string{
+	"/etc/",
+	"/var/",
+	"/usr/share/",
+	"/tmp/",
+}
+
+// isExecutablePath returns true if the path resides under a known
+// executable or library directory prefix.
+func isExecutablePath(path string) bool {
+	normalized := strings.TrimSpace(path)
+	for _, prefix := range executablePathPrefixes {
+		if strings.HasPrefix(normalized, prefix) {
+			return true
+		}
+	}
+	// Exact matches on the directory itself (e.g. COPY --from=x /usr/bin/ /usr/bin/)
+	for _, prefix := range executablePathPrefixes {
+		trimmed := strings.TrimSuffix(prefix, "/")
+		if normalized == trimmed {
+			return true
+		}
+	}
+	return false
+}
+
+// isConfigDataPath returns true if the path resides under a known
+// configuration or data directory prefix.
+func isConfigDataPath(path string) bool {
+	normalized := strings.TrimSpace(path)
+	for _, prefix := range configDataPathPrefixes {
+		if strings.HasPrefix(normalized, prefix) {
+			return true
+		}
+	}
+	for _, prefix := range configDataPathPrefixes {
+		trimmed := strings.TrimSuffix(prefix, "/")
+		if normalized == trimmed {
+			return true
+		}
+	}
+	return false
+}
+
+// hasExecutableCopyPaths returns true if any of the source paths being copied
+// from a stage reside under executable/library directories. When all paths are
+// config/data-only, this returns false — indicating the stage's packages should
+// NOT be added as runtime deps.
+// Unknown paths (not matching any known prefix) are treated as executable
+// (conservative: avoid breaking builds).
+func hasExecutableCopyPaths(sourcePaths []string) bool {
+	for _, sourcePath := range sourcePaths {
+		sourcePath = strings.TrimSpace(sourcePath)
+		if sourcePath == "/" || sourcePath == "." {
+			// Whole-tree copy — assume runtime dep is needed.
+			return true
+		}
+		if isExecutablePath(sourcePath) {
+			return true
+		}
+		// Unknown path that isn't config/data → conservative: treat as executable.
+		if !isConfigDataPath(sourcePath) {
+			return true
+		}
+	}
+	return false
+}
+
+// IntermediateRuntimeDeps holds packages extracted from an intermediate stage.
+type IntermediateRuntimeDeps struct {
+	// StageName is the AS alias of the intermediate stage.
+	StageName string
+	// Packages are the package names installed via the package manager.
+	Packages []string
+	// SelectiveCopy is true when COPY --from selects specific files/dirs
+	// rather than copying the full package tree. Flags the entry for review.
+	SelectiveCopy bool
+}
+
+// ExtractIntermediateRuntimeDeps analyses Dockerfile stages to find intermediate
+// stages that install packages and are consumed only via COPY --from.
+// Returns the extracted runtime dependency candidates grouped by stage.
+// Stages whose COPY sources are exclusively config/data paths (e.g. /etc/ssl/certs)
+// are excluded — installing their packages creates problematic symlinks.
+func ExtractIntermediateRuntimeDeps(stages []contents.Stage) []IntermediateRuntimeDeps {
+	// Build set of stage names/indices referenced by COPY --from.
+	copyFromTargets := make(map[string]bool)
+	// Track whether the COPY is selective (specific files) vs whole-tree.
+	copyFromSelective := make(map[string]bool)
+	// Collect all source paths per referenced stage for path classification.
+	copyFromSourcePaths := make(map[string][]string)
+
+	for _, stage := range stages {
+		for _, copyInstruction := range stage.Copies {
+			if copyInstruction.From == "" {
+				continue
+			}
+			copyFromTargets[copyInstruction.From] = true
+
+			for _, sourcePath := range copyInstruction.Source {
+				sourcePath = strings.TrimSpace(sourcePath)
+				copyFromSourcePaths[copyInstruction.From] = append(copyFromSourcePaths[copyInstruction.From], sourcePath)
+
+				// Heuristic: if the source is a specific file path (not / or a top-level dir),
+				// consider it selective. Patterns like /usr/sbin/*tables* or /usr/lib are selective.
+				if sourcePath != "/" && sourcePath != "." {
+					copyFromSelective[copyInstruction.From] = true
+				}
+			}
+		}
+	}
+
+	// Find the last stage (final image) — it's never an intermediate.
+	if len(stages) == 0 {
+		return nil
+	}
+	finalIdx := len(stages) - 1
+
+	var results []IntermediateRuntimeDeps
+
+	for i, stage := range stages {
+		if i == finalIdx {
+			continue
+		}
+
+		// Check if this stage is referenced by COPY --from.
+		stageRef := stage.Name
+		if stageRef == "" {
+			stageRef = fmt.Sprintf("%d", i)
+		}
+		if !copyFromTargets[stageRef] {
+			continue
+		}
+
+		// Skip Go/builder stages (they're build stages, not runtime dep providers).
+		if IsGoImage(stage.From) {
+			continue
+		}
+
+		// Skip stages where all copied paths are config/data (e.g. /etc/ssl/certs).
+		// Installing those packages creates problematic symlinks on read-only rootfs.
+		if !hasExecutableCopyPaths(copyFromSourcePaths[stageRef]) {
+			log.Printf("⚠️  Skipping runtime deps from stage %q: copied paths are config/data only\n", stageRef)
+			continue
+		}
+
+		// Look for package install commands in RUN instructions.
+		packages := extractPackagesFromRuns(stage.Runs)
+		if len(packages) == 0 {
+			continue
+		}
+
+		results = append(results, IntermediateRuntimeDeps{
+			StageName:     stageRef,
+			Packages:      packages,
+			SelectiveCopy: copyFromSelective[stageRef],
+		})
+	}
+
+	return results
+}
+
+// extractPackagesFromRuns scans RUN commands for package manager install lines
+// and returns the deduplicated list of package names.
+func extractPackagesFromRuns(runs []string) []string {
+	seen := make(map[string]bool)
+	var packages []string
+
+	for _, run := range runs {
+		// Normalise: collapse shell continuations, split on && and ;.
+		normalized := strings.ReplaceAll(run, "\\\n", " ")
+		cmds := splitShellCommands(normalized)
+
+		for _, command := range cmds {
+			command = strings.TrimSpace(command)
+			match := pkgInstallRe.FindStringSubmatch(command)
+			if match == nil {
+				continue
+			}
+			// match[1] is the package list portion after flags.
+			for _, token := range strings.Fields(match[1]) {
+				// Skip flags and shell operators.
+				if strings.HasPrefix(token, "-") || token == "&&" || token == "||" || token == ";" {
+					continue
+				}
+				packageName := strings.TrimSpace(token)
+				if packageName != "" && !seen[packageName] {
+					seen[packageName] = true
+					packages = append(packages, packageName)
+				}
+			}
+		}
+	}
+	return packages
+}
+
+// splitShellCommands splits a shell line on && and ; delimiters.
+// splitShellCommands delegates to the shared utility.
+func splitShellCommands(shellLine string) []string {
+	return SplitShellCommands(shellLine)
+}
+
+// ─── Chunk 3 · FINAL LINUX BASE ────────────────────────────────────────────
+
+// DetectFinalLinuxBase identifies the last non-Windows, non-Go, non-intermediate
+// stage as the final Linux base and returns its image reference.
+// Returns "" if no suitable final Linux stage is found.
+func DetectFinalLinuxBase(stages []contents.Stage) string {
+	if len(stages) == 0 {
+		return ""
+	}
+
+	// Build set of stages referenced by other stages — either via COPY --from
+	// or via FROM (multi-stage base). These are intermediates, not the final image.
+	referencedStages := make(map[string]bool)
+	for i, stage := range stages {
+		for _, copyInstruction := range stage.Copies {
+			if copyInstruction.From != "" {
+				referencedStages[copyInstruction.From] = true
+			}
+		}
+		// A FROM that references an earlier stage name/index makes that
+		// earlier stage an intermediate too.
+		for j := 0; j < i; j++ {
+			if stages[j].Name != "" && stages[j].Name == stage.From {
+				referencedStages[stages[j].Name] = true
+			}
+			if stage.From == fmt.Sprintf("%d", j) {
+				referencedStages[stage.From] = true
+			}
+		}
+	}
+
+	// Walk stages in reverse to find the last Linux final stage.
+	for i := len(stages) - 1; i >= 0; i-- {
+		stage := stages[i]
+
+		// Skip intermediate stages referenced by COPY --from or FROM.
+		stageRef := stage.Name
+		if stageRef == "" {
+			stageRef = fmt.Sprintf("%d", i)
+		}
+		if referencedStages[stageRef] {
+			continue
+		}
+
+		// Skip if base image references an earlier stage (alias or index).
+		if isStageSelfReference(stage.From, stages, i) {
+			continue
+		}
+
+		// Skip Go toolchain images.
+		if IsGoImage(stage.From) {
+			continue
+		}
+
+		// Skip Windows images.
+		if IsWindowsImage(stage.From) {
+			continue
+		}
+
+		// Skip if platform explicitly targets Windows.
+		if strings.Contains(strings.ToLower(stage.Platform), "windows") {
+			continue
+		}
+
+		// Skip scratch — it's a pseudo-image with no manifest; Dalec
+		// can't resolve it and will use its own default base instead.
+		if strings.EqualFold(stage.From, "scratch") {
+			continue
+		}
+
+		return stage.From
+	}
+
+	return ""
+}
+
+// IsWindowsImage returns true if the image reference contains Windows indicators.
+func IsWindowsImage(ref string) bool {
+	lower := strings.ToLower(ref)
+	for _, indicator := range windowsImageIndicators {
+		if strings.Contains(lower, indicator) {
+			return true
+		}
+	}
+	return false
+}
+
+// isStageSelfReference returns true if ref matches a stage alias or index
+// preceding the current stage (i.e. it's a multi-stage FROM referencing
+// an earlier stage, not an external image).
+func isStageSelfReference(ref string, stages []contents.Stage, currentIdx int) bool {
+	for j := 0; j < currentIdx; j++ {
+		if stages[j].Name != "" && stages[j].Name == ref {
+			return true
+		}
+		if ref == fmt.Sprintf("%d", j) {
+			return true
+		}
+	}
+	return false
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STATIC BUILD VALUE EXTRACTION — Deterministic extraction of build values
+// from parsed Dockerfile stages.
+//
+//   Chunk 5 · MAIN              ExtractStaticBuildValues()
+//   Chunk 6 · BINARY EXTRACTION extractGoBinaries(), parseGoBuildCommand(),
+//                                cleanStaticBuildCommand()
+//   Chunk 7 · PIPELINE STEPS    extractPipelineSteps()
+//   Chunk 8 · ENTRYPOINT        resolveEntrypoint(), defaultEntrypoints()
+//   Chunk 9 · STAGE HELPERS     findBuilderStage(), findFinalStage(),
+//                                findIntermediateStages()
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Aliases for shared regex patterns from parser/
+var goBuildRe = GoBuildRe
+var lineContinuationRe = LineContinuationRe
+
+// ─── Chunk 5 · MAIN ─────────────────────────────────────────────────────────
+
+// ExtractStaticBuildValues derives a DockerSpec from the parsed Dockerfile.
+// Returns nil if no Dockerfile stages are available or no Go builder stage is found.
+func ExtractStaticBuildValues(dockerfile contents.DockerfileInfo) *contents.DockerSpec {
+	stages := dockerfile.Stages
+	globalArgs := dockerfile.Args
+
+	if len(stages) == 0 {
+		return nil
+	}
+
+	builderIdx := findBuilderStage(stages)
+	if builderIdx < 0 {
+		log.Println("⚠️  Static extractor: no Go builder stage found")
+		return nil
+	}
+
+	binaries := extractGoBinaries(stages[builderIdx], globalArgs)
+	pipelineSteps := extractPipelineSteps(stages, builderIdx)
+	entrypoint, symlink := resolveEntrypoint(stages, binaries)
+
+	spec := &contents.DockerSpec{
+		Binaries:      binaries,
+		PipelineSteps: pipelineSteps,
+		Entrypoint:    entrypoint,
+		Symlink:       symlink,
+	}
+
+	log.Printf("Static extractor: %d binaries, %d pipeline steps, entrypoint=%s, symlink=%s\n",
+		len(binaries), len(pipelineSteps), entrypoint, symlink)
+
+	return spec
+}
+
+// ─── Chunk 6 · BINARY EXTRACTION ─────────────────────────────────────────────
+
+// extractGoBinaries finds all `go build` commands in the builder stage and
+// parses them into Binary structs.
+func extractGoBinaries(builder contents.Stage, globalArgs map[string]string) []contents.SpecBinary {
+	var binaries []contents.SpecBinary
+
+	// Merge global args with stage args and env for variable substitution.
+	vars := make(map[string]string)
+	for key, value := range globalArgs {
+		vars[key] = value
+	}
+	for key, value := range builder.Args {
+		vars[key] = value
+	}
+	for key, value := range builder.Env {
+		vars[key] = value
+	}
+
+	for _, run := range builder.Runs {
+		// Normalize line continuations.
+		run = lineContinuationRe.ReplaceAllString(run, " ")
+
+		// Split on && and ; to find individual commands.
+		cmds := splitShellCommands(run)
+		for _, cmd := range cmds {
+			cmd = strings.TrimSpace(cmd)
+			if !goBuildRe.MatchString(cmd) {
+				continue
+			}
+
+			bin := parseGoBuildCommand(cmd)
+			if bin.Name != "" {
+				binaries = append(binaries, bin)
+			}
+		}
+	}
+
+	return binaries
+}
+
+// parseGoBuildCommand delegates to the shared utility.
+func parseGoBuildCommand(cmd string) contents.SpecBinary {
+	return ParseGoBuildCommand(cmd)
+}
+
+// ─── Chunk 7 · PIPELINE STEPS ────────────────────────────────────────────────
+
+// extractPipelineSteps collects RUN commands from intermediate stages
+// (non-builder, non-final) that contain build-related operations.
+// Package manager install commands are excluded — those are runtime deps
+// handled by the transformer's dependency extraction, not build steps.
+func extractPipelineSteps(stages []contents.Stage, builderIdx int) []string {
+	intermediateIdxs := findIntermediateStages(stages, builderIdx)
+	var steps []string
+
+	for _, idx := range intermediateIdxs {
+		stage := stages[idx]
+		for _, run := range stage.Runs {
+			run = lineContinuationRe.ReplaceAllString(run, " ")
+			run = strings.TrimSpace(run)
+			if run == "" {
+				continue
+			}
+			// Skip package manager installs — these are runtime dependencies,
+			// not build pipeline steps.
+			if pkgInstallRe.MatchString(run) {
+				continue
+			}
+			steps = append(steps, run)
+		}
+	}
+
+	return steps
+}
+
+// ─── Chunk 8 · ENTRYPOINT ────────────────────────────────────────────────────
+
+// resolveEntrypoint determines the binary's entrypoint and symlink path from
+// the final stage's ENTRYPOINT instruction and COPY destinations.
+//
+// Convention:
+//   - symlink = the real installed binary path (e.g. /usr/bin/<name>) → tested with permissions
+//   - entrypoint = where the symlink points (e.g. /usr/local/bin/<name>) → the container entrypoint
+func resolveEntrypoint(stages []contents.Stage, binaries []contents.SpecBinary) (entrypoint, symlink string) {
+	finalIdx := findFinalStage(stages)
+	if finalIdx < 0 {
+		return defaultEntrypoints(binaries)
+	}
+
+	final := stages[finalIdx]
+
+	// Check ENTRYPOINT instruction.
+	if len(final.Entrypoint) > 0 {
+		entrypointValue := final.Entrypoint[0]
+		if strings.HasPrefix(entrypointValue, "/") {
+			entrypoint = entrypointValue
+		}
+	}
+
+	// Look at COPY --from destinations to find installed binary paths.
+	for _, copyInstruction := range final.Copies {
+		if copyInstruction.From == "" {
+			continue
+		}
+		dest := copyInstruction.Dest
+		// Normalize relative paths from scratch-stage copies (e.g. "dropgz" → "/dropgz").
+		if !strings.HasPrefix(dest, "/") {
+			dest = "/" + dest
+		}
+		if strings.HasPrefix(dest, "/usr/bin/") || strings.HasPrefix(dest, "/usr/local/bin/") ||
+			strings.HasPrefix(dest, "/usr/sbin/") {
+			if entrypoint == "" {
+				entrypoint = dest
+			} else if dest != entrypoint {
+				symlink = dest
+			}
+		} else if !strings.Contains(dest[1:], "/") {
+			// Root-level binary (e.g. /dropgz from a scratch stage). Use directly as entrypoint.
+			if entrypoint == "" {
+				entrypoint = dest
+			}
+		}
+	}
+
+	// Normalize: entrypoint should be /usr/local/bin/<name>, symlink should be /usr/bin/<name>.
+	if entrypoint != "" && symlink != "" {
+		if strings.HasPrefix(symlink, "/usr/local/bin/") && !strings.HasPrefix(entrypoint, "/usr/local/bin/") {
+			entrypoint, symlink = symlink, entrypoint
+		}
+	}
+
+	// If we only have entrypoint and no symlink, derive the standard pair.
+	if entrypoint != "" && symlink == "" {
+		name := path.Base(entrypoint)
+		if strings.HasPrefix(entrypoint, "/usr/local/bin/") {
+			symlink = "/usr/bin/" + name
+		} else if strings.HasPrefix(entrypoint, "/usr/bin/") {
+			symlink = entrypoint
+			entrypoint = "/usr/local/bin/" + name
+		} else {
+			// Root-level or non-standard path (e.g. /dropgz from a scratch stage).
+			// Keep the path as-is and add a /usr/bin/ symlink.
+			symlink = "/usr/bin/" + name
+		}
+	}
+
+	if entrypoint == "" {
+		return defaultEntrypoints(binaries)
+	}
+
+	return entrypoint, symlink
+}
+
+// defaultEntrypoints returns standard /usr/local/bin + /usr/bin paths from the first binary name.
+func defaultEntrypoints(binaries []contents.SpecBinary) (string, string) {
+	name := ""
+	if len(binaries) > 0 && binaries[0].Name != "" {
+		name = binaries[0].Name
+	}
+	if name == "" {
+		return "", ""
+	}
+	return "/usr/local/bin/" + name, "/usr/bin/" + name
+}
+
+// ─── Chunk 9 · STAGE HELPERS ─────────────────────────────────────────────────
+
+// findBuilderStage returns the index of the primary Go builder stage.
+// First pass: prefer a stage that actually contains `go build` RUN commands —
+// this correctly handles multi-stage Dockerfiles where a toolchain image
+// (e.g. mcr.microsoft.com/oss/go/microsoft/golang) is a separate base stage
+// and the real builder stage references it by alias (e.g. FROM go AS builder).
+// Second pass (fallback): any stage with a Go SDK base image.
+func findBuilderStage(stages []contents.Stage) int {
+	for i, stage := range stages {
+		for _, run := range stage.Runs {
+			if goBuildRe.MatchString(run) {
+				return i
+			}
+		}
+	}
+	// Fallback: stage with Go SDK base image (may have no direct go build commands).
+	for i, stage := range stages {
+		if IsGoImage(stage.From) {
+			return i
+		}
+	}
+	return -1
+}
+
+// findFinalStage returns the index of the final image stage (last non-referenced,
+// non-builder, non-windows stage).
+func findFinalStage(stages []contents.Stage) int {
+	if len(stages) == 0 {
+		return -1
+	}
+
+	referenced := make(map[string]bool)
+	for i, stage := range stages {
+		for _, copyInstruction := range stage.Copies {
+			if copyInstruction.From != "" {
+				referenced[copyInstruction.From] = true
+			}
+		}
+		for j := 0; j < i; j++ {
+			if stages[j].Name != "" && stages[j].Name == stage.From {
+				referenced[stages[j].Name] = true
+			}
+		}
+	}
+
+	for i := len(stages) - 1; i >= 0; i-- {
+		stage := stages[i]
+		stageRef := stage.Name
+		if stageRef == "" {
+			stageRef = fmt.Sprintf("%d", i)
+		}
+		if referenced[stageRef] {
+			continue
+		}
+		if IsGoImage(stage.From) {
+			continue
+		}
+		if IsWindowsImage(stage.From) {
+			continue
+		}
+		// Transitively check if the stage's From resolves to a Windows image
+		// (e.g. FROM hpc AS windows where hpc itself is a Windows base image alias).
+		if resolvedFrom := resolveStageFrom(stage.From, stages); IsWindowsImage(resolvedFrom) {
+			continue
+		}
+		if strings.Contains(strings.ToLower(stage.Platform), "windows") {
+			continue
+		}
+		return i
+	}
+	return len(stages) - 1
+}
+
+// resolveStageFrom follows the stage alias chain and returns the first
+// external image reference (not a stage alias). Used to transitively
+// detect Windows base images when intermediate aliases hide the origin.
+func resolveStageFrom(from string, stages []contents.Stage) string {
+	for i := 0; i < len(stages); i++ {
+		for _, stage := range stages {
+			if strings.EqualFold(stage.Name, from) {
+				from = stage.From
+				break
+			}
+		}
+	}
+	return from
+}
+
+// findIntermediateStages returns indices of stages between the builder and
+// the final stage that contain pipeline/wrapper steps.
+func findIntermediateStages(stages []contents.Stage, builderIdx int) []int {
+	finalIdx := findFinalStage(stages)
+	builderName := stages[builderIdx].Name
+
+	var indices []int
+	for i := builderIdx + 1; i < len(stages); i++ {
+		if i == finalIdx {
+			continue
+		}
+		if stages[i].From == builderName || IsGoImage(stages[i].From) || isStageSelfReference(stages[i].From, stages, i) {
+			indices = append(indices, i)
+		}
+	}
+	return indices
+}

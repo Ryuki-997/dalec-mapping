@@ -24,6 +24,7 @@ SECTIONS=(
     "unit-tests/bump-version-action|false|BUMP VERSION"
     "unit-tests/bump-revision-action|false|BUMP REVISION"
     "unit-tests/tag-fetching|false|TAG_CHECK"
+    "unit-tests/inclusion-exclusion-tags|false|TAG_CHECK"
 )
 
 # Per-component overrides: when a component@tag matches a pattern below,
@@ -47,16 +48,33 @@ TAG_CHECK_SPECIAL_COMPONENTS=(
     "mcs-controller-manager"
     "net-crd-installer"
 )
-TAG_CHECK_SPECIAL_VERSION="v0.3.33"
-TAG_CHECK_DEFAULT_VERSION="v0.18.5"
+TAG_CHECK_SPECIAL_VERSIONS=("v0.3.33" "v0.3.34" "v0.3.35")
+TAG_CHECK_DEFAULT_VERSIONS=("v0.18.5" "v0.18.6" "v0.18.7")
 
-rm -rf ./diff ./generated
-mkdir -p ./diff ./generated
+# Expected versions for inclusion-exclusion-tags sections.
+# After include/exclude filtering, each component should resolve to exactly one tag.
+INCL_EXCL_BOOTSTRAP_COMPONENTS=("aks-secure-tls-bootstrap-client")
+INCL_EXCL_BOOTSTRAP_VERSIONS=("v1.0.3")
+INCL_EXCL_SPECIAL_COMPONENTS=(
+    "hub-net-controller-manager"
+    "member-net-controller-manager"
+    "mcs-controller-manager"
+    "net-crd-installer"
+)
+INCL_EXCL_SPECIAL_VERSIONS=("v0.3.34" )
+INCL_EXCL_DEFAULT_VERSIONS=("v0.18.6" "v0.18.7")
+
+# Ctrl+C aborts the entire test run, not just the current section.
+trap 'echo ""; echo "Interrupted — aborting all tests."; exit 130' INT
+
+rm -rf ./generated
+mkdir -p ./generated
 
 overall_exit=0
 results_file="${TMPDIR:-/tmp}/test_results_$$"
-rm -f "$results_file"
-trap 'rm -f "$results_file"' EXIT
+errors_file="${TMPDIR:-/tmp}/test_errors_$$"
+rm -f "$results_file" "$errors_file"
+trap 'rm -f "$results_file" "$errors_file"' EXIT
 
 for section in "${SECTIONS[@]}"; do
     IFS='|' read -r spec_path force_flag expected_action <<< "$section"
@@ -73,8 +91,7 @@ for section in "${SECTIONS[@]}"; do
     echo ""
 
     # Run the pipeline, streaming output and capturing diffWithGolden results.
-    # diffWithGolden runs per component×tag right after spec generation,
-    # so result/output.yml is always fresh when the comparison happens.
+    # diffWithGolden runs per component×tag right after spec generation.
     go run . -branch=SpecfileTest -path="${spec_path}" ${force_arg} 2>&1 | while IFS= read -r line; do
         echo "$line"
 
@@ -82,48 +99,28 @@ for section in "${SECTIONS[@]}"; do
         if [[ "$line" == *"✅ PASS "* ]]; then
             label="${line#*PASS  }"
             echo "PASS:${spec_path}:${expected_action}:${label}" >> "$results_file"
-        # ❌ FAIL  {component} @ {tag} [{action}] — diff written to {path}
-        elif [[ "$line" == *"❌ FAIL "* && "$line" == *"diff written"* ]]; then
+        # ❌ FAIL  {component} @ {tag} [{action}] — golden mismatch
+        elif [[ "$line" == *"❌ FAIL "* ]]; then
             label="${line#*FAIL  }"
             echo "FAIL:${spec_path}:${expected_action}:${label}" >> "$results_file"
         # ⚠️  SKIP diff for {component} @ {tag} [{action}] — no golden file at {path}
         elif [[ "$line" == *"SKIP diff"* && "$line" == *"⚠️"* ]]; then
             label="${line#*SKIP diff for }"
             echo "SKIP:${spec_path}:${expected_action}:${label}" >> "$results_file"
+        # Capture pipeline-level errors (panics, parse failures, fatal logs)
+        elif [[ "$line" == *"❌ failed"* ]] || [[ "$line" == *"exit status"* ]] || [[ "$line" == "panic:"* ]] || [[ "$line" == *"FATAL"* ]] || [[ "$line" == *"fatal error:"* ]]; then
+            echo "${spec_path}|${line}" >> "$errors_file"
         fi
     done
 
     pipe_exit=${PIPESTATUS[0]}
     if [[ $pipe_exit -ne 0 ]]; then
         echo "❌ Pipeline failed for ${spec_path} (exit code ${pipe_exit})"
+        echo "${spec_path}|Pipeline exited with code ${pipe_exit}" >> "$errors_file"
         overall_exit=1
     fi
     echo ""
 done
-
-echo ""
-echo "════════════════════════════════════════"
-echo "  Diff Results"
-echo "════════════════════════════════════════"
-
-if [[ -f "$results_file" ]]; then
-    while IFS= read -r entry; do
-        status="${entry%%:*}"
-        rest="${entry#*:}"
-        # skip section field
-        rest="${rest#*:}"
-        expected="${rest%%:*}"
-        detail="${rest#*:}"
-
-        case "$status" in
-            PASS)  echo "  ✅ PASS  ${detail}" ;;
-            FAIL)  echo "  ❌ FAIL  ${detail}" ;;
-            SKIP)  echo "  ⚠️  SKIP  ${detail}" ;;
-        esac
-    done < "$results_file"
-else
-    echo "  (no diff results captured)"
-fi
 
 # ── Test Verdicts ──
 # Apply pass/fail logic based on expected action per section:
@@ -266,15 +263,42 @@ if [[ -f "$results_file" ]]; then
                     test_failed=$((test_failed + 1))
                 fi
             elif [[ "$effective_expected" == "TAG_CHECK" ]]; then
-                expected_version="$TAG_CHECK_DEFAULT_VERSION"
-                for special_comp in "${TAG_CHECK_SPECIAL_COMPONENTS[@]}"; do
-                    if [[ "$comp_name" == "$special_comp" ]]; then
-                        expected_version="$TAG_CHECK_SPECIAL_VERSION"
+                if [[ "$current_section" == "unit-tests/inclusion-exclusion-tags" ]]; then
+                    expected_versions=("${INCL_EXCL_DEFAULT_VERSIONS[@]}")
+                    version_tier_found=false
+                    for bootstrap_comp in "${INCL_EXCL_BOOTSTRAP_COMPONENTS[@]}"; do
+                        if [[ "$comp_name" == "$bootstrap_comp" ]]; then
+                            expected_versions=("${INCL_EXCL_BOOTSTRAP_VERSIONS[@]}")
+                            version_tier_found=true
+                            break
+                        fi
+                    done
+                    if [[ "$version_tier_found" == false ]]; then
+                        for special_comp in "${INCL_EXCL_SPECIAL_COMPONENTS[@]}"; do
+                            if [[ "$comp_name" == "$special_comp" ]]; then
+                                expected_versions=("${INCL_EXCL_SPECIAL_VERSIONS[@]}")
+                                break
+                            fi
+                        done
+                    fi
+                else
+                    expected_versions=("${TAG_CHECK_DEFAULT_VERSIONS[@]}")
+                    for special_comp in "${TAG_CHECK_SPECIAL_COMPONENTS[@]}"; do
+                        if [[ "$comp_name" == "$special_comp" ]]; then
+                            expected_versions=("${TAG_CHECK_SPECIAL_VERSIONS[@]}")
+                            break
+                        fi
+                    done
+                fi
+                display_expected="ver in {${expected_versions[*]}}"
+                version_matched=0
+                for expected_version in "${expected_versions[@]}"; do
+                    if [[ "$actual_version" == "$expected_version" ]]; then
+                        version_matched=1
                         break
                     fi
                 done
-                display_expected="ver=${expected_version}"
-                if [[ "$actual_version" == "$expected_version" ]]; then
+                if [[ $version_matched -eq 1 ]]; then
                     icon="✅"
                     test_passed=$((test_passed + 1))
                 else
@@ -304,9 +328,34 @@ else
     echo "  (no results captured)"
 fi
 
+# ── Pipeline Errors ──
+# Surface any captured pipeline-level errors (parse failures, panics,
+# non-zero go-run exits) so they are visible in the final summary instead
+# of being lost in the streamed output.
+if [[ -s "$errors_file" ]]; then
+    echo ""
+    echo "════════════════════════════════════════════════════════════════════════════════════════════"
+    echo "  Pipeline Errors"
+    echo "════════════════════════════════════════════════════════════════════════════════════════════"
+    current_err_section=""
+    while IFS='|' read -r err_section err_line; do
+        if [[ "$err_section" != "$current_err_section" ]]; then
+            echo ""
+            echo "  ── ${err_section} ──"
+            current_err_section="$err_section"
+        fi
+        echo "    ❌ ${err_line}"
+    done < "$errors_file"
+    echo ""
+fi
+
 echo ""
 echo "════════════════════════════════════════════════════════════════════════════════════════════"
-echo "  Summary: ${test_passed} passed, ${test_failed} failed"
+error_count=0
+if [[ -s "$errors_file" ]]; then
+    error_count=$(wc -l < "$errors_file" | tr -d ' ')
+fi
+echo "  Summary: ${test_passed} passed, ${test_failed} failed, ${error_count} pipeline error(s)"
 if [[ $overall_exit -ne 0 ]]; then
     echo "  Pipeline exit code: ${overall_exit}"
 fi
