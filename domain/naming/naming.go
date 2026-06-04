@@ -1,12 +1,9 @@
 package naming
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strings"
-	"time"
 
 	"dalec-mapping/domain/tags"
 )
@@ -21,8 +18,8 @@ import (
 //     SpecImageName). Populated by DeriveAtomic from OnboardDir. These are
 //     the canonical names used by logs and by code that needs partner /
 //     component identity without the rest of the generated set.
-//   - Generated — values produced by Construct (and WithPRID) from the
-//     atomic section + the resolved tag + the component's group name.
+//   - Generated — every value produced by a single Construct call from the
+//     atomic section + the resolved tag + the group's name + the group's PRID.
 type Naming struct {
 	// ─── Runtime: populated by Phase 1 per-component walk ───────────────────
 
@@ -31,6 +28,8 @@ type Naming struct {
 	OnboardDir string
 
 	// ─── Atomic: smallest derived naming units (populated by DeriveAtomic) ──
+	// e.g. "containernetworking" / "azure-cns" for OnboardDir
+	// "specs/containernetworking/azure-cns".
 
 	// SpecRepository is the partner folder name beneath "specs/"
 	// (e.g. "containernetworking"). For single-component partner folders
@@ -41,7 +40,7 @@ type Naming struct {
 	// (e.g. "azure-cns"). Matches the onboard.yml mapping key.
 	SpecImageName string
 
-	// ─── Generated: filled by Construct / WithPRID ──────────────────────────
+	// ─── Generated: filled by Construct ─────────────────────────────────────
 
 	DisplayName     string // GroupName supplied to Construct (equals SpecImageName for standalone components)
 	VersionRevision string // e.g. "0.0.1-1"
@@ -76,20 +75,23 @@ func splitOnboardDir(onboardDir string) (string, string) {
 	return specRepository, specImageName
 }
 
-// Construct fills the generated section in-place from the atomic section,
-// the resolved tag, and the component's group name. groupName is the
-// onboard.yml group key for grouped components, or the component name for
-// standalone components — it is always non-empty. BranchName and PRTitle
-// remain empty until WithPRID is called.
+// Construct fills the entire generated section in-place from the atomic
+// section, the resolved tag, the component's group name, and the group's
+// PRID. groupName is the onboard.yml group key for grouped components, or
+// the component name for standalone components — it is always non-empty.
+// prID is minted once per WorkItemGroup in Phase 1 and shared by every item
+// in that group, so BranchName/PRTitle collapse onto one pull request.
 //
 // Spec file paths and version labels use the numeric semver (no "v" prefix)
 // to match the remote spec repo's storage convention.
-func (n *Naming) Construct(tagSet tags.Set, groupName string) {
+func (n *Naming) Construct(tagSet tags.Set, groupName, prID string) {
 	n.VersionRevision = fmt.Sprintf("%s-%d", tagSet.Version, tagSet.Revision)
 	n.DisplayName = groupName
 	n.SpecFileName = fmt.Sprintf("%s-%s-specfile.yml", n.SpecImageName, n.VersionRevision)
 	n.FolderPath = n.deriveFolderPath(groupName)
 	n.SpecFilePath = fmt.Sprintf("%s/%s", n.OnboardDir, n.SpecFileName)
+	n.BranchName = fmt.Sprintf("dalec/%s/%s/%s", n.FolderPath, n.VersionRevision, prID)
+	n.PRTitle = fmt.Sprintf("[Dalec][%s] %s @ %s", prID, n.DisplayName, n.VersionRevision)
 }
 
 // SpecFilePathAt returns the spec file path for an arbitrary (version, revision)
@@ -100,6 +102,22 @@ func (n *Naming) Construct(tagSet tags.Set, groupName string) {
 func (n Naming) SpecFilePathAt(version string, revision int) string {
 	version = strings.TrimPrefix(version, "v")
 	return fmt.Sprintf("%s/%s-%s-%d-specfile.yml", n.OnboardDir, n.SpecImageName, version, revision)
+}
+
+// BuildFilesDockerfilePath returns the snapshot path for this component's
+// Dockerfile at the given version under <OnboardDir>/BuildFiles/. The
+// version is stripped of any leading "v" to match remote storage.
+func (n Naming) BuildFilesDockerfilePath(version string) string {
+	version = strings.TrimPrefix(version, "v")
+	return fmt.Sprintf("%s/BuildFiles/%s-%s.df", n.OnboardDir, n.SpecImageName, version)
+}
+
+// BuildFilesMakefilePath returns the snapshot path for this component's
+// Makefile at the given version under <OnboardDir>/BuildFiles/. The
+// version is stripped of any leading "v" to match remote storage.
+func (n Naming) BuildFilesMakefilePath(version string) string {
+	version = strings.TrimPrefix(version, "v")
+	return fmt.Sprintf("%s/BuildFiles/%s-%s.mk", n.OnboardDir, n.SpecImageName, version)
 }
 
 // SpecFilePathRegex compiles a regex anchored to this component's OnboardDir
@@ -120,14 +138,6 @@ func (n Naming) SpecFilePathRegex(versionPattern, revisionPattern string) *regex
 	))
 }
 
-// WithPRID returns a copy of the Naming with BranchName and PRTitle populated
-// from the given prID.
-func (n Naming) WithPRID(prID string) Naming {
-	n.BranchName = fmt.Sprintf("dalec/%s/%s/%s", n.FolderPath, n.VersionRevision, prID)
-	n.PRTitle = fmt.Sprintf("[Dalec][%s] %s @ %s", prID, n.DisplayName, n.VersionRevision)
-	return n
-}
-
 // deriveFolderPath computes the branch folder path from OnboardDir by stripping
 // the "specs/" prefix. For grouped components (groupName != SpecImageName),
 // the trailing component name is removed so the branch represents the
@@ -146,14 +156,3 @@ func (n *Naming) deriveFolderPath(groupName string) string {
 	return folderPath
 }
 
-// GeneratePRID returns a unique run identifier in the form YYYYMMDD-xxxxxx
-// where xxxxxx is 6 random hex characters.
-func GeneratePRID() string {
-	date := time.Now().UTC().Format("20060102")
-	randomBytes := make([]byte, 3)
-	if _, err := rand.Read(randomBytes); err != nil {
-		nanos := time.Now().UnixNano()
-		randomBytes = []byte{byte(nanos), byte(nanos >> 8), byte(nanos >> 16)}
-	}
-	return date + "-" + hex.EncodeToString(randomBytes)
-}

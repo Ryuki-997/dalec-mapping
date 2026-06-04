@@ -18,40 +18,41 @@ import (
 // ═══════════════════════════════════════════════════════════════════════════════
 // Phase 2 — Generate
 //
-//   Input:  workplan.WorkPlan
-//   Output: []buildresult.BuildResult (one per workplan.WorkItem; failures isolated)
+//   Input:  []workplan.WorkItemGroup
+//   Output: none (mutates each item.Result in place)
 //
 //   Responsibilities:
-//     - For each workplan.WorkItem, decide skip/bump-revision/bump-version/generate
-//     - Execute the chosen action (partnerrepo.DiscoverBuildFiles / spec.Bump* / spec.GenerateSpec)
-//     - Return a buildresult.BuildResult describing the outcome and (when applicable)
-//       the resulting spec bytes
-//
-//   Each item is passed explicitly to its sub-steps as *workplan.WorkItem; the
-//   sub-steps populate item.BuildFiles incrementally (discover → parse → fetch
-//   repo metadata → extract). No ambient package globals.
+//     - For each *workplan.WorkItem in every group, decide
+//       skip/bump-revision/bump-version/generate
+//     - Execute the chosen action (partnerrepo.DiscoverBuildFiles / spec.Bump* /
+//       spec.GenerateSpec)
+//     - Write the resulting BuildResult to item.Result. Identity fields
+//       (Naming, Component, Tag) populated by Phase 1 are never modified;
+//       BuildFiles is filled by the action sub-steps which take *WorkItem.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // ─── Public phase API ───────────────────────────────────────────────────────
 
-// Generate runs Phase 2 across every item in the workplan.WorkPlan. Always returns
-// one buildresult.BuildResult per item (never nil).
-func Generate(plan workplan.WorkPlan) []buildresult.BuildResult {
+// Generate runs Phase 2 across every item in the supplied groups.
+// The groups hold []*WorkItem, so assigning to item.Result here is the
+// single mutation Phase 2 makes; the group slice itself is untouched.
+func Generate(groups []workplan.WorkItemGroup) {
 	log.Println("═══ Phase 2: Generate ═══")
-	results := make([]buildresult.BuildResult, 0, len(plan.Items))
-	for _, item := range plan.Items {
-		results = append(results, GenerateOne(item, plan.ExistingPaths))
+	for _, group := range groups {
+		for _, item := range group.Items {
+			GenerateOne(item)
+		}
 	}
-	return results
 }
 
-// GenerateOne runs Phase 2 for a single workplan.WorkItem. Exposed for testing and
-// for callers that want per-item control. Never returns nil.
-func GenerateOne(item workplan.WorkItem, existingPaths map[string]bool) buildresult.BuildResult {
+// GenerateOne runs Phase 2 for a single *workplan.WorkItem and writes the
+// outcome to item.Result. Exposed for testing and for callers that want
+// per-item control.
+func GenerateOne(item *workplan.WorkItem) {
 	logging.PrintComponentBanner(item)
 
-	action := resolveAction(&item, existingPaths)
-	return dispatchAction(action, &item, existingPaths)
+	action := resolveAction(item)
+	item.Result = dispatchAction(action, item)
 }
 
 // ─── Decision step ──────────────────────────────────────────────────────────
@@ -75,9 +76,9 @@ const (
 // tagSet.Revision is the NEXT revision to create (NextRevision = latest+1 when a
 // prior revision exists, else 1). Therefore, when Revision > 1 the same-version
 // case applies: a spec exists at Revision-1 and we must decide skip vs. bump-revision.
-func resolveAction(item *workplan.WorkItem, existingPaths map[string]bool) pipelineAction {
+func resolveAction(item *workplan.WorkItem) pipelineAction {
 	if item.Tag.Revision > 1 {
-		needsRevisionBump, err := spec.DetectRevisionBump(item, existingPaths)
+		needsRevisionBump, err := spec.DetectRevisionBump(item)
 		if err != nil {
 			log.Fatalf("❌ DetectRevisionBump failed: %v", err)
 		}
@@ -95,7 +96,7 @@ func resolveAction(item *workplan.WorkItem, existingPaths map[string]bool) pipel
 		log.Fatalf("❌ DiscoverBuildFiles failed: %v", err)
 	}
 
-	templatePath, templateFound := specapi.SpecRepoFindLatestMinorVersion(item.Naming, item.Tag.Stripped, existingPaths)
+	templatePath, templateFound := specapi.SpecRepoFindLatestMinorVersion(item.Naming, item.Tag.Stripped)
 	if !templateFound {
 		log.Printf("Result: templateFound=false -> action=GENERATE")
 		log.Println()
@@ -161,25 +162,25 @@ func buildFilesMatch(item *workplan.WorkItem, templateDF, templateMF []byte) boo
 
 // ─── Action dispatch ────────────────────────────────────────────────────────
 
-func dispatchAction(action pipelineAction, item *workplan.WorkItem, existingPaths map[string]bool) buildresult.BuildResult {
+func dispatchAction(action pipelineAction, item *workplan.WorkItem) buildresult.BuildResult {
 	switch action {
 	case actionSkip:
-		return buildresult.BuildResult{Item: *item, Outcome: buildresult.OutcomeSkipped}
+		return buildresult.BuildResult{Outcome: buildresult.OutcomeSkipped}
 	case actionBumpRevision:
-		return runBumpRevision(item, existingPaths)
+		return runBumpRevision(item)
 	case actionBumpVersion:
-		return runBumpVersion(item, existingPaths)
+		return runBumpVersion(item)
 	case actionGenerate:
 		return runGenerate(item)
 	}
-	return buildresult.BuildResult{Item: *item, Outcome: buildresult.OutcomeUnknown}
+	return buildresult.BuildResult{Outcome: buildresult.OutcomeUnknown}
 }
 
-func runBumpVersion(item *workplan.WorkItem, existingPaths map[string]bool) buildresult.BuildResult {
+func runBumpVersion(item *workplan.WorkItem) buildresult.BuildResult {
 	log.Printf("─── [%s @ %s] Bump version ───", item.Naming.SpecImageName, item.Tag.Stripped)
 	log.Println("Purpose: Copying template spec with updated commit hash (no content change)")
 
-	specBytes, err := spec.BumpVersion(item, existingPaths)
+	specBytes, err := spec.BumpVersion(item)
 	if err != nil {
 		log.Fatalf("❌ Version bump failed: %v", err)
 	}
@@ -187,11 +188,11 @@ func runBumpVersion(item *workplan.WorkItem, existingPaths map[string]bool) buil
 	return newSpecResult(item, buildresult.OutcomeBumpVersion, specBytes)
 }
 
-func runBumpRevision(item *workplan.WorkItem, existingPaths map[string]bool) buildresult.BuildResult {
+func runBumpRevision(item *workplan.WorkItem) buildresult.BuildResult {
 	log.Printf("─── [%s @ %s] Bump revision ───", item.Naming.SpecImageName, item.Tag.Stripped)
 	log.Println("Purpose: Same version tag re-pushed with new commit — incrementing revision")
 
-	specBytes, err := spec.BumpRevision(item, existingPaths)
+	specBytes, err := spec.BumpRevision(item)
 	if err != nil {
 		log.Fatalf("❌ Revision bump failed: %v", err)
 	}
@@ -206,7 +207,7 @@ func runGenerate(item *workplan.WorkItem) buildresult.BuildResult {
 	specBytes, _, err := spec.GenerateSpec(item)
 	if err != nil {
 		log.Printf("⚠️  Skipping %s @ %s: %v", item.Naming.SpecImageName, item.Tag.Full, err)
-		return buildresult.BuildResult{Item: *item, Outcome: buildresult.OutcomeFailed, Err: err}
+		return buildresult.BuildResult{Outcome: buildresult.OutcomeFailed}
 	}
 
 	return newSpecResult(item, buildresult.OutcomeGenerated, specBytes)
@@ -237,7 +238,6 @@ func deriveTemplateTag(item *workplan.WorkItem, targetVersion string) (string, e
 func newSpecResult(item *workplan.WorkItem, outcome buildresult.Outcome, specContent []byte) buildresult.BuildResult {
 	log.Printf("✅ Spec ready: %s @ %s-%d", item.Naming.SpecImageName, item.Tag.Version, item.Tag.Revision)
 	return buildresult.BuildResult{
-		Item:        *item,
 		Outcome:     outcome,
 		SpecContent: specContent,
 	}

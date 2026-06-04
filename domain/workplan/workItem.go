@@ -1,6 +1,7 @@
 package workplan
 
 import (
+	"dalec-mapping/domain/buildresult"
 	"dalec-mapping/domain/contents"
 	"dalec-mapping/domain/naming"
 	"dalec-mapping/domain/onboarding"
@@ -8,15 +9,25 @@ import (
 	"dalec-mapping/domain/tags"
 )
 
+// WorkItemGroup is one pull request's worth of work: every WorkItem whose
+// onboard component shares the same GroupName, plus the single PRID minted
+// once at group creation in Phase 1. Items are pointers so Phase 2 can write
+// the per-item Result without touching the surrounding group/plan structure.
+type WorkItemGroup struct {
+	GroupName string
+	PRID      string
+	Items     []*WorkItem
+}
+
 // WorkItem is the unit processed by the pipeline.
 //
-//   - Identity (Naming, Component, Tag) is populated by Phase 1 and is
-//     read-only afterwards. Component carries the immutable YAML fields
-//     declared by the partner in onboard.yml (Repository, Targets, ...).
-//   - BuildFiles is empty after Phase 1 and is populated incrementally during
-//     the Phase 2 sub-steps (discover → parse → fetch repo metadata → extract
-//     static build values). Each sub-step accepts *WorkItem and writes to the
-//     fields it owns; later sub-steps read from earlier ones.
+//   - Identity (Naming, Component, Tag, BuildFiles) is populated by Phase 1
+//     and is read-only afterwards. Phase 1 calls Naming.Construct exactly
+//     once per item with the group's PRID so every Generated field —
+//     including BranchName/PRTitle — is final at the end of Phase 1.
+//   - Result is the only field Phase 2 writes; it carries the BuildResult
+//     produced for this item. Phase 3 and observers read Result and treat
+//     every other field as immutable.
 //
 // Functions take *WorkItem to avoid copying derived data and to make the
 // data flow explicit at every call site (no ambient package globals).
@@ -25,6 +36,7 @@ type WorkItem struct {
 	Component  onboarding.OnboardingComponent
 	Tag        tags.Set
 	BuildFiles BuildFilesInfo
+	Result     buildresult.BuildResult
 }
 
 // BuildFilesInfo holds everything derived from the partner repo at a specific

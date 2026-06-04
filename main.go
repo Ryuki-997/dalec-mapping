@@ -4,7 +4,7 @@ import (
 	"log"
 
 	"dalec-mapping/domain/buildresult"
-	"dalec-mapping/domain/naming"
+	"dalec-mapping/domain/workplan"
 	"dalec-mapping/workflow/foundations/logging"
 	"dalec-mapping/workflow/infrastructure/patching"
 	"dalec-mapping/workflow/orchestration"
@@ -13,14 +13,14 @@ import (
 // ═══════════════════════════════════════════════════════════════════════════════
 // Main — Dalec Spec Pipeline (wiring only)
 //
-//   Three explicit phases, each with a typed input and output:
+//   Three explicit phases over a single []workplan.WorkItemGroup:
 //
-//     Phase 1  Resolve   ()                → workplan.WorkPlan
-//     Phase 2  Generate  workplan.WorkPlan          → []buildresult.BuildResult
-//     Phase 3  Publish   []buildresult.BuildResult     → batches → []PublishOutcome
+//     Phase 1  Resolve  ()                            → []workplan.WorkItemGroup
+//     Phase 2  Generate []workplan.WorkItemGroup      (mutates each item.Result in place)
+//     Phase 3  Publish  []workplan.WorkItemGroup      → []orchestration.PublishOutcome
 //
 //   Per-spec side effects (golden diff, local cache write, action log) live
-//   between phases 2 and 3 as pure observers over the buildresult.BuildResult slice.
+//   between phases 2 and 3 as pure observers walking groups → item.Result.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 func main() {
@@ -32,54 +32,49 @@ func main() {
 		return
 	}
 
-	// ── Phase 1: Resolve onboard files and tag patterns into flat work items ──
-	plan := orchestration.Resolve(inputPath)
+	// ── Phase 1: Resolve onboard files and tag patterns into grouped work items ──
+	groups := orchestration.Resolve(inputPath)
 
-	// ── Phase 2: Generate spec per item (no PR/grouping logic) ──
-	results := orchestration.Generate(plan)
+	// ── Phase 2: Generate spec per item (writes item.Result; no PR/grouping logic) ──
+	orchestration.Generate(groups)
 
 	// ── Observers: local cache, golden diff, action log ──
-	observeResults(results)
+	observeResults(groups)
 
 	if noPublish {
 		log.Println("⚠️  -no-publish set: skipping Phase 3 (PR publishing)")
 		return
 	}
 
-	// ── Phase 3: Group results, resolve naming, publish PRs ──
-	batches := orchestration.GroupIntoBatches(results, naming.GeneratePRID)
-	log.Printf("Total PR groups to submit: %d", len(batches))
-	for _, batch := range batches {
-		log.Printf("Group: %s, Components: %d", batch.Key, len(batch.Components))
-	}
-
-	outcomes := orchestration.Publish(batches, plan.ExistingPaths)
+	// ── Phase 3: Walk groups and publish one PR per group with publishable items ──
+	outcomes := orchestration.Publish(groups)
 	orchestration.PrintPublishSummary(outcomes)
 }
 
-// observeResults runs side effects that happen once per buildresult.BuildResult but are
+// observeResults runs side effects that happen once per WorkItem but are
 // not part of publishing: write the local generated copy, diff against the
 // golden file, and accumulate the action log.
-func observeResults(results []buildresult.BuildResult) {
-	actionLog := make([]logging.ActionEntry, 0, len(results))
-	for _, result := range results {
-		item := result.Item
-		actionLog = append(actionLog, logging.ActionEntry{
-			Component: item.Naming.SpecImageName,
-			Version:   item.Naming.VersionRevision,
-			Action:    result.Outcome.String(),
-		})
+func observeResults(groups []workplan.WorkItemGroup) {
+	var actionLog []logging.ActionEntry
+	for _, group := range groups {
+		for _, item := range group.Items {
+			actionLog = append(actionLog, logging.ActionEntry{
+				Component: item.Naming.SpecImageName,
+				Version:   item.Naming.VersionRevision,
+				Action:    item.Result.Outcome.String(),
+			})
 
-		switch result.Outcome {
-		case buildresult.OutcomeSkipped:
-			log.Printf("✅ PASS  %s @ %s [SKIPPED]", item.Naming.SpecImageName, item.Tag.Stripped)
-			continue
-		case buildresult.OutcomeFailed:
-			continue
+			switch item.Result.Outcome {
+			case buildresult.OutcomeSkipped:
+				log.Printf("✅ PASS  %s @ %s [SKIPPED]", item.Naming.SpecImageName, item.Tag.Stripped)
+				continue
+			case buildresult.OutcomeFailed:
+				continue
+			}
+
+			writeGenerated(item)
+			diffWithGolden(item)
 		}
-
-		writeGenerated(result)
-		diffWithGolden(result)
 	}
 	logging.PrintActionLog(actionLog)
 }

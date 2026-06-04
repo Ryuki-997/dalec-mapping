@@ -9,7 +9,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"dalec-mapping/domain/buildresult"
+	"dalec-mapping/domain/workplan"
 )
 
 // normalizeIndent round-trips spec content through a yaml encoder with 2-space
@@ -44,9 +44,9 @@ func normalizeIndent(content []byte) []byte {
 // writeGenerated writes the generated spec content to
 // ./generated/{component}/{SpecFileName} so it can serve as a
 // cache of the latest run.
-func writeGenerated(result buildresult.BuildResult) {
-	naming := result.Item.Naming
-	specContent := normalizeIndent(result.SpecContent)
+func writeGenerated(item *workplan.WorkItem) {
+	naming := item.Naming
+	specContent := normalizeIndent(item.Result.SpecContent)
 
 	generatedDir := filepath.Join("generated", naming.SpecImageName)
 	if err := os.MkdirAll(generatedDir, 0o755); err != nil {
@@ -65,11 +65,11 @@ func writeGenerated(result buildresult.BuildResult) {
 // at ./correct/{component}/{SpecFileName}.
 // Logs PASS if identical, FAIL if not, SKIP if no golden exists. The pipeline
 // emits structured log lines that test.sh parses for pass/fail accounting.
-func diffWithGolden(result buildresult.BuildResult) {
-	naming := result.Item.Naming
-	tag := result.Item.Tag.Stripped
-	action := result.Outcome.String()
-	specContent := normalizeIndent(result.SpecContent)
+func diffWithGolden(item *workplan.WorkItem) {
+	naming := item.Naming
+	tag := item.Tag.Stripped
+	action := item.Result.Outcome.String()
+	specContent := normalizeIndent(item.Result.SpecContent)
 
 	goldenPath := filepath.Join("correct", naming.SpecImageName, naming.SpecFileName)
 

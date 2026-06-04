@@ -1,19 +1,23 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // Onboard —
 //
-//   Reads onboard.yml files from the remote spec repo. For each onboard file
-//   found, the per-component walk + tag resolution is performed by
-//   partnerrepo.ResolveTagCache so the caller gets a flat slice of WorkItems
-//   ready for downstream phases.
+//   Reads onboard.yml files from the remote spec repo and produces the
+//   WorkItemGroups that drive the rest of the pipeline. specapi.SpecRepoFetchTree
+//   populates pathcache.Cache as a side effect; specapi.SpecRepoFetchOnboard
+//   decodes each file via workplan.Decode into WorkItemGroups (one *WorkItem
+//   per declared component with only .Component populated);
+//   partnerrepo.ResolveTagCache expands each item into per-tag *WorkItems.
+//   This layer is the single centralization point: it walks every group,
+//   mints the group's PRID, and calls Naming.Construct on each expanded item.
 //
 //   Functions are ordered by call sequence:
 //     FetchComponents()
-//       → fetchSpecRepoTree()
-//       → resolveOnboardFiles()
+//       → SpecRepoFetchTree()       (specapi, populates pathcache)
+//       → buildGroups()
 //           → filterOnboardFile()
 //           → splitOnboardPath()
-//           → fetchOnboardFile() (specapi.SpecRepoFetchOnboard)
-//           → partnerrepo.ResolveTagCache()
+//           → SpecRepoFetchOnboard()         (specapi)
+//           → partnerrepo.ResolveTagCache()  — per *WorkItem
 // ═══════════════════════════════════════════════════════════════════════════════
 
 package specrepo
@@ -24,41 +28,49 @@ import (
 	"strings"
 
 	"dalec-mapping/domain/naming"
+	"dalec-mapping/domain/pathcache"
 	"dalec-mapping/domain/tagcache"
 	"dalec-mapping/domain/workplan"
 	"dalec-mapping/workflow/infrastructure/specapi"
 	"dalec-mapping/workflow/services/partnerrepo"
 )
 
-// FetchComponents reads partner-level onboard.yml files from the spec repo,
-// walks each file per-component (standalone and grouped), and expands every
-// component into workplan.WorkItems via partnerrepo.ResolveTagCache. Returns
-// the WorkItems and the set of existing file paths in the spec repo (used by
-// phase 2 for revision calculation).
-func FetchComponents(inputPath string) ([]workplan.WorkItem, map[string]bool, error) {
+// FetchComponents reads partner-level onboard.yml files from the spec repo
+// and produces the WorkItemGroups that drive the rest of the pipeline.
+// SpecRepoFetchTree populates pathcache.Cache as a side effect, so later
+// phases can answer "does this remote path exist?" via pathcache.Has.
+// Each onboard file's top-level YAML keys become one WorkItemGroup; PRID is
+// minted once per group and every workitem's Generated Naming section is
+// filled by Naming.Construct(tag, group.GroupName, group.PRID) before being
+// appended to its group's Items.
+func FetchComponents(inputPath string) ([]workplan.WorkItemGroup, error) {
 	log.Printf("Full onboard search path: %s\n", inputPath)
 
 	tagcache.Init()
+	pathcache.Init()
 
-	specRepoEntries, existingPaths, err := specapi.SpecRepoFetchTree()
+	specRepoEntries, err := specapi.SpecRepoFetchTree()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	items, err := resolveOnboardFiles(specRepoEntries, inputPath, existingPaths)
-	if err != nil {
-		return nil, nil, err
-	}
+	groups := buildGroups(specRepoEntries, inputPath)
 
-	log.Printf("Output: %d work items resolved, %d existing paths indexed\n", len(items), len(existingPaths))
-	return items, existingPaths, nil
+	totalItems := 0
+	for _, group := range groups {
+		totalItems += len(group.Items)
+	}
+	log.Printf("Output: %d work items across %d group(s), %d existing paths indexed\n", totalItems, len(groups), len(pathcache.Cache))
+	return groups, nil
 }
 
-// resolveOnboardFiles iterates the spec repo tree entries. For each onboard.yml
-// found under inputPath, it fetches the file and calls ResolveTagCache to
-// produce WorkItems for every component.
-func resolveOnboardFiles(specRepoEntries []interface{}, inputPath string, existingPaths map[string]bool) ([]workplan.WorkItem, error) {
-	var items []workplan.WorkItem
+// buildGroups walks the spec repo tree once. For each onboard.yml under
+// inputPath it fetches the groups (via SpecRepoFetchOnboard), expands each
+// group's items by tag (via ResolveTagCache), mints the group's PRID once,
+// and calls Naming.Construct on every expanded item. Empty groups (no
+// actionable items) are dropped.
+func buildGroups(specRepoEntries []interface{}, inputPath string) []workplan.WorkItemGroup {
+	var groups []workplan.WorkItemGroup
 
 	for _, entry := range specRepoEntries {
 		onboardPath, ok := filterOnboardFile(entry, inputPath)
@@ -68,27 +80,50 @@ func resolveOnboardFiles(specRepoEntries []interface{}, inputPath string, existi
 		log.Println()
 		log.Printf("Processing onboard file: %s\n", onboardPath)
 
-		baseItem, err := splitOnboardPath(onboardPath)
+		partnerOnboardDir, err := splitOnboardPath(onboardPath)
 		if err != nil {
 			continue
 		}
 
-		onboardFile, err := specapi.SpecRepoFetchOnboard(onboardPath)
+		onboardGroups, err := specapi.SpecRepoFetchOnboard(onboardPath)
 		if err != nil {
 			log.Printf("⚠️  %v\n", err)
 			continue
 		}
 
-		fileItems, err := partnerrepo.ResolveTagCache(onboardFile, baseItem, existingPaths)
-		if err != nil {
-			log.Printf("⚠️  %v\n", err)
-			continue
-		}
+		groups = append(groups, expandGroups(onboardGroups, partnerOnboardDir)...)
 
 		log.Println()
-		items = append(items, fileItems...)
 	}
-	return items, nil
+
+	return groups
+}
+
+// expandGroups turns the groups parsed from one onboard.yml into the
+// fully-centralized groups that go into the workplan. Each input group gets
+// one minted PRID; every *WorkItem inside it is fanned out by tag and each
+// expanded item has Naming.Construct called once.
+func expandGroups(onboardGroups []workplan.WorkItemGroup, partnerOnboardDir string) []workplan.WorkItemGroup {
+	groups := make([]workplan.WorkItemGroup, 0, len(onboardGroups))
+	for _, onboardGroup := range onboardGroups {
+		group := workplan.WorkItemGroup{
+			GroupName: onboardGroup.GroupName,
+			PRID:      naming.GeneratePRID(),
+		}
+		for _, item := range onboardGroup.Items {
+			item.Naming.OnboardDir = fmt.Sprintf("%s/%s", partnerOnboardDir, item.Component.Name)
+			expandedItems := partnerrepo.ResolveTagCache(item)
+			for _, expanded := range expandedItems {
+				expanded.Naming.Construct(expanded.Tag, group.GroupName, group.PRID)
+			}
+			group.Items = append(group.Items, expandedItems...)
+		}
+		if len(group.Items) == 0 {
+			continue
+		}
+		groups = append(groups, group)
+	}
+	return groups
 }
 
 // filterOnboardFile checks whether a tree entry is an onboard.yml file under
@@ -108,21 +143,16 @@ func filterOnboardFile(entry interface{}, inputPath string) (string, bool) {
 	return entryPath, true
 }
 
-// splitOnboardPath extracts the onboard directory from an onboard.yml path
-// like "<prefix>/<partner>/onboard.yml" and returns a workplan.WorkItem
-// seeded with the path-derived Naming runtime field (OnboardDir).
-// The atomic section (SpecRepository, SpecImageName) and the embedded
-// OnboardingComponent (including Name + GroupName) are filled later by
-// walkOnboardFile.
-func splitOnboardPath(onboardPath string) (workplan.WorkItem, error) {
+// splitOnboardPath extracts the partner onboard directory from an onboard.yml
+// path like "<prefix>/<partner>/onboard.yml". The returned string is the
+// directory containing the onboard file (e.g. "specs/containernetworking");
+// expandGroups appends each component's Name to produce the per-component
+// OnboardDir.
+func splitOnboardPath(onboardPath string) (string, error) {
 	segments := strings.Split(onboardPath, "/")
 	segmentCount := len(segments)
 	if segmentCount < 3 {
-		return workplan.WorkItem{}, fmt.Errorf("unexpected file path format: %s (expected <prefix>/<partner>/onboard.yml)", onboardPath)
+		return "", fmt.Errorf("unexpected file path format: %s (expected <prefix>/<partner>/onboard.yml)", onboardPath)
 	}
-	return workplan.WorkItem{
-		Naming: naming.Naming{
-			OnboardDir: strings.Join(segments[:segmentCount-1], "/"),
-		},
-	}, nil
+	return strings.Join(segments[:segmentCount-1], "/"), nil
 }

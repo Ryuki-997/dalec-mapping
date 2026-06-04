@@ -2,12 +2,12 @@
 // PR — Create Pull Request
 //
 //   Creates a feature branch from OnboardBranch, commits specfiles,
-//   Dockerfiles, and Makefiles for one or more components, then opens
-//   a single PR merging the feature branch into OnboardBranch.
-//   Reviewers from the onboarding configs are added to the PR.
+//   Dockerfiles, and Makefiles for one or more publishable WorkItems,
+//   then opens a single PR merging the feature branch into OnboardBranch.
 //
 //   Functions are ordered by call sequence:
 //     CreatePR()
+//       → findExistingPR()
 //       → createFeatureBranch()
 //       → collectFiles()
 //           → collectSiblingFiles()
@@ -18,8 +18,6 @@
 //           → updateBranchRef()
 //       → buildPRDescription()
 //       → createPullRequest()
-//       → collectReviewers()
-//       → addReviewers()
 // ═══════════════════════════════════════════════════════════════════════════════
 
 package specrepo
@@ -33,8 +31,9 @@ import (
 	"dalec-mapping/config"
 	"dalec-mapping/domain/buildresult"
 	"dalec-mapping/domain/naming"
-	"dalec-mapping/domain/prbatch"
+	"dalec-mapping/domain/pathcache"
 	repo "dalec-mapping/domain/repository"
+	"dalec-mapping/domain/workplan"
 	"dalec-mapping/workflow/infrastructure/github"
 	"dalec-mapping/workflow/infrastructure/specapi"
 )
@@ -43,18 +42,27 @@ import (
 // Set by the CLI flag parser in workflow/phases.
 var ForcePR bool
 
-// CreatePR creates a feature branch from OnboardBranch, commits all components'
-// files to it, and opens a single PR. Works for both standalone components
-// (one component) and grouped components (multiple components).
-// existingPaths is the spec-repo path index from Phase 1; BuildFiles snapshot
-// entries whose path already exists remotely are skipped (not re-committed).
-// Returns the PR URL and whether a new PR was created (false if an existing PR was reused).
-func CreatePR(batch prbatch.PRBatch, existingPaths map[string]bool) (string, bool, error) {
-	if len(batch.Components) == 0 {
-		return "", false, fmt.Errorf("no components for %s", batch.Key.GroupName)
+// CreatePR creates a feature branch from OnboardBranch, commits all publishable
+// items' files to it, and opens a single PR. Works for both standalone
+// components (one item) and grouped components (multiple items in the group).
+// The group carries the Phase 1 metadata (GroupName, PRID); publishable items
+// are filtered from group.Items by Result.IsPublishable() inside this call.
+// BranchName + PRTitle are read from the first publishable item's Naming —
+// they were baked in by Phase 1. BuildFiles snapshot paths whose remote
+// location already exists in pathcache.Cache are skipped (not re-committed).
+//
+// Returns:
+//   - prURL: the PR URL, or "" when the group has no publishable items
+//   - created: true when a new PR was opened, false when an existing PR was reused
+//   - specPaths: the spec paths committed in this PR, in publishable order
+//   - err: non-nil only on a hard failure (branch/commit/PR creation)
+func CreatePR(group workplan.WorkItemGroup) (string, bool, []string, error) {
+	publishable := publishableItems(group.Items)
+	if len(publishable) == 0 {
+		return "", false, nil, nil
 	}
 
-	firstNaming := batch.Components[0].Naming
+	firstNaming := publishable[0].Naming
 
 	// Check for an existing open PR before creating a new one.
 	if !ForcePR {
@@ -63,40 +71,55 @@ func CreatePR(batch prbatch.PRBatch, existingPaths map[string]bool) (string, boo
 			log.Printf("⚠️  Failed to check for existing PRs, proceeding with creation: %v", err)
 		} else if existingURL != "" {
 			log.Printf("⚠️  Skipping PR creation — open PR already exists: %s", existingURL)
-			return existingURL, false, nil
+			return existingURL, false, collectSpecPaths(publishable), nil
 		}
 	}
 
 	featureBranch := firstNaming.BranchName
 	if err := createFeatureBranch(featureBranch); err != nil {
-		return "", false, fmt.Errorf("failed to create feature branch %s: %w", featureBranch, err)
+		return "", false, nil, fmt.Errorf("failed to create feature branch %s: %w", featureBranch, err)
 	}
 	log.Printf("Created feature branch %s from %s\n", featureBranch, config.OnboardBranch)
 
-	specImageNames, files := collectFiles(batch.Components, existingPaths)
+	specImageNames, files := collectFiles(publishable)
 
 	commitMessage := fmt.Sprintf("[Dalec] Add specs for %s", strings.Join(specImageNames, ", "))
 	if err := commitAllFiles(featureBranch, commitMessage, files); err != nil {
-		return "", false, fmt.Errorf("failed to commit files: %w", err)
+		return "", false, nil, fmt.Errorf("failed to commit files: %w", err)
 	}
 	log.Printf("Committed %d file(s) to %s\n", len(files), featureBranch)
 
-	prTitle, prBody := buildPRDescription(batch, specImageNames)
+	prTitle, prBody := buildPRDescription(publishable, specImageNames)
 	prURL, prNumber, err := createPullRequest(prTitle, prBody, featureBranch)
 	if err != nil {
-		return "", false, fmt.Errorf("failed to create PR: %w", err)
+		return "", false, nil, fmt.Errorf("failed to create PR: %w", err)
 	}
 	log.Printf("Created PR #%d: %s\n", prNumber, prURL)
 
-	if reviewers := collectReviewers(batch.Components); len(reviewers) > 0 {
-		if err := addReviewers(prNumber, reviewers); err != nil {
-			log.Printf("⚠️  Failed to add reviewers to PR #%d: %v\n", prNumber, err)
-		} else {
-			log.Printf("Added %d reviewer(s) to PR #%d\n", len(reviewers), prNumber)
-		}
-	}
+	return prURL, true, collectSpecPaths(publishable), nil
+}
 
-	return prURL, true, nil
+// publishableItems returns the subset of items whose Result.IsPublishable()
+// is true, preserving the original order.
+func publishableItems(items []*workplan.WorkItem) []*workplan.WorkItem {
+	publishable := make([]*workplan.WorkItem, 0, len(items))
+	for _, item := range items {
+		if !item.Result.IsPublishable() {
+			continue
+		}
+		publishable = append(publishable, item)
+	}
+	return publishable
+}
+
+// collectSpecPaths returns each publishable item's spec file path, used by
+// callers to populate the publish outcome's spec listing.
+func collectSpecPaths(publishable []*workplan.WorkItem) []string {
+	specPaths := make([]string, 0, len(publishable))
+	for _, item := range publishable {
+		specPaths = append(specPaths, item.Naming.SpecFilePath)
+	}
+	return specPaths
 }
 
 // createFeatureBranch creates a new branch from the tip of OnboardBranch.
@@ -121,57 +144,55 @@ func createFeatureBranch(branchName string) error {
 	return nil
 }
 
-// fileEntry holds a file path, its content, and its Git file mode for batch committing.
+// fileEntry holds a file path and its content for batch committing.
 type fileEntry struct {
 	Path    string
 	Content []byte
 }
 
-// collectFiles gathers all files for every component into a flat list.
-// Returns the component names and the files to commit.
-func collectFiles(components []prbatch.BatchComponent, existingPaths map[string]bool) ([]string, []fileEntry) {
+// collectFiles gathers all files for every publishable item into a flat list.
+// Returns the spec image names and the files to commit.
+func collectFiles(publishable []*workplan.WorkItem) ([]string, []fileEntry) {
 	var names []string
 	var files []fileEntry
 
-	for _, comp := range components {
-		names = append(names, comp.Naming.SpecImageName)
+	for _, item := range publishable {
+		names = append(names, item.Naming.SpecImageName)
 
 		files = append(files, fileEntry{
-			Path:    comp.Naming.SpecFilePath,
-			Content: comp.Result.SpecContent,
+			Path:    item.Naming.SpecFilePath,
+			Content: item.Result.SpecContent,
 		})
 
-		files = append(files, collectSiblingFiles(comp, existingPaths)...)
+		files = append(files, collectSiblingFiles(item)...)
 	}
 	return names, files
 }
 
 // collectSiblingFiles returns per-version BuildFiles snapshot entries for the
-// component. Skipped for revision bumps (same version → snapshot unchanged),
+// item. Skipped for revision bumps (same version → snapshot unchanged),
 // when the work item has no in-memory build-file sources, and on a per-file
-// basis when the snapshot path already exists in the spec repo.
-func collectSiblingFiles(comp prbatch.BatchComponent, existingPaths map[string]bool) []fileEntry {
-	if comp.Result.Outcome == buildresult.OutcomeBumpRevision {
+// basis when the snapshot path already exists in pathcache.Cache.
+func collectSiblingFiles(item *workplan.WorkItem) []fileEntry {
+	if item.Result.Outcome == buildresult.OutcomeBumpRevision {
 		return nil
 	}
 
-	buildFiles := comp.Result.Item.BuildFiles
-	dir := comp.Naming.OnboardDir
-	imageName := comp.Naming.SpecImageName
-	version := comp.Result.Item.Tag.Version
+	buildFiles := item.BuildFiles
+	version := item.Tag.Version
 
 	var files []fileEntry
 	if len(buildFiles.Dockerfile.Source) > 0 {
-		path := fmt.Sprintf("%s/BuildFiles/%s-%s.df", dir, imageName, version)
-		if existingPaths[path] {
+		path := item.Naming.BuildFilesDockerfilePath(version)
+		if pathcache.Has(path) {
 			log.Printf("⚠️  Skipping BuildFiles snapshot — already exists: %s", path)
 		} else {
 			files = append(files, fileEntry{Path: path, Content: buildFiles.Dockerfile.Source})
 		}
 	}
 	if len(buildFiles.Makefile.Source) > 0 {
-		path := fmt.Sprintf("%s/BuildFiles/%s-%s.mk", dir, imageName, version)
-		if existingPaths[path] {
+		path := item.Naming.BuildFilesMakefilePath(version)
+		if pathcache.Has(path) {
 			log.Printf("⚠️  Skipping BuildFiles snapshot — already exists: %s", path)
 		} else {
 			files = append(files, fileEntry{Path: path, Content: buildFiles.Makefile.Source})
@@ -286,13 +307,13 @@ func updateBranchRef(branch, commitSHA string) error {
 }
 
 // buildPRDescription returns the title and body for the pull request,
-// adapting for single vs multi-component batches.
-func buildPRDescription(batch prbatch.PRBatch, specImageNames []string) (title, body string) {
-	n := batch.Components[0].Naming
-	cfg := batch.Components[0].Result.Item.Component
+// adapting for single vs multi-component groups.
+func buildPRDescription(publishable []*workplan.WorkItem, specImageNames []string) (title, body string) {
+	n := publishable[0].Naming
+	cfg := publishable[0].Component
 
 	title = n.PRTitle
-	if len(batch.Components) == 1 {
+	if len(publishable) == 1 {
 		body = fmt.Sprintf("Auto-generated Dalec spec for **%s** @ `%s`.\n\nRepository: %s\n\nRequires 1 reviewer approval before merge.",
 			n.DisplayName, n.VersionRevision, cfg.Repository)
 		return title, body
@@ -327,30 +348,6 @@ func createPullRequest(title, body, head string) (string, int, error) {
 	}
 
 	return prURL, prNumber, nil
-}
-
-// collectReviewers returns a deduplicated list of reviewers across all components.
-func collectReviewers(components []prbatch.BatchComponent) []string {
-	seen := make(map[string]bool)
-	var reviewers []string
-	for _, comp := range components {
-		for _, reviewer := range comp.Result.Item.Component.Reviewers {
-			if seen[reviewer] {
-				continue
-			}
-			seen[reviewer] = true
-			reviewers = append(reviewers, reviewer)
-		}
-	}
-	return reviewers
-}
-
-// addReviewers requests reviews from the given GitHub usernames or email addresses.
-func addReviewers(prNumber int, reviewers []string) error {
-	_, err := github.WriteJSON(specapi.OnboardAPIPath("pulls/%d/requested_reviewers", prNumber), repo.POST, map[string]interface{}{
-		"reviewers": reviewers,
-	})
-	return err
 }
 
 // findExistingPR searches for an open PR with the "specfile" label whose title

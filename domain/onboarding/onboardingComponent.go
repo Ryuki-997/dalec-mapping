@@ -6,6 +6,11 @@ import "dalec-mapping/domain/tags"
 // inside an onboard.yml file. It carries only fields the partner declares
 // in YAML — no runtime state, no cached file bytes, no derived names.
 //
+// Group identity lives on the enclosing workplan.WorkItemGroup
+// (WorkItemGroup.GroupName), not here, so each component appears in exactly
+// one place. Set by workplan.Decode from the inner YAML key (or, for
+// standalone components, from the same key as the enclosing group).
+//
 // NOTE: The onboard.yml may contain an optional "mar" section with publishing
 // metadata (contactEmail, logoUrl, displayName, description, discoveryPortalReadme).
 // That section is intentionally excluded here — it is consumed by ADO pipelines
@@ -14,18 +19,12 @@ import "dalec-mapping/domain/tags"
 type OnboardingComponent struct {
 	// Name is the component's own onboard.yml key (the inner key in a group,
 	// or the only key for a standalone component). Always non-empty after
-	// OnboardFile.UnmarshalYAML.
+	// workplan.Decode.
 	Name string `yaml:"-"`
-
-	// GroupName is the onboard.yml group key for grouped components, or
-	// equals Name for standalone components. Always non-empty after
-	// OnboardFile.UnmarshalYAML.
-	GroupName string `yaml:"-"`
 
 	Repository    string        `yaml:"repository"`
 	TagPatterns   tags.Patterns `yaml:"tags"`
 	Targets       []string      `yaml:"targets"`
-	Reviewers     []string      `yaml:"reviewers,omitempty"`
 	DockerfileDir string        `yaml:"dockerfile"`
 	MakefileDir   string        `yaml:"makefile"`
 	License       string        `yaml:"license,omitempty"`

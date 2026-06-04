@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"dalec-mapping/domain/naming"
+	"dalec-mapping/domain/pathcache"
 	"dalec-mapping/workflow/infrastructure/ado"
 	"dalec-mapping/workflow/infrastructure/github"
 )
@@ -46,8 +47,9 @@ func FetchRepoTags(repoURL string) (map[string]string, error) {
 
 // MatchTagSets takes a pre-resolved set of tag names (already filtered by
 // include/exclude) and determines the next revision for each. Returns
-// actionable tags ready to become TagSet entries.
-func MatchTagSets(tagsByName map[string]string, resolvedTagNames []string, n naming.Naming, treePaths map[string]bool) []ActionableTag {
+// actionable tags ready to become TagSet entries. Reads pathcache.Cache to
+// look up existing same-version revisions.
+func MatchTagSets(tagsByName map[string]string, resolvedTagNames []string, n naming.Naming) []ActionableTag {
 	if len(resolvedTagNames) == 0 {
 		return nil
 	}
@@ -60,7 +62,7 @@ func MatchTagSets(tagsByName map[string]string, resolvedTagNames []string, n nam
 			continue
 		}
 		strippedTag := ToTag(tagName)
-		latestRevision, found := FindLatestRevision(n, strippedTag, treePaths)
+		latestRevision, found := FindLatestRevision(n, strippedTag)
 
 		nextRevision := 1
 		if found {
@@ -85,17 +87,17 @@ type ActionableTag struct {
 	NextRevision int    // The revision number to create (e.g. 1 for new, 2 for second revision)
 }
 
-// FindLatestRevision scans the tree paths for the highest revision number
+// FindLatestRevision scans pathcache.Cache for the highest revision number
 // of a spec file matching {n.SpecImageName}-{version}-{n}-specfile.yml.
 // version may be supplied with or without a leading "v" — it is stripped internally.
 // Returns (0, false) when no matching revision exists.
-func FindLatestRevision(n naming.Naming, version string, treePaths map[string]bool) (int, bool) {
+func FindLatestRevision(n naming.Naming, version string) (int, bool) {
 	version = strings.TrimPrefix(version, "v")
 	pattern := n.SpecFilePathRegex(regexp.QuoteMeta(version), `(\d+)`)
 
 	highest := 0
 	found := false
-	for path := range treePaths {
+	for path := range pathcache.Cache {
 		matches := pattern.FindStringSubmatch(path)
 		if matches == nil {
 			continue

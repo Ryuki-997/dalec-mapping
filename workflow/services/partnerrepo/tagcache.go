@@ -1,95 +1,70 @@
-// ═══════════════════════════════════════════════════════════════════════════════
-// Tags — Resolve Tag Cache
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// Tags — Resolve Tag Cache (per-component)
 //
-//   Walks one parsed onboard.yml file, fetches repository tags for every
-//   component (standalone and grouped), matches them against the component's
-//   tag patterns, and expands the component-level WorkItems into
-//   (component, tag) WorkItems. Also populates the global tagcache.Cache.
-//
-//   The unit passed through every step is workplan.WorkItem; each step
-//   enriches the same item rather than introducing parallel types.
+//   Receives a single *WorkItem (with Naming.OnboardDir + Component
+//   already populated by the caller) and expands it into one *WorkItem per
+//   actionable (component, tag) pair. Naming runtime+atomic sections are
+//   filled here; the Generated section (BranchName/PRTitle/etc.) is left
+//   for the caller to fill via Naming.Construct once the group's PRID is
+//   known.
 //
 //   Functions are ordered by call sequence:
 //     ResolveTagCache()
-//       → walkOnboardFile()
+//       → logOnboardData()
 //       → fetchComponentTags()
-//       → matchTagPatterns()
+//       → matchTagPatterns()        — per actionable tag: new *WorkItem (Naming+Component+Tag)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 package partnerrepo
 
 import (
-	"fmt"
 	"log"
 
-	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/domain/tagcache"
 	"dalec-mapping/domain/tags"
 	"dalec-mapping/domain/workplan"
 	"dalec-mapping/workflow/infrastructure/semver"
 )
 
-// ResolveTagCache walks one OnboardFile, expands it into per-component
-// WorkItems, and then into (component, tag) WorkItems by matching tag
-// patterns against the source repository. Populates tagcache.Cache as a
-// side effect.
+// ResolveTagCache expands one *WorkItem into one *WorkItem per
+// actionable (component, tag) pair.
 //
-//   - file: parsed onboard.yml (targets already validated during unmarshal)
-//   - base: workplan.WorkItem seeded with path-derived runtime naming fields
-//     (Naming.OnboardDir, Naming.SpecRepository) by the caller.
-func ResolveTagCache(file onboarding.OnboardFile, base workplan.WorkItem, existingPaths map[string]bool) ([]workplan.WorkItem, error) {
-	componentItems := walkOnboardFile(file, base)
+// The input item must already carry:
+//   - Naming.OnboardDir set to the component's directory
+//     (e.g. "specs/azure-cni/azure-cni" for grouped components, or just
+//     "specs/aks-node-controller" for standalone).
+//   - Component populated from the onboard.yml decode.
+//
+// The atomic Naming section (SpecRepository, SpecImageName) is derived
+// here; Tag is set per output item; the Generated section is left
+// zero-valued. Returns nil when no actionable tags resolve for this
+// component.
+func ResolveTagCache(item *workplan.WorkItem) []*workplan.WorkItem {
+	item.Naming.DeriveAtomic()
 
-	var items []workplan.WorkItem
-	for _, componentItem := range componentItems {
-		logOnboardData(componentItem)
+	logOnboardData(item)
 
-		repoTags := fetchComponentTags(componentItem.Component.Repository)
-		if len(repoTags) == 0 {
-			continue
-		}
-
-		items = append(items, matchTagPatterns(componentItem, repoTags, existingPaths)...)
+	repoTags := fetchComponentTags(item.Component.Repository)
+	if len(repoTags) == 0 {
+		return nil
 	}
 
-	log.Printf("Output: %d (component, tag) items resolved, %d repos cached\n", len(items), len(tagcache.Cache))
-	log.Println()
-	return items, nil
-}
-
-// walkOnboardFile flattens an OnboardFile into a slice of WorkItems with the
-// Naming runtime+atomic sections and OnboardingComponent populated. The base
-// WorkItem carries the partner-level Naming.OnboardDir; per-component
-// OnboardDir, atomic naming, and Component are filled here.
-func walkOnboardFile(file onboarding.OnboardFile, base workplan.WorkItem) []workplan.WorkItem {
-	var items []workplan.WorkItem
-
-	partnerOnboardDir := base.Naming.OnboardDir
-
-	for _, comp := range file.Components {
-		item := base
-		item.Component = comp
-		item.Naming.OnboardDir = fmt.Sprintf("%s/%s", partnerOnboardDir, comp.Name)
-		item.Naming.DeriveAtomic()
-		items = append(items, item)
-	}
-
-	return items
+	return matchTagPatterns(item, repoTags)
 }
 
 // logOnboardData logs a single per-component line describing the inputs
 // resolved from the onboard.yml entry.
-func logOnboardData(item workplan.WorkItem) {
-	naming := item.Naming
+func logOnboardData(item *workplan.WorkItem) {
+	n := item.Naming
 	cfg := item.Component
-	if naming.SpecRepository != "" {
+	if n.SpecRepository != "" && n.SpecRepository != n.SpecImageName {
 		log.Printf("Onboard Data: %s/%s repo=%s include=%v exclude=%v\n",
-			naming.SpecRepository, naming.SpecImageName, cfg.Repository,
+			n.SpecRepository, n.SpecImageName, cfg.Repository,
 			cfg.TagPatterns.Include, cfg.TagPatterns.Exclude)
 		return
 	}
 	log.Printf("Onboard Data: %s repo=%s include=%v exclude=%v\n",
-		naming.SpecImageName, cfg.Repository,
+		n.SpecImageName, cfg.Repository,
 		cfg.TagPatterns.Include, cfg.TagPatterns.Exclude)
 }
 
@@ -114,44 +89,43 @@ func fetchComponentTags(repoURL string) map[string]string {
 	return repoTags
 }
 
-// matchTagPatterns applies the component's tag patterns against the pre-fetched
-// repo tags and produces one workplan.WorkItem per actionable match. The
-// component WorkItem (with Naming runtime section populated) is cloned per
-// tag, and the generated section of its Naming is filled via Construct.
-func matchTagPatterns(componentItem workplan.WorkItem, repoTags map[string]string, existingPaths map[string]bool) []workplan.WorkItem {
-	naming := componentItem.Naming
-	cfg := componentItem.Component
+// matchTagPatterns applies the component's tag patterns against the
+// pre-fetched repo tags and produces one *workplan.WorkItem per actionable
+// match. Each result is a fresh allocation carrying the input item's Naming
+// (runtime+atomic) and Component, plus the resolved Tag. The Generated
+// naming fields are filled later by the caller once the group's PRID is
+// known. Reads pathcache.Cache via semver.MatchTagSets for revision lookups.
+func matchTagPatterns(item *workplan.WorkItem, repoTags map[string]string) []*workplan.WorkItem {
+	cfg := item.Component
 	if !cfg.TagPatterns.HasPatterns() {
-		log.Printf("⚠️  No tag patterns defined for %s, skipping\n", naming.SpecImageName)
+		log.Printf("⚠️  No tag patterns defined for %s, skipping\n", item.Naming.SpecImageName)
 		return nil
 	}
 
-	includePatterns := cfg.TagPatterns.Include
-	excludePatterns := cfg.TagPatterns.Exclude
-
-	resolvedTagNames := semver.ResolveTagPatterns(repoTags, includePatterns, excludePatterns)
+	resolvedTagNames := semver.ResolveTagPatterns(repoTags, cfg.TagPatterns.Include, cfg.TagPatterns.Exclude)
 	if len(resolvedTagNames) == 0 {
-		log.Printf("Skipping %s: no tags matched include=%v exclude=%v\n", naming.SpecImageName, includePatterns, excludePatterns)
+		log.Printf("Skipping %s: no tags matched include=%v exclude=%v\n", item.Naming.SpecImageName, cfg.TagPatterns.Include, cfg.TagPatterns.Exclude)
 		return nil
 	}
 
-	actionableTags := semver.MatchTagSets(repoTags, resolvedTagNames, naming, existingPaths)
+	actionableTags := semver.MatchTagSets(repoTags, resolvedTagNames, item.Naming)
 	if len(actionableTags) == 0 {
-		log.Printf("Skipping %s: no actionable tags after revision check\n", naming.SpecImageName)
+		log.Printf("Skipping %s: no actionable tags after revision check\n", item.Naming.SpecImageName)
 		return nil
 	}
 
-	var items []workplan.WorkItem
+	var items []*workplan.WorkItem
 	for _, actionableTag := range actionableTags {
 		strippedTag := semver.ToTag(actionableTag.Name)
 		tagSet := tags.NewSet(actionableTag.Name, "", strippedTag, actionableTag.NextRevision)
 
-		item := componentItem
-		item.Naming.Construct(tagSet, componentItem.Component.GroupName)
-		item.Tag = tagSet
-
-		items = append(items, item)
-		log.Printf("Queued: %s\n", item.Naming.SpecFileName)
+		expanded := &workplan.WorkItem{
+			Naming:    item.Naming,
+			Component: item.Component,
+			Tag:       tagSet,
+		}
+		items = append(items, expanded)
+		log.Printf("Queued: %s @ %s\n", expanded.Naming.SpecImageName, expanded.Tag.Stripped)
 	}
 	return items
 }

@@ -7,14 +7,14 @@
 //   on this single remote target.
 //
 //   Functions:
-//     SpecRepoFetchTree()                                              — full recursive git tree + path index                → ([]interface{}, map[string]bool, error)
+//     SpecRepoFetchTree()                                              — full recursive git tree (path index lives in pathcache.Cache) → ([]interface{}, error)
 //     SpecRepoBuildPathIndex(treeEntries)                              — builds path lookup set from tree entries             → map[string]bool
-//     SpecRepoFetchOnboard(onboardPath)                                — fetches and decodes onboard.yml                     → (OnboardFile, error)
+//     SpecRepoFetchOnboard(onboardPath)                                — fetches and decodes onboard.yml                     → ([]workplan.WorkItemGroup, error)
 //     SpecRepoExtractTemplateVersion(templatePath, n)                  — parses version segment from a spec file path        → (string, error)
 //     SpecRepoFetchSpec(remotePath)                                    — fetches and parses a spec YAML file                 → (*yaml.Node, error)
 //     SpecRepoFetchCommit(specFilePath)                                — reads args.COMMIT from an existing spec             → (string, error)
-//     SpecRepoFetchLatestRevision(n, tag, existingPaths)               — fetches latest revision spec for same version     → (*yaml.Node, error)
-//     SpecRepoFindLatestMinorVersion(n, targetTag, treePaths)          — finds latest spec sharing target's major.minor → (string, bool)
+//     SpecRepoFetchLatestRevision(n, tag)                              — fetches latest revision spec for same version       → (*yaml.Node, error)
+//     SpecRepoFindLatestMinorVersion(n, targetTag)                     — finds latest spec sharing target's major.minor      → (string, bool)
 //     FindMapValue(root, key)                                          — YAML node lookup helper                             → *yaml.Node
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -29,7 +29,8 @@ import (
 
 	"dalec-mapping/config"
 	"dalec-mapping/domain/naming"
-	"dalec-mapping/domain/onboarding"
+	"dalec-mapping/domain/pathcache"
+	"dalec-mapping/domain/workplan"
 	"dalec-mapping/workflow/infrastructure/github"
 	"dalec-mapping/workflow/infrastructure/semver"
 
@@ -50,23 +51,24 @@ func OnboardAPIPath(suffixFmt string, args ...any) string {
 
 // SpecRepoFetchTree fetches the full recursive git tree from the spec repo.
 // Uses config.OnboardOwner/config.OnboardRepo/config.OnboardBranch constants to target the remote.
+// The path index is loaded into pathcache.Cache as a side effect; callers
+// query existence via pathcache.Has.
 // Returns:
 //   - treeEntries: raw GitHub tree API entries ([]interface{})
-//   - existingPaths: O(1) lookup set of every file path in the repo
 //   - error: non-nil on API failure or unexpected response format
-func SpecRepoFetchTree() ([]interface{}, map[string]bool, error) {
+func SpecRepoFetchTree() ([]interface{}, error) {
 	data, err := github.FetchJSON(OnboardAPIPath("git/trees/%s?recursive=1", config.OnboardBranch))
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to fetch onboard data: %w", err)
+		return nil, fmt.Errorf("failed to fetch onboard data: %w", err)
 	}
 	treeEntries, ok := data["tree"].([]interface{})
 	if !ok {
-		return nil, nil, fmt.Errorf("unexpected response format: 'tree' field is missing or not an array")
+		return nil, fmt.Errorf("unexpected response format: 'tree' field is missing or not an array")
 	}
 
-	existingPaths := SpecRepoBuildPathIndex(treeEntries)
+	pathcache.Set(SpecRepoBuildPathIndex(treeEntries))
 
-	return treeEntries, existingPaths, nil
+	return treeEntries, nil
 }
 
 // SpecRepoBuildPathIndex builds a lookup set of all file paths in the repo tree.
@@ -89,41 +91,43 @@ func SpecRepoBuildPathIndex(treeEntries []interface{}) map[string]bool {
 	return pathIndex
 }
 
-// SpecRepoFetchOnboard fetches a partner-level onboard.yml and unmarshals it
-// into an OnboardFile. Target validation happens inside UnmarshalYAML so the
-// returned file only contains components with at least one supported target.
+// SpecRepoFetchOnboard fetches a partner-level onboard.yml and decodes it
+// into a list of WorkItemGroups. Each returned group has GroupName set
+// (PRID empty) and Items containing one *WorkItem per declared component
+// with only Component populated. Target validation happens inside
+// workplan.Decode so the returned slice only contains groups whose
+// components have at least one supported target.
 //   - onboardPath: full path to onboard.yml in the spec repo (e.g. "specs/containernetworking/onboard.yml")
-func SpecRepoFetchOnboard(onboardPath string) (onboarding.OnboardFile, error) {
-	var onboardFile onboarding.OnboardFile
-
+func SpecRepoFetchOnboard(onboardPath string) ([]workplan.WorkItemGroup, error) {
 	contentsPath := OnboardAPIPath("contents/%s?ref=%s", onboardPath, config.OnboardBranch)
 	data, err := github.FetchJSON(contentsPath)
 	if err != nil {
-		return onboardFile, fmt.Errorf("failed to fetch onboard file %s: %w", onboardPath, err)
+		return nil, fmt.Errorf("failed to fetch onboard file %s: %w", onboardPath, err)
 	}
 
 	encodedContent, ok := data["content"].(string)
 	if !ok {
-		return onboardFile, fmt.Errorf("no content field in response for %s", onboardPath)
+		return nil, fmt.Errorf("no content field in response for %s", onboardPath)
 	}
 
 	rawContent, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(encodedContent, "\n", ""))
 	if err != nil {
-		return onboardFile, fmt.Errorf("failed to decode base64 content for %s: %w", onboardPath, err)
+		return nil, fmt.Errorf("failed to decode base64 content for %s: %w", onboardPath, err)
 	}
 
 	if len(rawContent) == 0 {
-		return onboardFile, fmt.Errorf("skipping empty onboard file: %s", onboardPath)
+		return nil, fmt.Errorf("skipping empty onboard file: %s", onboardPath)
 	}
 
-	if err := yaml.Unmarshal(rawContent, &onboardFile); err != nil {
-		return onboardFile, fmt.Errorf("failed to unmarshal %s: %w", onboardPath, err)
+	groups, err := workplan.Decode(rawContent)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode %s: %w", onboardPath, err)
 	}
 
-	if len(onboardFile.Components) == 0 {
-		return onboardFile, fmt.Errorf("no components found in %s", onboardPath)
+	if len(groups) == 0 {
+		return nil, fmt.Errorf("no components found in %s", onboardPath)
 	}
-	return onboardFile, nil
+	return groups, nil
 }
 
 // SpecRepoExtractTemplateVersion parses the stripped version (no "v") out of
@@ -191,13 +195,12 @@ func SpecRepoFetchCommit(specFilePath string) (string, error) {
 }
 
 // SpecRepoFetchLatestRevision finds the highest existing revision for the same
-// version by scanning existingPaths, then fetches that spec from the remote repo.
+// version by scanning pathcache.Cache, then fetches that spec from the remote repo.
 //   - n: component identity (uses n.OnboardDir, n.SpecImageName)
 //   - tag: stripped semver tag, with or without "v" prefix (e.g. "v1.8.5" or "1.8.5");
 //     the prefix is trimmed internally to match the remote storage convention.
-//   - existingPaths: O(1) path set from FetchSpecRepoTree/BuildPathIndex
-func SpecRepoFetchLatestRevision(n naming.Naming, tag string, existingPaths map[string]bool) (*yaml.Node, error) {
-	highestRevision, found := semver.FindLatestRevision(n, tag, existingPaths)
+func SpecRepoFetchLatestRevision(n naming.Naming, tag string) (*yaml.Node, error) {
+	highestRevision, found := semver.FindLatestRevision(n, tag)
 	if !found {
 		version := strings.TrimPrefix(tag, "v")
 		return nil, fmt.Errorf("no existing revision found for %s/%s-%s-*-specfile.yml", n.OnboardDir, n.SpecImageName, version)
@@ -208,7 +211,7 @@ func SpecRepoFetchLatestRevision(n naming.Naming, tag string, existingPaths map[
 	return SpecRepoFetchSpec(remotePath)
 }
 
-// SpecRepoFindLatestMinorVersion scans treePaths for the best template spec
+// SpecRepoFindLatestMinorVersion scans pathcache.Cache for the best template spec
 // to bump from when producing a new spec for targetTag. The search proceeds in
 // two stages, both restricted to the same major version as targetTag:
 //
@@ -228,14 +231,13 @@ func SpecRepoFetchLatestRevision(n naming.Naming, tag string, existingPaths map[
 //   - n: component identity (uses n.OnboardDir, n.SpecImageName)
 //   - targetTag: the iteration's tag string (e.g. "v1.7.2" or "1.7.2") whose
 //     major.minor selects the eligible spec family
-//   - treePaths: O(1) path set from FetchSpecRepoTree/BuildPathIndex
-func SpecRepoFindLatestMinorVersion(n naming.Naming, targetTag string, treePaths map[string]bool) (string, bool) {
+func SpecRepoFindLatestMinorVersion(n naming.Naming, targetTag string) (string, bool) {
 	targetMajor, targetMinor, ok := parseMajorMinor(targetTag)
 	if !ok {
 		return "", false
 	}
 
-	candidates := collectSameMajorCandidates(n, targetMajor, treePaths)
+	candidates := collectSameMajorCandidates(n, targetMajor)
 	if len(candidates) == 0 {
 		return "", false
 	}
@@ -258,11 +260,11 @@ type specCandidate struct {
 // major version equals targetMajor. Paths that do not match the canonical
 // "<dir>/<image>-X.Y.Z-R-specfile.yml" shape are silently skipped. Remote spec
 // files are stored without a leading "v" on the version component.
-func collectSameMajorCandidates(n naming.Naming, targetMajor int, treePaths map[string]bool) []specCandidate {
+func collectSameMajorCandidates(n naming.Naming, targetMajor int) []specCandidate {
 	pattern := n.SpecFilePathRegex(`(\d+\.\d+\.\d+)`, `(\d+)`)
 
 	candidates := make([]specCandidate, 0)
-	for filePath := range treePaths {
+	for filePath := range pathcache.Cache {
 		matches := pattern.FindStringSubmatch(filePath)
 		if matches == nil {
 			continue

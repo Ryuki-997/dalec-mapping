@@ -1,14 +1,10 @@
 package buildresult
 
-import "dalec-mapping/domain/workplan"
-
-// BuildResult is the per-item output of Phase 2. Always returned (never nil)
-// so callers can iterate without nil checks; check Outcome / Err for status.
+// BuildResult is the per-item output of Phase 2 stored on WorkItem.Result.
+// SpecContent is populated when Outcome is BumpVersion/BumpRevision/Generated.
 type BuildResult struct {
-	Item        workplan.WorkItem
 	Outcome     Outcome
-	SpecContent []byte // populated when Outcome is BumpVersion/BumpRevision/Generated
-	Err         error  // populated when Outcome is Failed
+	SpecContent []byte
 }
 
 // IsPublishable reports whether the result should be included in a PR batch.

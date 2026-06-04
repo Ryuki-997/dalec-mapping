@@ -28,6 +28,7 @@ import (
 	"log"
 	"strings"
 
+	"dalec-mapping/domain/pathcache"
 	"dalec-mapping/domain/tagcache"
 	"dalec-mapping/domain/workplan"
 	"dalec-mapping/workflow/infrastructure/specapi"
@@ -44,7 +45,7 @@ import (
 // item.Tag.Revision is the NEXT revision to create; this function
 // inspects the prior revision (Revision-1). Callers should only invoke this when
 // Revision > 1 (i.e. a prior same-version spec is known to exist).
-func DetectRevisionBump(item *workplan.WorkItem, existingPaths map[string]bool) (bool, error) {
+func DetectRevisionBump(item *workplan.WorkItem) (bool, error) {
 	component := item.Naming
 	cfg := item.Component
 	tagSet := item.Tag
@@ -55,7 +56,7 @@ func DetectRevisionBump(item *workplan.WorkItem, existingPaths map[string]bool) 
 	}
 	specFilePath := component.SpecFilePathAt(tagSet.Version, priorRevision)
 
-	if !existingPaths[specFilePath] {
+	if !pathcache.Has(specFilePath) {
 		return false, nil
 	}
 
@@ -84,14 +85,14 @@ func DetectRevisionBump(item *workplan.WorkItem, existingPaths map[string]bool) 
 // BumpRevision copies the latest existing spec for the same version, updates
 // only args.COMMIT with the new tag's commit, and returns the encoded spec
 // bytes. The revision number is already incremented in TagSet by step 2.
-func BumpRevision(item *workplan.WorkItem, existingPaths map[string]bool) ([]byte, error) {
+func BumpRevision(item *workplan.WorkItem) ([]byte, error) {
 	component := item.Naming
 	cfg := item.Component
 	tagSet := item.Tag
 
 	log.Printf("Revision bump for %s\n", component.SpecFileName)
 
-	specNode, err := specapi.SpecRepoFetchLatestRevision(component, tagSet.Stripped, existingPaths)
+	specNode, err := specapi.SpecRepoFetchLatestRevision(component, tagSet.Stripped)
 	if err != nil {
 		return nil, err
 	}
@@ -138,12 +139,12 @@ func updateCommitOnly(specNode *yaml.Node, newCommit string) error {
 // BumpVersion finds the latest existing spec for this component (any version),
 // copies it as a template, updates args.COMMIT and args.VERSION for the new tag,
 // and returns the encoded spec bytes.
-func BumpVersion(item *workplan.WorkItem, existingPaths map[string]bool) ([]byte, error) {
+func BumpVersion(item *workplan.WorkItem) ([]byte, error) {
 	component := item.Naming
 	cfg := item.Component
 	tagSet := item.Tag
 
-	templatePath, found := specapi.SpecRepoFindLatestMinorVersion(component, tagSet.Stripped, existingPaths)
+	templatePath, found := specapi.SpecRepoFindLatestMinorVersion(component, tagSet.Stripped)
 	if !found {
 		return nil, fmt.Errorf("no same-minor-version spec found for %s to use as template", component.SpecFileName)
 	}
