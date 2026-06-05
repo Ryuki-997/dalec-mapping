@@ -2,13 +2,13 @@
 // Onboard —
 //
 //   Reads onboard.yml files from the remote spec repo and produces the
-//   WorkItemGroups that drive the rest of the pipeline. specapi.SpecRepoFetchTree
+//   WorkGroups that drive the rest of the pipeline. specapi.SpecRepoFetchTree
 //   populates pathcache.Cache as a side effect; specapi.SpecRepoFetchOnboard
-//   decodes each file via workplan.Decode into WorkItemGroups (one *WorkItem
-//   per declared component with only .Component populated);
-//   partnerrepo.ResolveTagCache expands each item into per-tag *WorkItems.
-//   This layer is the single centralization point: it walks every group,
-//   mints the group's PRID, and calls Naming.Construct on each expanded item.
+//   decodes each file via workplan.Decode into decoded WorkGroups (group-level
+//   metadata + Components, no Tag/PRID/Components yet); partnerrepo.ResolveTagCache
+//   then fans each decoded group across its matched tags into one runtime
+//   WorkGroup per tag — each with its own PRID, copied metadata, and one
+//   *WorkComponent per component (Naming fully constructed).
 //
 //   Functions are ordered by call sequence:
 //     FetchComponents()
@@ -17,7 +17,8 @@
 //           → filterOnboardFile()
 //           → splitOnboardPath()
 //           → SpecRepoFetchOnboard()         (specapi)
-//           → partnerrepo.ResolveTagCache()  — per *WorkItem
+//           → expandGroups()
+//               → partnerrepo.ResolveTagCache()  — per decoded WorkGroup
 // ═══════════════════════════════════════════════════════════════════════════════
 
 package specrepo
@@ -27,7 +28,6 @@ import (
 	"log"
 	"strings"
 
-	"dalec-mapping/domain/naming"
 	"dalec-mapping/domain/pathcache"
 	"dalec-mapping/domain/tagcache"
 	"dalec-mapping/domain/workplan"
@@ -36,14 +36,13 @@ import (
 )
 
 // FetchComponents reads partner-level onboard.yml files from the spec repo
-// and produces the WorkItemGroups that drive the rest of the pipeline.
+// and produces the runtime WorkGroups that drive the rest of the pipeline.
 // SpecRepoFetchTree populates pathcache.Cache as a side effect, so later
-// phases can answer "does this remote path exist?" via pathcache.Has.
-// Each onboard file's top-level YAML keys become one WorkItemGroup; PRID is
-// minted once per group and every workitem's Generated Naming section is
-// filled by Naming.Construct(tag, group.GroupName, group.PRID) before being
-// appended to its group's Items.
-func FetchComponents(inputPath string) ([]workplan.WorkItemGroup, error) {
+// phases can answer "does this remote path exist?" via pathcache.Has. Each
+// onboard top-level key produces one decoded WorkGroup, which ResolveTagCache
+// fans across its matched tags into one runtime WorkGroup per tag (with its
+// own PRID and a fully-constructed Naming on each per-component WorkComponent).
+func FetchComponents(inputPath string) ([]workplan.WorkGroup, error) {
 	log.Printf("Full onboard search path: %s\n", inputPath)
 
 	tagcache.Init()
@@ -58,19 +57,17 @@ func FetchComponents(inputPath string) ([]workplan.WorkItemGroup, error) {
 
 	totalItems := 0
 	for _, group := range groups {
-		totalItems += len(group.Items)
+		totalItems += len(group.Components)
 	}
-	log.Printf("Output: %d work items across %d group(s), %d existing paths indexed\n", totalItems, len(groups), len(pathcache.Cache))
+	log.Printf("Output: %d work components across %d group(s), %d existing paths indexed\n", totalItems, len(groups), len(pathcache.Cache))
 	return groups, nil
 }
 
 // buildGroups walks the spec repo tree once. For each onboard.yml under
-// inputPath it fetches the groups (via SpecRepoFetchOnboard), expands each
-// group's items by tag (via ResolveTagCache), mints the group's PRID once,
-// and calls Naming.Construct on every expanded item. Empty groups (no
-// actionable items) are dropped.
-func buildGroups(specRepoEntries []interface{}, inputPath string) []workplan.WorkItemGroup {
-	var groups []workplan.WorkItemGroup
+// inputPath it fetches the decoded groups (via SpecRepoFetchOnboard) and
+// hands them to expandGroups for per-tag fan-out.
+func buildGroups(specRepoEntries []interface{}, inputPath string) []workplan.WorkGroup {
+	var groups []workplan.WorkGroup
 
 	for _, entry := range specRepoEntries {
 		onboardPath, ok := filterOnboardFile(entry, inputPath)
@@ -99,31 +96,18 @@ func buildGroups(specRepoEntries []interface{}, inputPath string) []workplan.Wor
 	return groups
 }
 
-// expandGroups turns the groups parsed from one onboard.yml into the
-// fully-centralized groups that go into the workplan. Each input group gets
-// one minted PRID; every *WorkItem inside it is fanned out by tag and each
-// expanded item has Naming.Construct called once.
-func expandGroups(onboardGroups []workplan.WorkItemGroup, partnerOnboardDir string) []workplan.WorkItemGroup {
-	groups := make([]workplan.WorkItemGroup, 0, len(onboardGroups))
-	for _, onboardGroup := range onboardGroups {
-		group := workplan.WorkItemGroup{
-			GroupName: onboardGroup.GroupName,
-			PRID:      naming.GeneratePRID(),
-		}
-		for _, item := range onboardGroup.Items {
-			item.Naming.OnboardDir = fmt.Sprintf("%s/%s", partnerOnboardDir, item.Component.Name)
-			expandedItems := partnerrepo.ResolveTagCache(item)
-			for _, expanded := range expandedItems {
-				expanded.Naming.Construct(expanded.Tag, group.GroupName, group.PRID)
-			}
-			group.Items = append(group.Items, expandedItems...)
-		}
-		if len(group.Items) == 0 {
-			continue
-		}
-		groups = append(groups, group)
+// expandGroups dispatches each decoded WorkGroup to partnerrepo.ResolveTagCache
+// for per-tag fan-out. The decoded group carries group-level metadata and
+// the static Components slice; ResolveTagCache emits one runtime WorkGroup
+// per matched tag with PRID, copied metadata, and per-component WorkItems
+// whose Naming is fully constructed.
+func expandGroups(onboardGroups []workplan.WorkGroup, partnerOnboardDir string) []workplan.WorkGroup {
+	var runtimeGroups []workplan.WorkGroup
+	for groupIndex := range onboardGroups {
+		decoded := &onboardGroups[groupIndex]
+		runtimeGroups = append(runtimeGroups, partnerrepo.ResolveTagCache(decoded, partnerOnboardDir)...)
 	}
-	return groups
+	return runtimeGroups
 }
 
 // filterOnboardFile checks whether a tree entry is an onboard.yml file under
@@ -146,7 +130,7 @@ func filterOnboardFile(entry interface{}, inputPath string) (string, bool) {
 // splitOnboardPath extracts the partner onboard directory from an onboard.yml
 // path like "<prefix>/<partner>/onboard.yml". The returned string is the
 // directory containing the onboard file (e.g. "specs/containernetworking");
-// expandGroups appends each component's Name to produce the per-component
+// ResolveTagCache appends each component's Name to produce the per-component
 // OnboardDir.
 func splitOnboardPath(onboardPath string) (string, error) {
 	segments := strings.Split(onboardPath, "/")

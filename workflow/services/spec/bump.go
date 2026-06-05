@@ -26,11 +26,11 @@ import (
 	"bytes"
 	"fmt"
 	"log"
-	"strings"
 
 	"dalec-mapping/domain/pathcache"
 	"dalec-mapping/domain/tagcache"
 	"dalec-mapping/domain/workplan"
+	"dalec-mapping/workflow/infrastructure/semver"
 	"dalec-mapping/workflow/infrastructure/specapi"
 
 	"gopkg.in/yaml.v3"
@@ -42,19 +42,18 @@ import (
 // latest existing spec for the same version. Returns true if a revision bump is
 // needed (spec exists but commit hash changed), false otherwise.
 //
-// item.Tag.Revision is the NEXT revision to create; this function
+// component.Revision is the NEXT revision to create; this function
 // inspects the prior revision (Revision-1). Callers should only invoke this when
 // Revision > 1 (i.e. a prior same-version spec is known to exist).
-func DetectRevisionBump(item *workplan.WorkItem) (bool, error) {
-	component := item.Naming
-	cfg := item.Component
-	tagSet := item.Tag
+func DetectRevisionBump(component *workplan.WorkComponent) (bool, error) {
+	componentNaming := component.Naming
+	tagSet := component.Tag
 
-	priorRevision := tagSet.Revision - 1
+	priorRevision := component.Revision - 1
 	if priorRevision < 1 {
 		priorRevision = 1
 	}
-	specFilePath := component.SpecFilePathAt(tagSet.Version, priorRevision)
+	specFilePath := componentNaming.SpecFilePathAt(tagSet.Version, priorRevision)
 
 	if !pathcache.Has(specFilePath) {
 		return false, nil
@@ -65,39 +64,46 @@ func DetectRevisionBump(item *workplan.WorkItem) (bool, error) {
 		return false, fmt.Errorf("failed to read existing spec commit: %w", err)
 	}
 
-	currentCommit, err := tagcache.Lookup(cfg.Repository, tagSet.Full)
+	currentCommit, err := tagcache.LookupCommit(tagSet.Full)
 	if err != nil {
 		return false, fmt.Errorf("failed to resolve current commit for tag %s: %w", tagSet.Full, err)
 	}
 
 	if existingCommit == currentCommit {
-		log.Printf("   Spec already up to date for %s (commit %s)\n", component.SpecFileName, currentCommit)
+		log.Printf("   Spec already up to date for %s (commit %s)\n", componentNaming.SpecFileName, currentCommit)
 		return false, nil
 	}
 
 	log.Printf("   Revision bump needed for %s: commit %s → %s\n",
-		component.SpecFileName, existingCommit, currentCommit)
+		componentNaming.SpecFileName, existingCommit, currentCommit)
 	return true, nil
 }
 
 // ─── Chunk 2 · BUMP REVISION ────────────────────────────────────────────────
 
-// BumpRevision copies the latest existing spec for the same version, updates
+// BumpRevision copies the prior revision's spec for the same version, updates
 // only args.COMMIT with the new tag's commit, and returns the encoded spec
-// bytes. The revision number is already incremented in TagSet by step 2.
-func BumpRevision(item *workplan.WorkItem) ([]byte, error) {
-	component := item.Naming
-	cfg := item.Component
-	tagSet := item.Tag
+// bytes. The revision number is already incremented on the WorkComponent by step 2,
+// so the prior revision sits at component.Revision - 1.
+func BumpRevision(component *workplan.WorkComponent) ([]byte, error) {
+	componentNaming := component.Naming
+	tagSet := component.Tag
 
-	log.Printf("Revision bump for %s\n", component.SpecFileName)
+	log.Printf("Revision bump for %s\n", componentNaming.SpecFileName)
 
-	specNode, err := specapi.SpecRepoFetchLatestRevision(component, tagSet.Stripped)
+	priorRevision := component.Revision - 1
+	if priorRevision < 1 {
+		priorRevision = 1
+	}
+	priorPath := componentNaming.SpecFilePathAt(tagSet.Version, priorRevision)
+	log.Printf("   Template (same version, R%d): %s\n", priorRevision, priorPath)
+
+	specNode, err := specapi.SpecRepoFetchSpec(priorPath)
 	if err != nil {
 		return nil, err
 	}
 
-	newCommit, err := tagcache.Lookup(cfg.Repository, tagSet.Full)
+	newCommit, err := tagcache.LookupCommit(tagSet.Full)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve commit for tag %s: %w", tagSet.Full, err)
 	}
@@ -136,33 +142,40 @@ func updateCommitOnly(specNode *yaml.Node, newCommit string) error {
 
 // ─── Chunk 3 · BUMP VERSION ─────────────────────────────────────────────────
 
-// BumpVersion finds the latest existing spec for this component (any version),
-// copies it as a template, updates args.COMMIT and args.VERSION for the new tag,
-// and returns the encoded spec bytes.
-func BumpVersion(item *workplan.WorkItem) ([]byte, error) {
-	component := item.Naming
-	cfg := item.Component
-	tagSet := item.Tag
-
-	templatePath, found := specapi.SpecRepoFindLatestMinorVersion(component, tagSet.Stripped)
-	if !found {
-		return nil, fmt.Errorf("no same-minor-version spec found for %s to use as template", component.SpecFileName)
+// BumpVersion fetches the highest-revision spec under the given templateMinor
+// ("<major>.<minor>") snapshot directory, copies it as a template, updates
+// args.COMMIT and args.VERSION for the new tag, and returns the encoded spec
+// bytes. templateMinor is the prefix resolved by Phase 2's resolveAction once
+// semver.FindTemplateVersion succeeds; the concrete patch and revision of the
+// cloned specfile are resolved by scanning pathcache.Cache.
+func BumpVersion(component *workplan.WorkComponent, templateMinor string) ([]byte, error) {
+	componentNaming := component.Naming
+	tagSet := component.Tag
+	if templateMinor == "" {
+		return nil, fmt.Errorf("template version not provided for %s on %s", componentNaming.SpecImageName, tagSet.Full)
 	}
 
-	log.Printf("Version bump for %s (template: %s)\n", component.SpecFileName, templatePath)
+	templateFullVersion, templateRevision, found := semver.FindLatestVersionAndRevision(componentNaming, templateMinor)
+	if !found {
+		return nil, fmt.Errorf("no specfile found for %s under major.minor %s", componentNaming.SpecImageName, templateMinor)
+	}
+	templatePath := componentNaming.SpecFilePathAt(templateFullVersion, templateRevision)
+
+	log.Printf("Version bump for %s (template major.minor=%s → %s rev %d)\n",
+		componentNaming.SpecFileName, templateMinor, templatePath, templateRevision)
 
 	specNode, err := specapi.SpecRepoFetchSpec(templatePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch template spec: %w", err)
 	}
 
-	newCommit, err := tagcache.Lookup(cfg.Repository, tagSet.Full)
+	newCommit, err := tagcache.LookupCommit(tagSet.Full)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve commit for tag %s: %w", tagSet.Full, err)
 	}
 	log.Printf("   Commit SHA (from cache): %s\n", newCommit)
 
-	if err := updateSpecArgs(specNode, tagSet.Stripped, newCommit); err != nil {
+	if err := updateSpecArgs(specNode, tagSet.Version, newCommit); err != nil {
 		return nil, err
 	}
 
@@ -176,7 +189,9 @@ func BumpVersion(item *workplan.WorkItem) ([]byte, error) {
 }
 
 // updateSpecArgs updates args.COMMIT and args.VERSION in the parsed YAML node.
-func updateSpecArgs(specNode *yaml.Node, tag, newCommit string) error {
+// version must already be in numeric form (no leading "v"); TagSet.Version
+// is the canonical source.
+func updateSpecArgs(specNode *yaml.Node, version, newCommit string) error {
 	argsNode := specapi.FindMapValue(specNode, "args")
 	if argsNode == nil {
 		return fmt.Errorf("spec file missing 'args' section")
@@ -191,9 +206,8 @@ func updateSpecArgs(specNode *yaml.Node, tag, newCommit string) error {
 
 	versionNode := specapi.FindMapValue(argsNode, "VERSION")
 	if versionNode != nil {
-		newVersion := strings.TrimPrefix(tag, "v")
-		log.Printf("   VERSION: %s → %s\n", versionNode.Value, newVersion)
-		versionNode.Value = newVersion
+		log.Printf("   VERSION: %s → %s\n", versionNode.Value, version)
+		versionNode.Value = version
 	}
 
 	return nil

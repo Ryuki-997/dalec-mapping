@@ -2,14 +2,14 @@
 // Phase 1 — Resolve
 //
 //   Input:  inputPath (path or URL fragment to onboard files)
-//   Output: []workplan.WorkItemGroup
+//   Output: []workplan.WorkGroup
 //
 //   Phase 1 is a thin wrapper around specrepo.FetchComponents. The remote
 //   spec-repo path index is written to pathcache.Cache as a side effect of
 //   the underlying SpecRepoFetchTree call. All grouping and PRID minting
-//   happens inside specrepo.buildGroups: one WorkItemGroup per onboard
-//   group key, PRID generated at group creation, each *WorkItem centralized
-//   via a single Naming.Construct call so every Generated field — including
+//   happens inside specrepo.buildGroups: one WorkGroup per onboard group
+//   key, PRID generated at group creation, each *WorkComponent centralized via
+//   a single Naming.Construct call so every Generated field — including
 //   BranchName/PRTitle — is final at the end of Phase 1.
 //
 //   Downstream phases never look at the onboard file structure again.
@@ -28,7 +28,7 @@ import (
 )
 
 // Resolve runs Phase 1 of the pipeline.
-func Resolve(inputPath string) []workplan.WorkItemGroup {
+func Resolve(inputPath string) []workplan.WorkGroup {
 	log.Println("═══ Phase 1: Resolve ═══")
 	log.Println("─── Fetch onboard files and resolve tag cache ───")
 	log.Printf("Input path: %s", inputPath)
@@ -48,15 +48,15 @@ func Resolve(inputPath string) []workplan.WorkItemGroup {
 }
 
 // logTagCache prints the "Tag cache (N tags across M components)" summary
-// by walking the groups produced by Phase 1.
-func logTagCache(groups []workplan.WorkItemGroup) {
+// by walking the flat group.Components list produced by Phase 1.
+func logTagCache(groups []workplan.WorkGroup) {
 	tagsByComponent := make(map[string][]string)
 	totalItems := 0
 	for _, group := range groups {
-		for _, item := range group.Items {
-			tagsByComponent[item.Naming.SpecImageName] = append(
-				tagsByComponent[item.Naming.SpecImageName],
-				fmt.Sprintf("%s (R%d)", item.Tag.Stripped, item.Tag.Revision),
+		for _, component := range group.Components {
+			tagsByComponent[component.Naming.SpecImageName] = append(
+				tagsByComponent[component.Naming.SpecImageName],
+				fmt.Sprintf("%s (R%d)", component.Tag.Stripped, component.Revision),
 			)
 			totalItems++
 		}

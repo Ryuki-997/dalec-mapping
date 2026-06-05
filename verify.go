@@ -44,9 +44,9 @@ func normalizeIndent(content []byte) []byte {
 // writeGenerated writes the generated spec content to
 // ./generated/{component}/{SpecFileName} so it can serve as a
 // cache of the latest run.
-func writeGenerated(item *workplan.WorkItem) {
-	naming := item.Naming
-	specContent := normalizeIndent(item.Result.SpecContent)
+func writeGenerated(component *workplan.WorkComponent) {
+	naming := component.Naming
+	specContent := normalizeIndent(component.Result.SpecContent)
 
 	generatedDir := filepath.Join("generated", naming.SpecImageName)
 	if err := os.MkdirAll(generatedDir, 0o755); err != nil {
@@ -65,11 +65,11 @@ func writeGenerated(item *workplan.WorkItem) {
 // at ./correct/{component}/{SpecFileName}.
 // Logs PASS if identical, FAIL if not, SKIP if no golden exists. The pipeline
 // emits structured log lines that test.sh parses for pass/fail accounting.
-func diffWithGolden(item *workplan.WorkItem) {
-	naming := item.Naming
-	tag := item.Tag.Stripped
-	action := item.Result.Outcome.String()
-	specContent := normalizeIndent(item.Result.SpecContent)
+func diffWithGolden(component *workplan.WorkComponent) {
+	naming := component.Naming
+	tag := component.Tag.Stripped
+	action := component.Result.Outcome.String()
+	specContent := normalizeIndent(component.Result.SpecContent)
 
 	goldenPath := filepath.Join("correct", naming.SpecImageName, naming.SpecFileName)
 

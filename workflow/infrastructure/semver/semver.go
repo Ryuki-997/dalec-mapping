@@ -7,8 +7,8 @@
 //     shortTag = "0.4.0"              (semver without leading "v")
 //     regexTag = "v0\.4\.\d+"         (onboard pattern that matches a family)
 //
-//   Chunk 1 · TAG RESOLVING  FetchRepoTags(), MatchTagSets()
-//   Chunk 2 · TAG FILTERING  FindLatestRevision()
+//   Chunk 1 · TAG RESOLVING  FetchRepoTags()
+//   Chunk 2 · TAG FILTERING  FindLatestRevision(), FindTemplateVersion()
 //   Chunk 3 · PATTERN MATCH  ResolveTagPatterns(), matchTags()
 //   Chunk 4 · SEMVER PARSE   ToTag(), parseSemver()
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -24,6 +24,7 @@ import (
 
 	"dalec-mapping/domain/naming"
 	"dalec-mapping/domain/pathcache"
+	"dalec-mapping/domain/workplan"
 	"dalec-mapping/workflow/infrastructure/ado"
 	"dalec-mapping/workflow/infrastructure/github"
 )
@@ -45,54 +46,14 @@ func FetchRepoTags(repoURL string) (map[string]string, error) {
 	return github.FetchAllGithubTags(repoURL)
 }
 
-// MatchTagSets takes a pre-resolved set of tag names (already filtered by
-// include/exclude) and determines the next revision for each. Returns
-// actionable tags ready to become TagSet entries. Reads pathcache.Cache to
-// look up existing same-version revisions.
-func MatchTagSets(tagsByName map[string]string, resolvedTagNames []string, n naming.Naming) []ActionableTag {
-	if len(resolvedTagNames) == 0 {
-		return nil
-	}
-
-	var actionable []ActionableTag
-	for _, tagName := range resolvedTagNames {
-		commitHash, exists := tagsByName[tagName]
-		if !exists {
-			log.Printf("⚠️  Resolved tag %q not found in tags cache, skipping\n", tagName)
-			continue
-		}
-		strippedTag := ToTag(tagName)
-		latestRevision, found := FindLatestRevision(n, strippedTag)
-
-		nextRevision := 1
-		if found {
-			nextRevision = latestRevision + 1
-		}
-
-		actionable = append(actionable, ActionableTag{
-			Name:         tagName,
-			Commit:       commitHash,
-			NextRevision: nextRevision,
-		})
-	}
-	return actionable
-}
-
 // ─── Chunk 2 · TAG FILTERING ────────────────────────────────────────────────
-
-// ActionableTag represents a tag that needs processing, with its next revision number.
-type ActionableTag struct {
-	Name         string // Full tag name (e.g. "azure-ipam/v0.4.0")
-	Commit       string // Commit SHA the tag points to
-	NextRevision int    // The revision number to create (e.g. 1 for new, 2 for second revision)
-}
 
 // FindLatestRevision scans pathcache.Cache for the highest revision number
 // of a spec file matching {n.SpecImageName}-{version}-{n}-specfile.yml.
-// version may be supplied with or without a leading "v" — it is stripped internally.
-// Returns (0, false) when no matching revision exists.
+// version must already be in numeric form (no leading "v"); the canonical
+// source is TagSet.Version. Returns (0, false) when no matching revision
+// exists.
 func FindLatestRevision(n naming.Naming, version string) (int, bool) {
-	version = strings.TrimPrefix(version, "v")
 	pattern := n.SpecFilePathRegex(regexp.QuoteMeta(version), `(\d+)`)
 
 	highest := 0
@@ -112,6 +73,123 @@ func FindLatestRevision(n naming.Naming, version string) (int, bool) {
 		}
 	}
 	return highest, found
+}
+
+// buildFilesRegex matches BuildFiles snapshot paths of the form
+// "<OnboardDir>/buildfiles/<X>.<Y>/<SpecImageName>.(df|mk)" and captures
+// the major and minor version numbers. A single directory is shared across
+// every patch on the same minor, so the regex does not include a patch
+// segment.
+func buildFilesRegex(n naming.Naming) *regexp.Regexp {
+	return regexp.MustCompile(fmt.Sprintf(
+		`^%s/buildfiles/(\d+)\.(\d+)/%s\.(?:df|mk)$`,
+		regexp.QuoteMeta(n.OnboardDir),
+		regexp.QuoteMeta(n.SpecImageName),
+	))
+}
+
+// FindTemplateVersion scans pathcache.Cache for the best BuildFiles snapshot
+// to use as the bump-version template for the supplied work component's tag. The
+// search is restricted to the same major version as the tag's intrinsic
+// MajorMinor and proceeds in two stages:
+//
+//  1. Preferred: exact major.minor match of component.Tag.MajorMinor.
+//  2. Fallback: largest existing minor within the same major — whether
+//     that minor sits above or below the tag's own minor. The "largest
+//     existing minor" semantics let us pick e.g. snapshot 1.8 as the
+//     template for tag v1.7.x when 1.7 has no snapshot of its own and
+//     1.8 is the only sibling.
+//
+// The intrinsic MajorMinor is populated by TagSet.Resolve in Phase 1 and is
+// read-only here — this function never writes back to the tag. Snapshots
+// are stored per-minor (one directory shared by every patch), so the return
+// value is the "<major>.<minor>" prefix (e.g. "1.6"), not a full semver.
+// Returns ("", false) when the component has no same-major BuildFiles
+// snapshots at all, or when component.Tag.MajorMinor is empty.
+func FindTemplateVersion(component *workplan.WorkComponent) (string, bool) {
+	parts := strings.Split(component.Tag.MajorMinor, ".")
+	if len(parts) < 2 {
+		return "", false
+	}
+	targetMajor, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return "", false
+	}
+	targetMinor, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return "", false
+	}
+
+	pattern := buildFilesRegex(component.Naming)
+	minorsForMajor := make(map[int]bool)
+	for path := range pathcache.Cache {
+		matches := pattern.FindStringSubmatch(path)
+		if matches == nil {
+			continue
+		}
+		major, err := strconv.Atoi(matches[1])
+		if err != nil || major != targetMajor {
+			continue
+		}
+		minor, err := strconv.Atoi(matches[2])
+		if err != nil {
+			continue
+		}
+		minorsForMajor[minor] = true
+	}
+
+	if minorsForMajor[targetMinor] {
+		return fmt.Sprintf("%d.%d", targetMajor, targetMinor), true
+	}
+
+	bestMinor := -1
+	for minor := range minorsForMajor {
+		if minor > bestMinor {
+			bestMinor = minor
+		}
+	}
+	if bestMinor == -1 {
+		return "", false
+	}
+	return fmt.Sprintf("%d.%d", targetMajor, bestMinor), true
+}
+
+// FindLatestVersionAndRevision scans pathcache.Cache for the highest-patch
+// specfile under the supplied "<major>.<minor>" prefix and, within that
+// patch, the highest revision. Used by spec.BumpVersion to resolve the
+// concrete template specfile from a minor-only snapshot directory.
+//
+// Returns (version, revision, true) where version is the full "X.Y.Z" of
+// the template specfile, or ("", 0, false) when no matching specfile exists.
+func FindLatestVersionAndRevision(n naming.Naming, majorMinor string) (string, int, bool) {
+	versionPattern := regexp.QuoteMeta(majorMinor) + `\.(\d+)`
+	pattern := n.SpecFilePathRegex(versionPattern, `(\d+)`)
+
+	bestPatch := -1
+	bestRevision := 0
+	for path := range pathcache.Cache {
+		matches := pattern.FindStringSubmatch(path)
+		if matches == nil {
+			continue
+		}
+		patch, err := strconv.Atoi(matches[1])
+		if err != nil {
+			continue
+		}
+		revision, err := strconv.Atoi(matches[2])
+		if err != nil {
+			continue
+		}
+		if patch > bestPatch || (patch == bestPatch && revision > bestRevision) {
+			bestPatch = patch
+			bestRevision = revision
+		}
+	}
+
+	if bestPatch < 0 {
+		return "", 0, false
+	}
+	return fmt.Sprintf("%s.%d", majorMinor, bestPatch), bestRevision, true
 }
 
 // ─── Chunk 3 · PATTERN MATCH ────────────────────────────────────────────────

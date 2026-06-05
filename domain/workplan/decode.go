@@ -7,28 +7,42 @@ import (
 	"strings"
 
 	"dalec-mapping/domain/contents"
-	"dalec-mapping/domain/onboarding"
 
 	"gopkg.in/yaml.v3"
 )
 
-// Decode parses a partner onboard.yml file into a list of WorkItemGroups.
-// Each top-level YAML key becomes one WorkItemGroup with GroupName set to
-// that key and PRID left empty. Items contains one *WorkItem per declared
-// component, with only WorkItem.Component populated (Naming, Tag,
-// BuildFiles, Result are all zero-valued).
+// componentsKey is the YAML key under which grouped onboard entries declare
+// their per-component build-file paths. Its presence under a top-level group
+// node is what distinguishes the grouped layout from the standalone layout;
+// see Decode for details.
+const componentsKey = "components"
+
+// Decode parses a partner onboard.yml file into a slice of decoded
+// WorkGroups. Each top-level YAML key becomes one WorkGroup. The decoded
+// WorkGroup is a transient shape: GroupName, group-level metadata
+// (Repository/TagPatterns/Targets/License/Reviewers), and the Components slice
+// of skeleton *WorkComponent (Name/DockerfileDir/MakefileDir only) are
+// populated; Tag/PRID and per-component Naming/Tag/Revision/Group remain
+// zero-valued for the Phase 1 fan-out (partnerrepo.ResolveTagCache) to
+// fill — one runtime WorkGroup per resolved tag, with fully-populated
+// per-component WorkItems.
 //
-//   - Standalone components (value has a "repository" field) → group with
-//     one WorkItem; the inner component's Name equals the group's Name.
-//   - Grouped components (value is a map of name → OnboardingComponent) →
-//     group with N WorkItems; each component's Name is its inner YAML key.
+// Two onboard shapes are accepted, disambiguated by the presence of a
+// "components:" mapping under the group key:
 //
-// Targets are validated inline; components with no supported targets are
-// dropped, and groups that end up empty after that filter are skipped.
-// Downstream stages (partnerrepo.ResolveTagCache, specrepo.FetchComponents)
-// fan out each component WorkItem into per-tag WorkItems, fill Naming, and
-// mint PRID + call Naming.Construct.
-func Decode(raw []byte) ([]WorkItemGroup, error) {
+//   - Grouped layout (components: present)
+//     Group-level metadata sits at the top of the group; an explicit
+//     `components:` map enumerates the per-component build files.
+//
+//   - Standalone layout (components: absent)
+//     Group-level metadata sits at the top of the group; `dockerfile:`
+//     and `makefile:` are declared inline at the same level. The group's
+//     own key is used as the single skeleton component's Name.
+//
+// Skeleton components are emitted in sorted-key order for stable output. Groups
+// whose group-level Targets list resolves empty (no supported targets) are
+// dropped here so downstream phases never see them.
+func Decode(raw []byte) ([]WorkGroup, error) {
 	var root yaml.Node
 	if err := yaml.Unmarshal(raw, &root); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal onboard file: %w", err)
@@ -39,17 +53,17 @@ func Decode(raw []byte) ([]WorkItemGroup, error) {
 		return nil, fmt.Errorf("onboard file must be a YAML mapping")
 	}
 
-	var groups []WorkItemGroup
-	for i := 0; i+1 < len(mapping.Content); i += 2 {
-		keyNode := mapping.Content[i]
-		valNode := mapping.Content[i+1]
+	var groups []WorkGroup
+	for keyIndex := 0; keyIndex+1 < len(mapping.Content); keyIndex += 2 {
+		keyNode := mapping.Content[keyIndex]
+		valNode := mapping.Content[keyIndex+1]
 		groupName := keyNode.Value
 
 		group, err := decodeGroup(groupName, valNode)
 		if err != nil {
 			return nil, err
 		}
-		if len(group.Items) == 0 {
+		if len(group.Components) == 0 {
 			continue
 		}
 		groups = append(groups, group)
@@ -70,44 +84,78 @@ func unwrapMapping(root *yaml.Node) *yaml.Node {
 	return root
 }
 
-// decodeGroup turns one top-level (key, value) pair into a WorkItemGroup,
-// auto-detecting standalone vs grouped layout.
-func decodeGroup(groupName string, valNode *yaml.Node) (WorkItemGroup, error) {
-	standalone, ok := decodeStandalone(groupName, valNode)
-	if ok {
-		return standalone, nil
+// decodeGroup turns one top-level (key, value) pair into a WorkGroup. The
+// shape is chosen by structural inspection: a nested `components:` mapping
+// triggers the grouped path, otherwise the standalone path is used.
+func decodeGroup(groupName string, valNode *yaml.Node) (WorkGroup, error) {
+	if valNode.Kind != yaml.MappingNode {
+		return WorkGroup{}, fmt.Errorf("group %q: expected mapping, got %v", groupName, valNode.Kind)
 	}
 
-	return decodeGrouped(groupName, valNode)
+	group, err := decodeGroupMetadata(groupName, valNode)
+	if err != nil {
+		return WorkGroup{}, err
+	}
+
+	group.Targets = validateTargets(groupName, group.Targets)
+	if len(group.Targets) == 0 {
+		return WorkGroup{GroupName: groupName}, nil
+	}
+
+	componentsNode := findChildMapping(valNode, componentsKey)
+	if componentsNode != nil {
+		components, err := decodeGroupedComponents(groupName, componentsNode)
+		if err != nil {
+			return WorkGroup{}, err
+		}
+		group.Components = components
+		return group, nil
+	}
+
+	standalone, err := decodeStandaloneComponent(groupName, valNode)
+	if err != nil {
+		return WorkGroup{}, err
+	}
+	group.Components = []*WorkComponent{standalone}
+	return group, nil
 }
 
-// decodeStandalone tries to decode valNode as a single OnboardingComponent.
-// Returns ok=true only when the value parses AND has a non-empty Repository
-// (which is what distinguishes a standalone component from a grouped map).
-func decodeStandalone(groupName string, valNode *yaml.Node) (WorkItemGroup, bool) {
-	var comp onboarding.OnboardingComponent
-	if err := valNode.Decode(&comp); err != nil || comp.Repository == "" {
-		return WorkItemGroup{}, false
+// decodeGroupMetadata fills the group-level fields (Repository, TagPatterns,
+// Targets, License, Reviewers) from valNode. The decoded value is later
+// populated with Components by decodeGroup; Tag/PRID remain zero.
+func decodeGroupMetadata(groupName string, valNode *yaml.Node) (WorkGroup, error) {
+	var group WorkGroup
+	if err := valNode.Decode(&group); err != nil {
+		return WorkGroup{}, fmt.Errorf("group %q: failed to decode metadata: %w", groupName, err)
 	}
-
-	comp.Targets = validateTargets(groupName, comp.Targets)
-	if len(comp.Targets) == 0 {
-		return WorkItemGroup{GroupName: groupName}, true
-	}
-	comp.Name = groupName
-	return WorkItemGroup{
-		GroupName: groupName,
-		Items:     []*WorkItem{{Component: comp}},
-	}, true
+	group.GroupName = groupName
+	return group, nil
 }
 
-// decodeGrouped decodes valNode as map[string]OnboardingComponent (the
-// grouped layout). Components are emitted in sorted-key order for stable
-// output across runs.
-func decodeGrouped(groupName string, valNode *yaml.Node) (WorkItemGroup, error) {
-	var raw map[string]onboarding.OnboardingComponent
-	if err := valNode.Decode(&raw); err != nil {
-		return WorkItemGroup{}, fmt.Errorf("key %q is neither a component (no repository) nor a valid group: %w", groupName, err)
+// findChildMapping returns the value node of the first child whose key
+// equals childKey and whose value is a mapping node, or nil when no such
+// child exists. Used to detect the optional `components:` map.
+func findChildMapping(mapping *yaml.Node, childKey string) *yaml.Node {
+	for keyIndex := 0; keyIndex+1 < len(mapping.Content); keyIndex += 2 {
+		if mapping.Content[keyIndex].Value != childKey {
+			continue
+		}
+		valNode := mapping.Content[keyIndex+1]
+		if valNode.Kind != yaml.MappingNode {
+			continue
+		}
+		return valNode
+	}
+	return nil
+}
+
+// decodeGroupedComponents decodes the `components:` map into a sorted slice of
+// skeleton *WorkComponent. Each component carries its key as Name; entries with
+// invalid YAML fail the whole group.
+func decodeGroupedComponents(groupName string, componentsNode *yaml.Node) ([]*WorkComponent, error) {
+	var raw map[string]WorkComponent
+	if err := componentsNode.Decode(&raw); err != nil {
+		return nil, fmt.Errorf("group %q: failed to decode components map: %w", groupName, err)
 	}
 
 	componentNames := make([]string, 0, len(raw))
@@ -116,23 +164,32 @@ func decodeGrouped(groupName string, valNode *yaml.Node) (WorkItemGroup, error) 
 	}
 	sort.Strings(componentNames)
 
-	group := WorkItemGroup{GroupName: groupName}
+	components := make([]*WorkComponent, 0, len(componentNames))
 	for _, componentName := range componentNames {
-		cfg := raw[componentName]
-		cfg.Targets = validateTargets(componentName, cfg.Targets)
-		if len(cfg.Targets) == 0 {
-			continue
-		}
-		cfg.Name = componentName
-		group.Items = append(group.Items, &WorkItem{Component: cfg})
+		skeleton := raw[componentName]
+		skeleton.Name = componentName
+		copyOfSkeleton := skeleton
+		components = append(components, &copyOfSkeleton)
 	}
-	return group, nil
+	return components, nil
+}
+
+// decodeStandaloneComponent decodes valNode as a single inline component whose
+// Name equals the group's name. Group-level keys (repository, tags,
+// targets, license, reviewers) decoded by decodeGroupMetadata are silently
+// ignored here because WorkComponent does not declare those fields.
+func decodeStandaloneComponent(groupName string, valNode *yaml.Node) (*WorkComponent, error) {
+	var component WorkComponent
+	if err := valNode.Decode(&component); err != nil {
+		return nil, fmt.Errorf("group %q: failed to decode standalone component: %w", groupName, err)
+	}
+	component.Name = groupName
+	return &component, nil
 }
 
 // validateTargets keeps only known build targets from the onboard list.
-// Unsupported targets are logged and skipped. A component with no valid
-// targets after filtering returns an empty slice and the caller drops the
-// component.
+// Unsupported targets are logged and skipped. A group with no valid targets
+// after filtering returns an empty slice and the caller drops the group.
 func validateTargets(name string, raw []string) []string {
 	var resolved []string
 	for _, target := range raw {

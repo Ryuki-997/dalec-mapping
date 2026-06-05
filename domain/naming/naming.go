@@ -55,37 +55,30 @@ type Naming struct {
 // SpecImageName is the last path segment; SpecRepository is the partner
 // folder name immediately under "specs/". Safe to call repeatedly.
 func (n *Naming) DeriveAtomic() {
-	specRepository, specImageName := splitOnboardDir(n.OnboardDir)
-	n.SpecRepository = specRepository
-	n.SpecImageName = specImageName
-}
-
-// splitOnboardDir returns (specRepository, specImageName) derived from an
-// onboard directory path. specImageName is the last path segment;
-// specRepository is the immediately enclosing directory name. For a
-// single-segment path (e.g. "aks-node-controller"), both equal that segment.
-func splitOnboardDir(onboardDir string) (string, string) {
-	trimmed := strings.TrimPrefix(onboardDir, "specs/")
+	trimmed := strings.TrimPrefix(n.OnboardDir, "specs/")
 	segments := strings.Split(trimmed, "/")
 	specImageName := segments[len(segments)-1]
 	specRepository := specImageName
 	if len(segments) >= 2 {
 		specRepository = segments[len(segments)-2]
 	}
-	return specRepository, specImageName
+
+	n.SpecRepository = specRepository
+	n.SpecImageName = specImageName
 }
 
 // Construct fills the entire generated section in-place from the atomic
-// section, the resolved tag, the component's group name, and the group's
-// PRID. groupName is the onboard.yml group key for grouped components, or
-// the component name for standalone components — it is always non-empty.
-// prID is minted once per WorkItemGroup in Phase 1 and shared by every item
-// in that group, so BranchName/PRTitle collapse onto one pull request.
+// section, the resolved tag, the work component's revision, the component's
+// group name, and the group's PRID. groupName is the onboard.yml group
+// key for grouped components, or the component name for standalone
+// components — it is always non-empty. prID is minted once per WorkGroup
+// in Phase 1 and shared by every component in that group, so BranchName/PRTitle
+// collapse onto one pull request.
 //
 // Spec file paths and version labels use the numeric semver (no "v" prefix)
 // to match the remote spec repo's storage convention.
-func (n *Naming) Construct(tagSet tags.Set, groupName, prID string) {
-	n.VersionRevision = fmt.Sprintf("%s-%d", tagSet.Version, tagSet.Revision)
+func (n *Naming) Construct(tag tags.TagSet, revision int, groupName, prID string) {
+	n.VersionRevision = fmt.Sprintf("%s-%d", tag.Version, revision)
 	n.DisplayName = groupName
 	n.SpecFileName = fmt.Sprintf("%s-%s-specfile.yml", n.SpecImageName, n.VersionRevision)
 	n.FolderPath = n.deriveFolderPath(groupName)
@@ -95,29 +88,13 @@ func (n *Naming) Construct(tagSet tags.Set, groupName, prID string) {
 }
 
 // SpecFilePathAt returns the spec file path for an arbitrary (version, revision)
-// pair using this Naming's OnboardDir and SpecImageName. The version is
-// stripped of any leading "v" to match the remote storage convention.
-// Useful for callers that need to address a different revision than the one
-// currently bound to the Naming (e.g. the prior revision during a bump).
+// pair using this Naming's OnboardDir and SpecImageName. Callers must pass
+// the numeric form already stripped of any leading "v" — TagSet.Version is
+// the canonical source. Useful for callers that need to address a different
+// revision than the one currently bound to the Naming (e.g. the prior
+// revision during a bump).
 func (n Naming) SpecFilePathAt(version string, revision int) string {
-	version = strings.TrimPrefix(version, "v")
 	return fmt.Sprintf("%s/%s-%s-%d-specfile.yml", n.OnboardDir, n.SpecImageName, version, revision)
-}
-
-// BuildFilesDockerfilePath returns the snapshot path for this component's
-// Dockerfile at the given version under <OnboardDir>/BuildFiles/. The
-// version is stripped of any leading "v" to match remote storage.
-func (n Naming) BuildFilesDockerfilePath(version string) string {
-	version = strings.TrimPrefix(version, "v")
-	return fmt.Sprintf("%s/BuildFiles/%s-%s.df", n.OnboardDir, n.SpecImageName, version)
-}
-
-// BuildFilesMakefilePath returns the snapshot path for this component's
-// Makefile at the given version under <OnboardDir>/BuildFiles/. The
-// version is stripped of any leading "v" to match remote storage.
-func (n Naming) BuildFilesMakefilePath(version string) string {
-	version = strings.TrimPrefix(version, "v")
-	return fmt.Sprintf("%s/BuildFiles/%s-%s.mk", n.OnboardDir, n.SpecImageName, version)
 }
 
 // SpecFilePathRegex compiles a regex anchored to this component's OnboardDir

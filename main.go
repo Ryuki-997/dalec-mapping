@@ -13,14 +13,14 @@ import (
 // ═══════════════════════════════════════════════════════════════════════════════
 // Main — Dalec Spec Pipeline (wiring only)
 //
-//   Three explicit phases over a single []workplan.WorkItemGroup:
+//   Three explicit phases over a single []workplan.WorkGroup:
 //
-//     Phase 1  Resolve  ()                            → []workplan.WorkItemGroup
-//     Phase 2  Generate []workplan.WorkItemGroup      (mutates each item.Result in place)
-//     Phase 3  Publish  []workplan.WorkItemGroup      → []orchestration.PublishOutcome
+//     Phase 1  Resolve  ()                            → []workplan.WorkGroup
+//     Phase 2  Generate []workplan.WorkGroup          (mutates each component.Result in place)
+//     Phase 3  Publish  []workplan.WorkGroup          → []orchestration.PublishOutcome
 //
 //   Per-spec side effects (golden diff, local cache write, action log) live
-//   between phases 2 and 3 as pure observers walking groups → item.Result.
+//   between phases 2 and 3 as pure observers walking groups → component.Result.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 func main() {
@@ -32,10 +32,10 @@ func main() {
 		return
 	}
 
-	// ── Phase 1: Resolve onboard files and tag patterns into grouped work items ──
+	// ── Phase 1: Resolve onboard files and tag patterns into grouped work components ──
 	groups := orchestration.Resolve(inputPath)
 
-	// ── Phase 2: Generate spec per item (writes item.Result; no PR/grouping logic) ──
+	// ── Phase 2: Generate spec per component (writes component.Result; no PR/grouping logic) ──
 	orchestration.Generate(groups)
 
 	// ── Observers: local cache, golden diff, action log ──
@@ -46,34 +46,34 @@ func main() {
 		return
 	}
 
-	// ── Phase 3: Walk groups and publish one PR per group with publishable items ──
+	// ── Phase 3: Walk groups and publish one PR per group with publishable components ──
 	outcomes := orchestration.Publish(groups)
 	orchestration.PrintPublishSummary(outcomes)
 }
 
-// observeResults runs side effects that happen once per WorkItem but are
+// observeResults runs side effects that happen once per WorkComponent but are
 // not part of publishing: write the local generated copy, diff against the
 // golden file, and accumulate the action log.
-func observeResults(groups []workplan.WorkItemGroup) {
+func observeResults(groups []workplan.WorkGroup) {
 	var actionLog []logging.ActionEntry
 	for _, group := range groups {
-		for _, item := range group.Items {
+		for _, component := range group.Components {
 			actionLog = append(actionLog, logging.ActionEntry{
-				Component: item.Naming.SpecImageName,
-				Version:   item.Naming.VersionRevision,
-				Action:    item.Result.Outcome.String(),
+				Component: component.Naming.SpecImageName,
+				Version:   component.Naming.VersionRevision,
+				Action:    component.Result.Outcome.String(),
 			})
 
-			switch item.Result.Outcome {
+			switch component.Result.Outcome {
 			case buildresult.OutcomeSkipped:
-				log.Printf("✅ PASS  %s @ %s [SKIPPED]", item.Naming.SpecImageName, item.Tag.Stripped)
+				log.Printf("✅ PASS  %s @ %s [SKIPPED]", component.Naming.SpecImageName, component.Tag.Stripped)
 				continue
 			case buildresult.OutcomeFailed:
 				continue
 			}
 
-			writeGenerated(item)
-			diffWithGolden(item)
+			writeGenerated(component)
+			diffWithGolden(component)
 		}
 	}
 	logging.PrintActionLog(actionLog)

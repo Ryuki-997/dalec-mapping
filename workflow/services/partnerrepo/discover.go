@@ -1,12 +1,14 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // Discover —
 //
-//   Fetches the source Dockerfile and Makefile from the partner repository.
-//   The orchestration layer drives comparison between the new tag's files and
-//   a previous template tag's files by calling FetchBuildFilesAtTag twice.
+//   Fetches the source Dockerfile and Makefile from the partner repository for
+//   the workitem's current tag and stores them on component.BuildFiles. Template
+//   diffing for BUMP-VERSION is now done against the spec repo's BuildFiles
+//   snapshots (see semver.FindTemplateVersion + specapi.SpecRepoFetchFile),
+//   so the partner repo is only consulted for the in-progress tag.
 //
 //   Functions are ordered by call sequence:
-//     DiscoverBuildFiles()       — fetch new tag's files, store on item
+//     DiscoverBuildFiles()       — fetch new tag's files, store on component
 //     FetchBuildFilesAtTag()     — fetch any tag's files, return bytes only
 //       → fetchBuildFiles()
 //           → fetchBuildFilesFromADO()
@@ -28,39 +30,40 @@ import (
 )
 
 // DiscoverBuildFiles fetches the Dockerfile and Makefile from the source repo
-// at item.Tag.Full and stores them on item.BuildFiles.
-func DiscoverBuildFiles(item *workplan.WorkItem) error {
-	dockerfileContent, makefileContent, err := FetchBuildFilesAtTag(item, item.Tag.Full)
+// at component.Tag.Full and stores them on component.BuildFiles. The owning WorkGroup
+// (component.Group) carries the upstream repository URL; the Dockerfile/Makefile
+// sub-paths live on the component itself.
+func DiscoverBuildFiles(component *workplan.WorkComponent) error {
+	dockerfileContent, makefileContent, err := FetchBuildFilesAtTag(component, component.Tag.Full)
 	if err != nil {
 		return err
 	}
 
-	item.BuildFiles.Dockerfile.Source = dockerfileContent
-	item.BuildFiles.Makefile.Source = makefileContent
+	component.BuildFiles.Dockerfile.Source = dockerfileContent
+	component.BuildFiles.Makefile.Source = makefileContent
 
-	log.Printf("✅ Discover complete for %s\n", item.Naming.SpecFileName)
+	log.Printf("✅ Discover complete for %s\n", component.Naming.SpecFileName)
 	return nil
 }
 
 // FetchBuildFilesAtTag fetches the Dockerfile and Makefile from the partner
-// repo at the supplied tag without mutating the work item. Used by the
+// repo at the supplied tag without mutating the work component. Used by the
 // orchestration layer to fetch the template version's files for comparison.
-func FetchBuildFilesAtTag(item *workplan.WorkItem, tag string) ([]byte, []byte, error) {
-	component := item.Naming
-	cfg := item.Component
-	repoURL := cfg.Repository
+func FetchBuildFilesAtTag(component *workplan.WorkComponent, tag string) ([]byte, []byte, error) {
+	componentNaming := component.Naming
+	repoURL := component.Group.Repository
 
 	log.Println()
-	log.Printf("── Fetch build files: %s @ %s ──\n", component.SpecImageName, tag)
+	log.Printf("── Fetch build files: %s @ %s ──\n", componentNaming.SpecImageName, tag)
 	log.Printf("Repository: %s\n", repoURL)
 
 	dockerfilePath := ""
-	if cfg.DockerfileDir != "" {
-		dockerfilePath = resolveFilePath(cfg.DockerfileDir, "Dockerfile")
+	if component.DockerfileDir != "" {
+		dockerfilePath = resolveFilePath(component.DockerfileDir, "Dockerfile")
 	}
 	makefilePath := ""
-	if cfg.MakefileDir != "" {
-		makefilePath = resolveFilePath(cfg.MakefileDir, "Makefile")
+	if component.MakefileDir != "" {
+		makefilePath = resolveFilePath(component.MakefileDir, "Makefile")
 	}
 
 	componentPath := extractComponentPath(repoURL)

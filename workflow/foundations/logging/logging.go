@@ -26,8 +26,8 @@ func PrintActionLog(entries []ActionEntry) {
 }
 
 // PrintComponentBanner prints a prominent box banner for a component being processed.
-func PrintComponentBanner(item *workplan.WorkItem) {
-	label := fmt.Sprintf("  %s @ %s", item.Naming.SpecImageName, item.Tag.Stripped)
+func PrintComponentBanner(component *workplan.WorkComponent) {
+	label := fmt.Sprintf("  %s @ %s", component.Naming.SpecImageName, component.Tag.Stripped)
 	width := len(label) + 4
 	if width < 60 {
 		width = 60

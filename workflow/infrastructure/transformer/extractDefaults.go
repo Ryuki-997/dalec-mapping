@@ -59,14 +59,14 @@ var makeFunctions = []string{
 // ─── Chunk 1 · METADATA ──────────────────────────────────────────────────────
 
 // extractMetadata writes the fixed metadata fields into the spec map.
-func extractMetadata(item *workplan.WorkItem, spec map[string]interface{}) {
-	repoInfo := item.BuildFiles.RepoInfo
-	subject := item.Naming
+func extractMetadata(component *workplan.WorkComponent, spec map[string]interface{}) {
+	repoInfo := component.BuildFiles.RepoInfo
+	subject := component.Naming
 
 	spec["name"] = strings.ToLower(subject.SpecImageName)
 	spec["packager"] = "Azure Container Upstream"
 	spec["vendor"] = "Microsoft Corporation"
-	spec["license"] = item.Component.License
+	spec["license"] = component.Group.License
 	spec["website"] = repoInfo.GitURL
 	spec["description"] = repoInfo.Description
 	spec["version"] = "${VERSION}"
@@ -78,11 +78,11 @@ func extractMetadata(item *workplan.WorkItem, spec map[string]interface{}) {
 // extractArgs builds the top-level args map.
 // referencedVars is the set of variable names actually used in build commands/ldflags;
 // only Makefile variables in this set are promoted to args with their resolved values.
-func extractArgs(item *workplan.WorkItem, referencedVars map[string]bool, goModDownloads []goModDownloadInfo) map[string]interface{} {
-	repoInfo := item.BuildFiles.RepoInfo
+func extractArgs(component *workplan.WorkComponent, referencedVars map[string]bool, goModDownloads []goModDownloadInfo) map[string]interface{} {
+	repoInfo := component.BuildFiles.RepoInfo
 
 	args := map[string]interface{}{
-		"REVISION": item.Tag.Revision,
+		"REVISION": component.Revision,
 		"VERSION":  repoInfo.Version,
 		"COMMIT":   repoInfo.LatestCommit,
 		"GOPROXY":  "direct",
@@ -91,17 +91,17 @@ func extractArgs(item *workplan.WorkItem, referencedVars map[string]bool, goModD
 		"TARGETARCH": "",
 	}
 
-	mi := initializeMakefile(item)
-	args = mergeDockerfileArgs(item, args, mi)
+	mi := initializeMakefile(component)
+	args = mergeDockerfileArgs(component, args, mi)
 	args = mergeMakefileVars(args, mi, referencedVars)
-	args = mergeSubmoduleVars(item, args, mi, goModDownloads)
+	args = mergeSubmoduleVars(component, args, mi, goModDownloads)
 
 	return args
 }
 
-func initializeMakefile(item *workplan.WorkItem) *contents.MakefileInfo {
+func initializeMakefile(component *workplan.WorkComponent) *contents.MakefileInfo {
 	mi := &contents.MakefileInfo{Variables: make(map[string]string)}
-	for k, v := range item.BuildFiles.Makefile.Variables {
+	for k, v := range component.BuildFiles.Makefile.Variables {
 		mi.Variables[k] = v
 	}
 	mi.Variables["ARCH"] = ""
@@ -113,8 +113,8 @@ func initializeMakefile(item *workplan.WorkItem) *contents.MakefileInfo {
 
 // mergeDockerfileArgs folds Dockerfile ARG values into args, resolving any
 // nested Makefile variable references. Empty-after-resolution values are dropped.
-func mergeDockerfileArgs(item *workplan.WorkItem, args map[string]interface{}, makefileInfo *contents.MakefileInfo) map[string]interface{} {
-	for k, v := range item.BuildFiles.Dockerfile.Args {
+func mergeDockerfileArgs(component *workplan.WorkComponent, args map[string]interface{}, makefileInfo *contents.MakefileInfo) map[string]interface{} {
+	for k, v := range component.BuildFiles.Dockerfile.Args {
 		if selfHandledArgs[k] {
 			continue
 		}
@@ -122,7 +122,7 @@ func mergeDockerfileArgs(item *workplan.WorkItem, args map[string]interface{}, m
 		if value == "" {
 			value = makefileInfo.Variables[k]
 		}
-		value = expandVarRefs(item, makefileInfo, value)
+		value = expandVarRefs(component, makefileInfo, value)
 		if value == "" {
 			continue
 		}
@@ -153,7 +153,7 @@ func mergeMakefileVars(args map[string]interface{}, makefileInfo *contents.Makef
 // go mod download submodules. These are "used" variables — their presence
 // in a source commit field means they must appear in args.
 // Resolves from Dockerfile ARGs first, then Makefile variables.
-func mergeSubmoduleVars(item *workplan.WorkItem, args map[string]interface{}, makefileInfo *contents.MakefileInfo, goModDownloads []goModDownloadInfo) map[string]interface{} {
+func mergeSubmoduleVars(component *workplan.WorkComponent, args map[string]interface{}, makefileInfo *contents.MakefileInfo, goModDownloads []goModDownloadInfo) map[string]interface{} {
 	for _, dl := range goModDownloads {
 		varName := strings.Trim(dl.VersionVar, "${}()")
 		if varName == "" {
@@ -163,14 +163,14 @@ func mergeSubmoduleVars(item *workplan.WorkItem, args map[string]interface{}, ma
 			continue
 		}
 		// Resolve from Dockerfile ARGs first, then Makefile variables.
-		value, found := item.BuildFiles.Dockerfile.Args[varName]
+		value, found := component.BuildFiles.Dockerfile.Args[varName]
 		if !found {
 			value, found = makefileInfo.Variables[varName]
 		}
 		if !found {
 			continue
 		}
-		value = expandVarRefs(item, makefileInfo, value)
+		value = expandVarRefs(component, makefileInfo, value)
 		args[varName] = value
 	}
 	return args
@@ -191,8 +191,8 @@ type varRef struct {
 // expandVarRefs iteratively expands all $(VAR)/${VAR} references in value
 // using Makefile variables and Dockerfile ARGs. Make built-in function calls
 // (e.g. $(shell ...)) are stripped rather than expanded.
-// item may be nil when only Makefile variables are available.
-func expandVarRefs(item *workplan.WorkItem, makefileInfo *contents.MakefileInfo, value string) string {
+// component may be nil when only Makefile variables are available.
+func expandVarRefs(component *workplan.WorkComponent, makefileInfo *contents.MakefileInfo, value string) string {
 	for {
 		ref, ok := parseNextVarRef(value)
 		if !ok || ref.escaped {
@@ -204,7 +204,7 @@ func expandVarRefs(item *workplan.WorkItem, makefileInfo *contents.MakefileInfo,
 			continue
 		}
 
-		value = substituteVar(item, value, ref, makefileInfo)
+		value = substituteVar(component, value, ref, makefileInfo)
 	}
 
 	return value
@@ -250,8 +250,8 @@ func stripMakeFuncCall(value string, ref varRef) string {
 // substituteVar replaces every occurrence of the variable reference in value
 // with its resolved value from Makefile variables or Dockerfile ARGs.
 // Exits if the variable cannot be resolved.
-func substituteVar(item *workplan.WorkItem, value string, ref varRef, makefileInfo *contents.MakefileInfo) string {
-	replacement, ok := resolveVarRef(item, ref.key, makefileInfo)
+func substituteVar(component *workplan.WorkComponent, value string, ref varRef, makefileInfo *contents.MakefileInfo) string {
+	replacement, ok := resolveVarRef(component, ref.key, makefileInfo)
 	if !ok {
 		log.Printf("Undefined makefile variable %s referenced in value: %s\n", ref.key, value)
 		os.Exit(1)
@@ -287,13 +287,13 @@ func isMakeFunction(key string) bool {
 }
 
 // resolveVarRef looks up key first in makefileInfo.Variables, then in Dockerfile Args.
-// item may be nil when no Dockerfile context is available.
-func resolveVarRef(item *workplan.WorkItem, key string, makefileInfo *contents.MakefileInfo) (string, bool) {
+// component may be nil when no Dockerfile context is available.
+func resolveVarRef(component *workplan.WorkComponent, key string, makefileInfo *contents.MakefileInfo) (string, bool) {
 	if v, ok := makefileInfo.Variables[key]; ok {
 		return v, true
 	}
-	if item != nil {
-		if v, ok := item.BuildFiles.Dockerfile.Args[key]; ok {
+	if component != nil {
+		if v, ok := component.BuildFiles.Dockerfile.Args[key]; ok {
 			return v, true
 		}
 	}

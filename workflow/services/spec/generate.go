@@ -29,20 +29,18 @@ import (
 // GenerateSpec creates the DALEC spec from parsed build files using static
 // Dockerfile analysis. Returns the encoded spec bytes and resolved build target
 // strings for downstream use (e.g. image test).
-func GenerateSpec(item *workplan.WorkItem) ([]byte, []string, error) {
-	cfg := item.Component
-
-	if err := parseAndExtract(item, item.BuildFiles.Dockerfile.Source, item.BuildFiles.Makefile.Source); err != nil {
+func GenerateSpec(component *workplan.WorkComponent) ([]byte, []string, error) {
+	if err := parseAndExtract(component, component.BuildFiles.Dockerfile.Source, component.BuildFiles.Makefile.Source); err != nil {
 		return nil, nil, fmt.Errorf("parsing build files: %w", err)
 	}
 
-	repoInfo, err := buildRepoInfo(item, cfg.Repository)
+	repoInfo, err := buildRepoInfo(component, component.Group.Repository)
 	if err != nil {
 		return nil, nil, fmt.Errorf("fetching repository info: %w", err)
 	}
-	item.BuildFiles.RepoInfo = repoInfo
+	component.BuildFiles.RepoInfo = repoInfo
 
-	specBytes, resolvedTargets, err := buildSpec(item)
+	specBytes, resolvedTargets, err := buildSpec(component)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -52,18 +50,18 @@ func GenerateSpec(item *workplan.WorkItem) ([]byte, []string, error) {
 }
 
 // buildRepoInfo gathers every piece of upstream repository metadata for the
-// current WorkItem and returns a fully-formed repository.RepoInfo. The caller
-// assigns the result to item.BuildFiles.RepoInfo exactly once; no field is
+// current WorkComponent and returns a fully-formed repository.RepoInfo. The caller
+// assigns the result to component.BuildFiles.RepoInfo exactly once; no field is
 // mutated afterwards.
-func buildRepoInfo(item *workplan.WorkItem, repoURL string) (repository.RepoInfo, error) {
+func buildRepoInfo(component *workplan.WorkComponent, repoURL string) (repository.RepoInfo, error) {
 	base, fetchedLicense, err := fetchBaseRepoInfo(repoURL)
 	if err != nil {
 		return repository.RepoInfo{}, err
 	}
 
-	item.Component.License = resolveLicense(item.Component.License, fetchedLicense)
+	component.Group.License = resolveLicense(component.Group.License, fetchedLicense)
 
-	tagSet := item.Tag
+	tagSet := component.Tag
 	commitSHA, err := tagcache.Lookup(repoURL, tagSet.Full)
 	if err != nil {
 		return repository.RepoInfo{}, fmt.Errorf("failed to resolve commit for tag %s: %w", tagSet.Full, err)
@@ -71,7 +69,7 @@ func buildRepoInfo(item *workplan.WorkItem, repoURL string) (repository.RepoInfo
 
 	base.LatestCommit = commitSHA
 	base.Version = tagSet.Version
-	base.GoVersion = detectGoVersion(item)
+	base.GoVersion = detectGoVersion(component)
 
 	if ado.IsADORepo(repoURL) {
 		base.Generator = ado.DetectADOGenerator(repoURL, base.ComponentPath, tagSet.Full)
@@ -111,8 +109,8 @@ func fetchBaseRepoInfo(repoURL string) (repository.RepoInfo, string, error) {
 
 // detectGoVersion returns the Go toolchain version pinned in the Dockerfile
 // stages, or "" when no Go base image is detected.
-func detectGoVersion(item *workplan.WorkItem) string {
-	pin := parser.DetectGoToolchainPin(item.BuildFiles.Dockerfile.Stages)
+func detectGoVersion(component *workplan.WorkComponent) string {
+	pin := parser.DetectGoToolchainPin(component.BuildFiles.Dockerfile.Stages)
 	if pin == nil {
 		return ""
 	}
@@ -120,27 +118,27 @@ func detectGoVersion(item *workplan.WorkItem) string {
 }
 
 // parseAndExtract parses Dockerfile/Makefile content and runs static extraction.
-func parseAndExtract(item *workplan.WorkItem, dockerfileContent, makefileContent []byte) error {
+func parseAndExtract(component *workplan.WorkComponent, dockerfileContent, makefileContent []byte) error {
 	if dockerfileContent == nil && makefileContent == nil {
 		log.Println("⚠️  No Dockerfile or Makefile content to parse, proceeding with defaults")
 		return nil
 	}
 
-	parser.ParseOptionalFileInfo(item, dockerfileContent, makefileContent)
+	parser.ParseOptionalFileInfo(component, dockerfileContent, makefileContent)
 
-	item.BuildFiles.Spec = parser.ExtractStaticBuildValues(item.BuildFiles.Dockerfile)
+	component.BuildFiles.Spec = parser.ExtractStaticBuildValues(component.BuildFiles.Dockerfile)
 
 	return nil
 }
 
 // buildSpec resolves build targets, transforms to a DALEC spec, and returns its bytes.
-func buildSpec(item *workplan.WorkItem) ([]byte, []string, error) {
-	dalecSpec := transformer.TransformToDalec(item)
+func buildSpec(component *workplan.WorkComponent) ([]byte, []string, error) {
+	dalecSpec := transformer.TransformToDalec(component)
 
 	specBytes, err := parser.EncodeDalecSpec(dalecSpec)
 	if err != nil {
 		return nil, nil, fmt.Errorf("encoding output YAML: %w", err)
 	}
 
-	return specBytes, item.Component.Targets, nil
+	return specBytes, component.Group.Targets, nil
 }

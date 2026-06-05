@@ -35,7 +35,6 @@ import (
 	repo "dalec-mapping/domain/repository"
 	"dalec-mapping/domain/workplan"
 	"dalec-mapping/workflow/infrastructure/github"
-	"dalec-mapping/workflow/infrastructure/specapi"
 )
 
 // ForcePR skips the existing-PR check in CreatePR when true.
@@ -43,21 +42,23 @@ import (
 var ForcePR bool
 
 // CreatePR creates a feature branch from OnboardBranch, commits all publishable
-// items' files to it, and opens a single PR. Works for both standalone
-// components (one item) and grouped components (multiple items in the group).
-// The group carries the Phase 1 metadata (GroupName, PRID); publishable items
-// are filtered from group.Items by Result.IsPublishable() inside this call.
-// BranchName + PRTitle are read from the first publishable item's Naming —
-// they were baked in by Phase 1. BuildFiles snapshot paths whose remote
-// location already exists in pathcache.Cache are skipped (not re-committed).
+// components' files to it, and opens a single PR. Works for both standalone
+// components (one component, one component) and grouped components (multiple
+// components, each with one or more components). The group carries the Phase 1
+// metadata (GroupName, PRID); publishable components are collected by walking
+// every component's Components and filtering by Result.IsPublishable() inside
+// this call. BranchName + PRTitle are read from the first publishable
+// component's Naming — they were baked in by Phase 1. BuildFiles snapshot paths
+// whose remote location already exists in pathcache.Cache are skipped
+// (not re-committed).
 //
 // Returns:
-//   - prURL: the PR URL, or "" when the group has no publishable items
+//   - prURL: the PR URL, or "" when the group has no publishable components
 //   - created: true when a new PR was opened, false when an existing PR was reused
 //   - specPaths: the spec paths committed in this PR, in publishable order
 //   - err: non-nil only on a hard failure (branch/commit/PR creation)
-func CreatePR(group workplan.WorkItemGroup) (string, bool, []string, error) {
-	publishable := publishableItems(group.Items)
+func CreatePR(group workplan.WorkGroup) (string, bool, []string, error) {
+	publishable := collectPublishableComponents(group)
 	if len(publishable) == 0 {
 		return "", false, nil, nil
 	}
@@ -99,32 +100,32 @@ func CreatePR(group workplan.WorkItemGroup) (string, bool, []string, error) {
 	return prURL, true, collectSpecPaths(publishable), nil
 }
 
-// publishableItems returns the subset of items whose Result.IsPublishable()
-// is true, preserving the original order.
-func publishableItems(items []*workplan.WorkItem) []*workplan.WorkItem {
-	publishable := make([]*workplan.WorkItem, 0, len(items))
-	for _, item := range items {
-		if !item.Result.IsPublishable() {
+// collectPublishableComponents walks the flat group.Components list and returns the
+// subset of components whose Result.IsPublishable() is true, preserving order.
+func collectPublishableComponents(group workplan.WorkGroup) []*workplan.WorkComponent {
+	var publishable []*workplan.WorkComponent
+	for _, component := range group.Components {
+		if !component.Result.IsPublishable() {
 			continue
 		}
-		publishable = append(publishable, item)
+		publishable = append(publishable, component)
 	}
 	return publishable
 }
 
-// collectSpecPaths returns each publishable item's spec file path, used by
+// collectSpecPaths returns each publishable component's spec file path, used by
 // callers to populate the publish outcome's spec listing.
-func collectSpecPaths(publishable []*workplan.WorkItem) []string {
+func collectSpecPaths(publishable []*workplan.WorkComponent) []string {
 	specPaths := make([]string, 0, len(publishable))
-	for _, item := range publishable {
-		specPaths = append(specPaths, item.Naming.SpecFilePath)
+	for _, component := range publishable {
+		specPaths = append(specPaths, component.Naming.SpecFilePath)
 	}
 	return specPaths
 }
 
 // createFeatureBranch creates a new branch from the tip of OnboardBranch.
 func createFeatureBranch(branchName string) error {
-	ref, err := github.FetchJSON(specapi.OnboardAPIPath("git/ref/heads/%s", config.OnboardBranch))
+	ref, err := github.FetchJSON(pathcache.OnboardAPIPath("git/ref/heads/%s", config.OnboardBranch))
 	if err != nil {
 		return fmt.Errorf("failed to get ref for %s: %w", config.OnboardBranch, err)
 	}
@@ -134,7 +135,7 @@ func createFeatureBranch(branchName string) error {
 		return fmt.Errorf("could not resolve SHA for %s", config.OnboardBranch)
 	}
 
-	_, err = github.WriteJSON(specapi.OnboardAPIPath("git/refs"), repo.POST, map[string]interface{}{
+	_, err = github.WriteJSON(pathcache.OnboardAPIPath("git/refs"), repo.POST, map[string]interface{}{
 		"ref": "refs/heads/" + branchName,
 		"sha": sha,
 	})
@@ -150,40 +151,40 @@ type fileEntry struct {
 	Content []byte
 }
 
-// collectFiles gathers all files for every publishable item into a flat list.
+// collectFiles gathers all files for every publishable component into a flat list.
 // Returns the spec image names and the files to commit.
-func collectFiles(publishable []*workplan.WorkItem) ([]string, []fileEntry) {
+func collectFiles(publishable []*workplan.WorkComponent) ([]string, []fileEntry) {
 	var names []string
 	var files []fileEntry
 
-	for _, item := range publishable {
-		names = append(names, item.Naming.SpecImageName)
+	for _, component := range publishable {
+		names = append(names, component.Naming.SpecImageName)
 
 		files = append(files, fileEntry{
-			Path:    item.Naming.SpecFilePath,
-			Content: item.Result.SpecContent,
+			Path:    component.Naming.SpecFilePath,
+			Content: component.Result.SpecContent,
 		})
 
-		files = append(files, collectSiblingFiles(item)...)
+		files = append(files, collectSiblingFiles(component)...)
 	}
 	return names, files
 }
 
 // collectSiblingFiles returns per-version BuildFiles snapshot entries for the
-// item. Skipped for revision bumps (same version → snapshot unchanged),
-// when the work item has no in-memory build-file sources, and on a per-file
+// component. Skipped for revision bumps (same version → snapshot unchanged),
+// when the work component has no in-memory build-file sources, and on a per-file
 // basis when the snapshot path already exists in pathcache.Cache.
-func collectSiblingFiles(item *workplan.WorkItem) []fileEntry {
-	if item.Result.Outcome == buildresult.OutcomeBumpRevision {
+func collectSiblingFiles(component *workplan.WorkComponent) []fileEntry {
+	if component.Result.Outcome == buildresult.OutcomeBumpRevision {
 		return nil
 	}
 
-	buildFiles := item.BuildFiles
-	version := item.Tag.Version
+	buildFiles := component.BuildFiles
+	majorMinor := component.Tag.MajorMinor
 
 	var files []fileEntry
 	if len(buildFiles.Dockerfile.Source) > 0 {
-		path := item.Naming.BuildFilesDockerfilePath(version)
+		path := pathcache.BuildDockerfilePath(component.Naming, majorMinor)
 		if pathcache.Has(path) {
 			log.Printf("⚠️  Skipping BuildFiles snapshot — already exists: %s", path)
 		} else {
@@ -191,7 +192,7 @@ func collectSiblingFiles(item *workplan.WorkItem) []fileEntry {
 		}
 	}
 	if len(buildFiles.Makefile.Source) > 0 {
-		path := item.Naming.BuildFilesMakefilePath(version)
+		path := pathcache.BuildMakefilePath(component.Naming, majorMinor)
 		if pathcache.Has(path) {
 			log.Printf("⚠️  Skipping BuildFiles snapshot — already exists: %s", path)
 		} else {
@@ -205,7 +206,7 @@ func collectSiblingFiles(item *workplan.WorkItem) []fileEntry {
 // using the Git Data API (blobs → tree → commit → ref update).
 func commitAllFiles(branch, message string, files []fileEntry) error {
 	// Get the current commit SHA of the branch.
-	refResp, err := github.FetchJSON(specapi.OnboardAPIPath("git/ref/heads/%s", branch))
+	refResp, err := github.FetchJSON(pathcache.OnboardAPIPath("git/ref/heads/%s", branch))
 	if err != nil {
 		return fmt.Errorf("failed to get branch ref: %w", err)
 	}
@@ -213,7 +214,7 @@ func commitAllFiles(branch, message string, files []fileEntry) error {
 	parentSHA, _ := refObject["sha"].(string)
 
 	// Get the base tree SHA from the parent commit.
-	commitResp, err := github.FetchJSON(specapi.OnboardAPIPath("git/commits/%s", parentSHA))
+	commitResp, err := github.FetchJSON(pathcache.OnboardAPIPath("git/commits/%s", parentSHA))
 	if err != nil {
 		return fmt.Errorf("failed to get parent commit: %w", err)
 	}
@@ -254,7 +255,7 @@ func commitAllFiles(branch, message string, files []fileEntry) error {
 
 // createBlob creates a blob in the spec repository and returns its SHA.
 func createBlob(content []byte) (string, error) {
-	resp, err := github.WriteJSON(specapi.OnboardAPIPath("git/blobs"), repo.POST, map[string]interface{}{
+	resp, err := github.WriteJSON(pathcache.OnboardAPIPath("git/blobs"), repo.POST, map[string]interface{}{
 		"content":  base64.StdEncoding.EncodeToString(content),
 		"encoding": "base64",
 	})
@@ -267,7 +268,7 @@ func createBlob(content []byte) (string, error) {
 
 // createTree creates a new tree with the given entries on top of a base tree.
 func createTree(baseTreeSHA string, entries []map[string]interface{}) (string, error) {
-	resp, err := github.WriteJSON(specapi.OnboardAPIPath("git/trees"), repo.POST, map[string]interface{}{
+	resp, err := github.WriteJSON(pathcache.OnboardAPIPath("git/trees"), repo.POST, map[string]interface{}{
 		"base_tree": baseTreeSHA,
 		"tree":      entries,
 	})
@@ -280,7 +281,7 @@ func createTree(baseTreeSHA string, entries []map[string]interface{}) (string, e
 
 // createCommit creates a commit with the given tree and parent.
 func createCommit(message, treeSHA, parentSHA string) (string, error) {
-	resp, err := github.WriteJSON(specapi.OnboardAPIPath("git/commits"), repo.POST, map[string]interface{}{
+	resp, err := github.WriteJSON(pathcache.OnboardAPIPath("git/commits"), repo.POST, map[string]interface{}{
 		"message": message,
 		"tree":    treeSHA,
 		"parents": []string{parentSHA},
@@ -299,7 +300,7 @@ func createCommit(message, treeSHA, parentSHA string) (string, error) {
 // updateBranchRef fast-forwards the branch to point at the given commit SHA.
 func updateBranchRef(branch, commitSHA string) error {
 	_, err := github.WriteJSON(
-		specapi.OnboardAPIPath("git/refs/heads/%s", branch),
+		pathcache.OnboardAPIPath("git/refs/heads/%s", branch),
 		repo.PATCH,
 		map[string]interface{}{"sha": commitSHA},
 	)
@@ -307,15 +308,15 @@ func updateBranchRef(branch, commitSHA string) error {
 }
 
 // buildPRDescription returns the title and body for the pull request,
-// adapting for single vs multi-component groups.
-func buildPRDescription(publishable []*workplan.WorkItem, specImageNames []string) (title, body string) {
+// adapting for single vs multi-component groups. Reads the partner repository
+// URL from the first publishable component's denormalized Repository field.
+func buildPRDescription(publishable []*workplan.WorkComponent, specImageNames []string) (title, body string) {
 	n := publishable[0].Naming
-	cfg := publishable[0].Component
 
 	title = n.PRTitle
 	if len(publishable) == 1 {
 		body = fmt.Sprintf("Auto-generated Dalec spec for **%s** @ `%s`.\n\nRepository: %s\n\nRequires 1 reviewer approval before merge.",
-			n.DisplayName, n.VersionRevision, cfg.Repository)
+			n.DisplayName, n.VersionRevision, publishable[0].Group.Repository)
 		return title, body
 	}
 	body = fmt.Sprintf("Auto-generated Dalec specs for group **%s** @ `%s`.\n\nComponents: %s\n\nRequires 1 reviewer approval before merge.",
@@ -326,7 +327,7 @@ func buildPRDescription(publishable []*workplan.WorkItem, specImageNames []strin
 // createPullRequest opens a PR from head into OnboardBranch.
 // Returns the PR URL and PR number.
 func createPullRequest(title, body, head string) (string, int, error) {
-	result, err := github.WriteJSON(specapi.OnboardAPIPath("pulls"), repo.POST, map[string]interface{}{
+	result, err := github.WriteJSON(pathcache.OnboardAPIPath("pulls"), repo.POST, map[string]interface{}{
 		"title": title,
 		"body":  body,
 		"head":  head,
@@ -340,7 +341,7 @@ func createPullRequest(title, body, head string) (string, int, error) {
 	prNumberFloat, _ := result["number"].(float64)
 	prNumber := int(prNumberFloat)
 
-	_, err = github.WriteJSON(specapi.OnboardAPIPath("issues/%d/labels", prNumber), repo.POST, map[string]interface{}{
+	_, err = github.WriteJSON(pathcache.OnboardAPIPath("issues/%d/labels", prNumber), repo.POST, map[string]interface{}{
 		"labels": []string{"specfile"},
 	})
 	if err != nil {
@@ -354,7 +355,7 @@ func createPullRequest(title, body, head string) (string, int, error) {
 // matches the given component display name and version-revision.
 // Returns the PR URL if found, or "" if no matching PR exists.
 func findExistingPR(n naming.Naming) (string, error) {
-	issues, err := github.FetchJSONArray(specapi.OnboardAPIPath("issues?state=open&labels=specfile&per_page=100"))
+	issues, err := github.FetchJSONArray(pathcache.OnboardAPIPath("issues?state=open&labels=specfile&per_page=100"))
 	if err != nil {
 		return "", fmt.Errorf("failed to list open specfile PRs: %w", err)
 	}

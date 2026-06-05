@@ -4,39 +4,94 @@ import (
 	"dalec-mapping/domain/buildresult"
 	"dalec-mapping/domain/contents"
 	"dalec-mapping/domain/naming"
-	"dalec-mapping/domain/onboarding"
 	"dalec-mapping/domain/repository"
 	"dalec-mapping/domain/tags"
 )
 
-// WorkItemGroup is one pull request's worth of work: every WorkItem whose
-// onboard component shares the same GroupName, plus the single PRID minted
-// once at group creation in Phase 1. Items are pointers so Phase 2 can write
-// the per-item Result without touching the surrounding group/plan structure.
-type WorkItemGroup struct {
-	GroupName string
-	PRID      string
-	Items     []*WorkItem
+// WorkGroup is one pull request's worth of work: a single resolved tag
+// applied to every component declared under the same group key in
+// onboard.yml. Phase 1 fans each decoded onboard group across its matched
+// tags, emitting one runtime WorkGroup per tag (each with its own PRID and
+// its own list of per-component WorkItems). All shared group-level metadata
+// (Repository, TagPatterns, Targets, License, Reviewers) lives here exactly
+// once; per-component helpers read it via component.Group.<field> rather than
+// duplicating it onto every component.
+//
+// The resolved tag itself does NOT live here — it is per-component (component.Tag),
+// consistent with the fact that a tag is a property of the component being
+// built, not of the PR boundary. Siblings under one runtime WorkGroup
+// happen to share the same Tag value as a consequence of fan-out, but that
+// is not modeled here.
+//
+// Components is the authoritative iteration target for Phase 2 and Phase 3 —
+// one *WorkComponent per component, all sharing this group's tag. On the
+// transient decoded shape returned by workplan.Decode, Components holds
+// skeleton WorkItems (only Name/DockerfileDir/MakefileDir populated, no
+// Tag/Naming/Group); Phase 1 fan-out clones them into per-tag runtime
+// WorkGroups with fully-populated components.
+type WorkGroup struct {
+	// Identity
+	GroupName string `yaml:"-"`
+	PRID      string `yaml:"-"`
+
+	// Group-level metadata (decoded once from onboard.yml, shared by every
+	// component/component in this group).
+	Repository  string        `yaml:"repository"`
+	TagPatterns tags.Patterns `yaml:"tags"`
+	Targets     []string      `yaml:"targets"`
+	License     string        `yaml:"license,omitempty"`
+	Reviewers   []string      `yaml:"reviewers,omitempty"`
+
+	// Per-component work units. Skeletons after workplan.Decode (Name +
+	// DockerfileDir + MakefileDir only); fully populated by Phase 1.
+	Components []*WorkComponent `yaml:"-"`
 }
 
-// WorkItem is the unit processed by the pipeline.
+// WorkComponent is the per-component unit processed by the pipeline within a
+// single per-tag WorkGroup. It also carries the component identity that
+// used to live on a separate WorkComponent type — Name, DockerfileDir, and
+// MakefileDir are populated by workplan.Decode and are immutable
+// afterwards.
 //
-//   - Identity (Naming, Component, Tag, BuildFiles) is populated by Phase 1
-//     and is read-only afterwards. Phase 1 calls Naming.Construct exactly
-//     once per item with the group's PRID so every Generated field —
-//     including BranchName/PRTitle — is final at the end of Phase 1.
+//   - Identity (Name/DockerfileDir/MakefileDir + Naming, Tag, Revision,
+//     BuildFiles) is populated by Phase 1 and is read-only afterwards.
+//     Phase 1 calls Naming.Construct exactly once per component with the
+//     enclosing group's PRID so every Generated field — including
+//     BranchName/PRTitle — is final at the end of Phase 1.
 //   - Result is the only field Phase 2 writes; it carries the BuildResult
-//     produced for this item. Phase 3 and observers read Result and treat
+//     produced for this component. Phase 3 and observers read Result and treat
 //     every other field as immutable.
 //
-// Functions take *WorkItem to avoid copying derived data and to make the
-// data flow explicit at every call site (no ambient package globals).
-type WorkItem struct {
-	Naming     naming.Naming
-	Component  onboarding.OnboardingComponent
-	Tag        tags.Set
-	BuildFiles BuildFilesInfo
-	Result     buildresult.BuildResult
+// Group is the back-pointer to the enclosing runtime WorkGroup. Downstream
+// helpers read shared metadata via component.Group.Repository,
+// component.Group.Targets, component.Group.License rather than duplicating those
+// values onto every component.
+//
+// NOTE: The onboard.yml may contain an optional "mar" section with
+// publishing metadata (contactEmail, logoUrl, displayName, description,
+// discoveryPortalReadme). That section is intentionally excluded here —
+// it is consumed by ADO pipelines for MAR (Microsoft Artifact Registry)
+// publishing and has no relevance to specfile generation. yaml.v3
+// silently discards it during Decode.
+type WorkComponent struct {
+	// Component identity (populated by workplan.Decode). Name is the
+	// component's onboard.yml key (the inner key in `components:` for a
+	// grouped layout, or the group's own key for a standalone layout).
+	Name          string `yaml:"-"`
+	DockerfileDir string `yaml:"dockerfile"`
+	MakefileDir   string `yaml:"makefile"`
+
+	// Back-pointer to the runtime WorkGroup. Zero on decoded skeletons; set
+	// by Phase 1 fan-out.
+	Group *WorkGroup `yaml:"-"`
+
+	// Per-component runtime data (populated by Phase 1 fan-out).
+	Naming     naming.Naming  `yaml:"-"`
+	Tag        tags.TagSet    `yaml:"-"`
+	Revision   int            `yaml:"-"`
+	BuildFiles BuildFilesInfo `yaml:"-"`
+
+	Result buildresult.BuildResult `yaml:"-"`
 }
 
 // BuildFilesInfo holds everything derived from the partner repo at a specific

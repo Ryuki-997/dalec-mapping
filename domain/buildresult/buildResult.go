@@ -1,6 +1,6 @@
 package buildresult
 
-// BuildResult is the per-item output of Phase 2 stored on WorkItem.Result.
+// BuildResult is the per-component output of Phase 2 stored on WorkComponent.Result.
 // SpecContent is populated when Outcome is BumpVersion/BumpRevision/Generated.
 type BuildResult struct {
 	Outcome     Outcome

@@ -35,40 +35,40 @@ var goBuildOutputRe = regexp.MustCompile(`-o\s+(/go/bin/[^\s]+)`)
 // ─── Chunk 1 · ORCHESTRATION ─────────────────────────────────────────────────
 
 // extractArtifactsSection returns the global artifacts section (Linux binaries + license).
-func extractArtifactsSection(item *workplan.WorkItem) map[string]interface{} {
+func extractArtifactsSection(component *workplan.WorkComponent) map[string]interface{} {
 	binaries := make(map[string]interface{})
-	for path := range computeArtifactPaths(item) {
+	for path := range computeArtifactPaths(component) {
 		binaries[path] = map[string]interface{}{}
 	}
 	return map[string]interface{}{
 		"binaries": binaries,
 		"licenses": map[string]interface{}{
-			item.BuildFiles.RepoInfo.Repo + "/LICENSE": map[string]interface{}{},
+			component.BuildFiles.RepoInfo.Repo + "/LICENSE": map[string]interface{}{},
 		},
 	}
 }
 
-// ─── Chunk 2 · PATH RESOLUTION ──────────────────────────────────────────────
+// ─── Chunk 2 · PATH RESOLUTION ─────────────────────────────────
 
 // computeArtifactPaths returns the Linux binary artifact paths (no .exe).
-func computeArtifactPaths(item *workplan.WorkItem) map[string]interface{} {
+func computeArtifactPaths(component *workplan.WorkComponent) map[string]interface{} {
 	paths := make(map[string]interface{})
 
 	// Wrapper pipeline: the LAST go build output from pipeline steps is the final artifact.
-	if len(item.BuildFiles.Spec.PipelineSteps) > 0 {
-		if wrapperPath := lastGoBuildOutputInPipeline(item.BuildFiles.Spec.PipelineSteps); wrapperPath != "" {
+	if len(component.BuildFiles.Spec.PipelineSteps) > 0 {
+		if wrapperPath := lastGoBuildOutputInPipeline(component.BuildFiles.Spec.PipelineSteps); wrapperPath != "" {
 			paths[filepath.ToSlash(wrapperPath)] = struct{}{}
 			return paths
 		}
 	}
 
 	// Standard case: derive from binaries.
-	if len(item.BuildFiles.Spec.Binaries) > 0 {
-		epBase := canonicalBase(item.BuildFiles.Spec.Symlink)
-		for _, bin := range item.BuildFiles.Spec.Binaries {
+	if len(component.BuildFiles.Spec.Binaries) > 0 {
+		epBase := canonicalBase(component.BuildFiles.Spec.Symlink)
+		for _, bin := range component.BuildFiles.Spec.Binaries {
 			p := resolveOutputPath(bin)
 			// Single-binary rename when entrypoint differs.
-			if epBase != "" && canonicalBase(p) != epBase && len(item.BuildFiles.Spec.Binaries) == 1 {
+			if epBase != "" && canonicalBase(p) != epBase && len(component.BuildFiles.Spec.Binaries) == 1 {
 				p = "/go/bin/" + epBase
 			}
 			artifact := filepath.ToSlash(p)
@@ -78,12 +78,12 @@ func computeArtifactPaths(item *workplan.WorkItem) map[string]interface{} {
 	}
 
 	// Fallback: use Makefile binary name if available, then component name, otherwise repo name.
-	if len(item.BuildFiles.Makefile.GoBuildCommands) > 0 && item.BuildFiles.Makefile.GoBuildCommands[0].Name != "" {
-		paths["/go/bin/"+item.BuildFiles.Makefile.GoBuildCommands[0].Name] = struct{}{}
+	if len(component.BuildFiles.Makefile.GoBuildCommands) > 0 && component.BuildFiles.Makefile.GoBuildCommands[0].Name != "" {
+		paths["/go/bin/"+component.BuildFiles.Makefile.GoBuildCommands[0].Name] = struct{}{}
 	} else {
-		binaryName := item.BuildFiles.RepoInfo.Repo
-		if item.Component.Name != "" {
-			binaryName = item.Component.Name
+		binaryName := component.BuildFiles.RepoInfo.Repo
+		if component.Name != "" {
+			binaryName = component.Name
 		}
 		paths["/go/bin/"+binaryName] = struct{}{}
 	}
@@ -95,9 +95,9 @@ func computeArtifactPaths(item *workplan.WorkItem) map[string]interface{} {
 // computeWindowsArtifactBinaries returns the windowscross artifact binaries map.
 // Appends ".exe" to each Linux artifact key — matches the file written by the
 // BIN_SUFFIX build step when GOOS=windows.
-func computeWindowsArtifactBinaries(item *workplan.WorkItem) map[string]interface{} {
+func computeWindowsArtifactBinaries(component *workplan.WorkComponent) map[string]interface{} {
 	binaries := make(map[string]interface{})
-	for linuxPath := range computeArtifactPaths(item) {
+	for linuxPath := range computeArtifactPaths(component) {
 		binaries[linuxPath+".exe"] = map[string]interface{}{}
 	}
 	return binaries

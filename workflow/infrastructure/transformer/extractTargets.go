@@ -46,37 +46,37 @@ import (
 
 // extractTargetsSection builds the `targets:` map for every build target in the spec.
 // Each unique OS (azlinux3, windowscross, jammy, …) gets exactly one entry.
-func extractTargetsSection(item *workplan.WorkItem) map[string]interface{} {
+func extractTargetsSection(component *workplan.WorkComponent) map[string]interface{} {
 	// Analyse Dockerfile stages for intermediate runtime deps and final Linux base.
-	intermediateDeps := parser.ExtractIntermediateRuntimeDeps(item.BuildFiles.Dockerfile.Stages)
-	finalLinuxBase := parser.DetectFinalLinuxBase(item.BuildFiles.Dockerfile.Stages)
+	intermediateDeps := parser.ExtractIntermediateRuntimeDeps(component.BuildFiles.Dockerfile.Stages)
+	finalLinuxBase := parser.DetectFinalLinuxBase(component.BuildFiles.Dockerfile.Stages)
 
 	targets := make(map[string]interface{})
 	seen := make(map[string]bool)
 
-	for _, buildTarget := range onboardBuildTargets(item) {
+	for _, buildTarget := range onboardBuildTargets(component) {
 		osName := buildTarget.OS()
 		if seen[osName] {
 			continue
 		}
 		seen[osName] = true
 		isContainer := buildTarget.IsContainer()
-		tp := resolveTestPaths(item, osName, isContainer)
-		targets[osName] = buildTargetEntry(item, osName, isContainer, tp, intermediateDeps, finalLinuxBase)
+		tp := resolveTestPaths(component, osName, isContainer)
+		targets[osName] = buildTargetEntry(component, osName, isContainer, tp, intermediateDeps, finalLinuxBase)
 	}
 	return targets
 }
 
 // buildTargetEntry assembles the full target map for one OS.
-func buildTargetEntry(item *workplan.WorkItem, osName string, isContainer bool, tp testPaths, intermediateDeps []parser.IntermediateRuntimeDeps, finalLinuxBase string) map[string]interface{} {
+func buildTargetEntry(component *workplan.WorkComponent, osName string, isContainer bool, tp testPaths, intermediateDeps []parser.IntermediateRuntimeDeps, finalLinuxBase string) map[string]interface{} {
 	target := make(map[string]interface{})
 
 	if osName == "windowscross" {
-		target["dependencies"] = windowsDeps(item)
-		target["artifacts"] = windowsArtifacts(item)
-		target["image"] = windowsImageConfig(item, tp.binaryName)
+		target["dependencies"] = windowsDeps(component)
+		target["artifacts"] = windowsArtifacts(component)
+		target["image"] = windowsImageConfig(component, tp.binaryName)
 	} else {
-		target["dependencies"] = linuxDeps(item, osName, intermediateDeps)
+		target["dependencies"] = linuxDeps(component, osName, intermediateDeps)
 		if isContainer {
 			target["image"] = linuxImageConfig(tp.binaryName, finalLinuxBase)
 		}
@@ -106,8 +106,8 @@ type testPaths struct {
 //	symlinkPath = /usr/local/bin/<name> (symlink, existence-only)
 //
 // For package targets (deb/rpm): binaryPath = /usr/bin/<name>, symlinkPath = "" (no symlink)
-func resolveTestPaths(item *workplan.WorkItem, osName string, isContainer bool) testPaths {
-	subject := item.Naming
+func resolveTestPaths(component *workplan.WorkComponent, osName string, isContainer bool) testPaths {
+	subject := component.Naming
 
 	tp := testPaths{
 		binaryName: subject.SpecImageName,
@@ -118,9 +118,9 @@ func resolveTestPaths(item *workplan.WorkItem, osName string, isContainer bool) 
 	}
 
 	// Derive the binary name from the parsed artifact paths (same source used
-	// by extractArtifacts). computeArtifactPaths reads item.BuildFiles.Spec which is
+	// by extractArtifacts). computeArtifactPaths reads component.BuildFiles.Spec which is
 	// populated by the Dockerfile AST parser.
-	for artifactPath := range computeArtifactPaths(item) {
+	for artifactPath := range computeArtifactPaths(component) {
 		if base := canonicalBase(artifactPath); base != "" {
 			tp.binaryName = base
 			if osName == "windowscross" {
@@ -141,8 +141,8 @@ func resolveTestPaths(item *workplan.WorkItem, osName string, isContainer bool) 
 // ─── Chunk 3 · LINUX TARGETS ────────────────────────────────────────────────
 
 // linuxDeps builds the dependencies map for a Linux target.
-func linuxDeps(item *workplan.WorkItem, osName string, intermediateDeps []parser.IntermediateRuntimeDeps) map[string]interface{} {
-	repoInfo := item.BuildFiles.RepoInfo
+func linuxDeps(component *workplan.WorkComponent, osName string, intermediateDeps []parser.IntermediateRuntimeDeps) map[string]interface{} {
+	repoInfo := component.BuildFiles.RepoInfo
 
 	buildDeps := map[string]interface{}{}
 	runTimeDeps := map[string]interface{}{}
@@ -155,7 +155,7 @@ func linuxDeps(item *workplan.WorkItem, osName string, intermediateDeps []parser
 	switch osName {
 	case "azlinux3":
 		if repoInfo.Generator == repository.GoModGenerator {
-			buildDeps["msft-golang"] = goToolchainDep(item.BuildFiles.RepoInfo.GoVersion)
+			buildDeps["msft-golang"] = goToolchainDep(component.BuildFiles.RepoInfo.GoVersion)
 		}
 		for _, pkg := range []string{"SymCrypt", "SymCrypt-OpenSSL", "openssl-libs"} {
 			buildDeps[pkg] = map[string]interface{}{}
@@ -164,7 +164,7 @@ func linuxDeps(item *workplan.WorkItem, osName string, intermediateDeps []parser
 
 	case "bookworm", "bullseye", "noble", "jammy", "focal", "bionic":
 		if repoInfo.Generator == repository.GoModGenerator {
-			buildDeps["msft-golang"] = goToolchainDep(item.BuildFiles.RepoInfo.GoVersion)
+			buildDeps["msft-golang"] = goToolchainDep(component.BuildFiles.RepoInfo.GoVersion)
 			buildDeps["gcc"] = map[string]interface{}{}
 		}
 	}
@@ -228,15 +228,15 @@ func linuxImageConfig(binaryName, finalLinuxBase string) map[string]interface{} 
 
 // windowsDeps builds the dependencies map for the windowscross target.
 // Runtime deps are never allowed on windowscross — Dalec rejects them.
-func windowsDeps(item *workplan.WorkItem) map[string]interface{} {
-	repoInfo := item.BuildFiles.RepoInfo
+func windowsDeps(component *workplan.WorkComponent) map[string]interface{} {
+	repoInfo := component.BuildFiles.RepoInfo
 
 	buildDeps := map[string]interface{}{}
 	if ado.IsADORepo(repoInfo.GitURL) {
 		buildDeps["git"] = map[string]interface{}{}
 	}
 	if repoInfo.Generator == repository.GoModGenerator {
-		buildDeps["msft-golang"] = goToolchainDep(item.BuildFiles.RepoInfo.GoVersion)
+		buildDeps["msft-golang"] = goToolchainDep(component.BuildFiles.RepoInfo.GoVersion)
 	}
 	return map[string]interface{}{
 		"build":       buildDeps,
@@ -245,25 +245,25 @@ func windowsDeps(item *workplan.WorkItem) map[string]interface{} {
 }
 
 // windowsArtifacts returns the per-target artifacts for windowscross (.exe binaries + license).
-func windowsArtifacts(item *workplan.WorkItem) map[string]interface{} {
+func windowsArtifacts(component *workplan.WorkComponent) map[string]interface{} {
 	return map[string]interface{}{
-		"binaries": computeWindowsArtifactBinaries(item),
+		"binaries": computeWindowsArtifactBinaries(component),
 		"licenses": map[string]interface{}{
-			item.BuildFiles.RepoInfo.Repo + "/LICENSE": map[string]interface{}{},
+			component.BuildFiles.RepoInfo.Repo + "/LICENSE": map[string]interface{}{},
 		},
 	}
 }
 
 // windowsImageConfig builds the image map (entrypoint + symlink + optional bases) for the windowscross target.
 // Base images are extracted from the parsed Dockerfile stages (not from the LLM).
-func windowsImageConfig(item *workplan.WorkItem, binaryName string) map[string]interface{} {
+func windowsImageConfig(component *workplan.WorkComponent, binaryName string) map[string]interface{} {
 	// binaryName is already resolved to the final Windows artifact (e.g. dropgz)
 	// by resolveTestPaths via computeArtifactPaths.
 	entrypoint := "/Windows/System32/" + binaryName + ".exe"
 
 	image := map[string]interface{}{"entrypoint": entrypoint}
 
-	if baseImages := findWindowsBaseImages(item); len(baseImages) > 0 {
+	if baseImages := findWindowsBaseImages(component); len(baseImages) > 0 {
 		var bases []map[string]interface{}
 		for _, ref := range baseImages {
 			bases = append(bases, map[string]interface{}{
@@ -285,9 +285,9 @@ func windowsImageConfig(item *workplan.WorkItem, binaryName string) map[string]i
 
 // findWindowsBaseImages scans parsed Dockerfile stages for Windows base images
 // (nanoserver, servercore, etc.) and returns their full image refs.
-func findWindowsBaseImages(item *workplan.WorkItem) []string {
+func findWindowsBaseImages(component *workplan.WorkComponent) []string {
 	var refs []string
-	for _, stage := range item.BuildFiles.Dockerfile.Stages {
+	for _, stage := range component.BuildFiles.Dockerfile.Stages {
 		from := strings.ToLower(stage.From)
 		if strings.Contains(from, "nanoserver") ||
 			strings.Contains(from, "servercore") ||

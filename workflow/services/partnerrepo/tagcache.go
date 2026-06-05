@@ -1,71 +1,81 @@
 // ══════════════════════════════════════════════════════════════════════════════════════════
-// Tags — Resolve Tag Cache (per-component)
+// Tags — Resolve Tag Cache (per-group, fans into per-tag runtime groups)
 //
-//   Receives a single *WorkItem (with Naming.OnboardDir + Component
-//   already populated by the caller) and expands it into one *WorkItem per
-//   actionable (component, tag) pair. Naming runtime+atomic sections are
-//   filled here; the Generated section (BranchName/PRTitle/etc.) is left
-//   for the caller to fill via Naming.Construct once the group's PRID is
-//   known.
+//   Receives a single decoded *WorkGroup (group-level metadata + skeleton
+//   Components, no Tag/PRID/Naming yet) and the partner onboard directory, then
+//   expands it into one runtime *workplan.WorkGroup per actionable tag.
+//   Each runtime group carries:
+//     • A freshly minted PRID (one PR per tag).
+//     • The resolved Tag.
+//     • Copies of the group's metadata (Repository/TagPatterns/Targets/
+//       License/Reviewers).
+//     • One *WorkComponent per skeleton, cloned from the decoded group and
+//       fully populated (Naming.Construct already called) with a Group
+//       back-pointer to the runtime WorkGroup.
 //
 //   Functions are ordered by call sequence:
 //     ResolveTagCache()
-//       → logOnboardData()
+//       → logGroupOnboardData()
 //       → fetchComponentTags()
-//       → matchTagPatterns()        — per actionable tag: new *WorkItem (Naming+Component+Tag)
-// ═══════════════════════════════════════════════════════════════════════════════
+//       → resolveMatchedTagNames()
+//       → buildRuntimeGroup()          — per matched tag
+//           → buildComponentsForTag()       — per skeleton within the tag
+// ═══════════════════════════════════════════════════════════════════════════
 
 package partnerrepo
 
 import (
 	"log"
 
+	"dalec-mapping/domain/naming"
 	"dalec-mapping/domain/tagcache"
 	"dalec-mapping/domain/tags"
 	"dalec-mapping/domain/workplan"
 	"dalec-mapping/workflow/infrastructure/semver"
 )
 
-// ResolveTagCache expands one *WorkItem into one *WorkItem per
-// actionable (component, tag) pair.
-//
-// The input item must already carry:
-//   - Naming.OnboardDir set to the component's directory
-//     (e.g. "specs/azure-cni/azure-cni" for grouped components, or just
-//     "specs/aks-node-controller" for standalone).
-//   - Component populated from the onboard.yml decode.
-//
-// The atomic Naming section (SpecRepository, SpecImageName) is derived
-// here; Tag is set per output item; the Generated section is left
-// zero-valued. Returns nil when no actionable tags resolve for this
-// component.
-func ResolveTagCache(item *workplan.WorkItem) []*workplan.WorkItem {
-	item.Naming.DeriveAtomic()
+// ResolveTagCache fans a decoded onboard WorkGroup across its matched tags
+// into one runtime WorkGroup per tag. Each runtime group has its own PRID
+// and one *WorkComponent per skeleton declared under the onboard group; every
+// component's Naming is fully constructed and Group back-pointer set before
+// return. Returns nil when the group has no repository, no tag patterns,
+// or no actionable tags.
+func ResolveTagCache(group *workplan.WorkGroup, partnerOnboardDir string) []workplan.WorkGroup {
+	logGroupOnboardData(group)
 
-	logOnboardData(item)
-
-	repoTags := fetchComponentTags(item.Component.Repository)
+	repoTags := fetchComponentTags(group.Repository)
 	if len(repoTags) == 0 {
 		return nil
 	}
 
-	return matchTagPatterns(item, repoTags)
+	matchedTagNames := resolveMatchedTagNames(group, repoTags)
+	if len(matchedTagNames) == 0 {
+		return nil
+	}
+
+	runtimeGroups := make([]workplan.WorkGroup, 0, len(matchedTagNames))
+	for _, tagName := range matchedTagNames {
+		if _, exists := repoTags[tagName]; !exists {
+			log.Printf("⚠️  Resolved tag %q not found in tags cache, skipping\n", tagName)
+			continue
+		}
+		runtimeGroup, ok := buildRuntimeGroup(group, partnerOnboardDir, tagName)
+		if !ok {
+			continue
+		}
+		runtimeGroups = append(runtimeGroups, runtimeGroup)
+	}
+	return runtimeGroups
 }
 
-// logOnboardData logs a single per-component line describing the inputs
-// resolved from the onboard.yml entry.
-func logOnboardData(item *workplan.WorkItem) {
-	n := item.Naming
-	cfg := item.Component
-	if n.SpecRepository != "" && n.SpecRepository != n.SpecImageName {
-		log.Printf("Onboard Data: %s/%s repo=%s include=%v exclude=%v\n",
-			n.SpecRepository, n.SpecImageName, cfg.Repository,
-			cfg.TagPatterns.Include, cfg.TagPatterns.Exclude)
-		return
-	}
-	log.Printf("Onboard Data: %s repo=%s include=%v exclude=%v\n",
-		n.SpecImageName, cfg.Repository,
-		cfg.TagPatterns.Include, cfg.TagPatterns.Exclude)
+// logGroupOnboardData logs a single per-group line describing the inputs
+// resolved from the onboard.yml entry. Component-level identity is logged
+// later per component during fan-out.
+func logGroupOnboardData(group *workplan.WorkGroup) {
+	log.Printf("Onboard Data: %s repo=%s include=%v exclude=%v components=%d\n",
+		group.GroupName, group.Repository,
+		group.TagPatterns.Include, group.TagPatterns.Exclude,
+		len(group.Components))
 }
 
 // fetchComponentTags returns the tag→commit map for a repository URL.
@@ -89,43 +99,84 @@ func fetchComponentTags(repoURL string) map[string]string {
 	return repoTags
 }
 
-// matchTagPatterns applies the component's tag patterns against the
-// pre-fetched repo tags and produces one *workplan.WorkItem per actionable
-// match. Each result is a fresh allocation carrying the input item's Naming
-// (runtime+atomic) and Component, plus the resolved Tag. The Generated
-// naming fields are filled later by the caller once the group's PRID is
-// known. Reads pathcache.Cache via semver.MatchTagSets for revision lookups.
-func matchTagPatterns(item *workplan.WorkItem, repoTags map[string]string) []*workplan.WorkItem {
-	cfg := item.Component
-	if !cfg.TagPatterns.HasPatterns() {
-		log.Printf("⚠️  No tag patterns defined for %s, skipping\n", item.Naming.SpecImageName)
+// resolveMatchedTagNames applies the group's tag patterns against the
+// pre-fetched repo tags and returns the actionable tag name set. Logs and
+// returns nil when the group has no patterns or nothing matches.
+func resolveMatchedTagNames(group *workplan.WorkGroup, repoTags map[string]string) []string {
+	if !group.TagPatterns.HasPatterns() {
+		log.Printf("⚠️  No tag patterns defined for %s, skipping\n", group.GroupName)
 		return nil
 	}
 
-	resolvedTagNames := semver.ResolveTagPatterns(repoTags, cfg.TagPatterns.Include, cfg.TagPatterns.Exclude)
-	if len(resolvedTagNames) == 0 {
-		log.Printf("Skipping %s: no tags matched include=%v exclude=%v\n", item.Naming.SpecImageName, cfg.TagPatterns.Include, cfg.TagPatterns.Exclude)
+	matched := semver.ResolveTagPatterns(repoTags, group.TagPatterns.Include, group.TagPatterns.Exclude)
+	if len(matched) == 0 {
+		log.Printf("Skipping %s: no tags matched include=%v exclude=%v\n",
+			group.GroupName, group.TagPatterns.Include, group.TagPatterns.Exclude)
 		return nil
 	}
+	return matched
+}
 
-	actionableTags := semver.MatchTagSets(repoTags, resolvedTagNames, item.Naming)
-	if len(actionableTags) == 0 {
-		log.Printf("Skipping %s: no actionable tags after revision check\n", item.Naming.SpecImageName)
-		return nil
+// buildRuntimeGroup materializes one per-tag WorkGroup with PRID, Tag, copied
+// metadata, and cloned per-component *WorkItems whose Naming is fully
+// constructed and Group back-pointer set. Returns ok=false when the group
+// ends up with no components.
+func buildRuntimeGroup(group *workplan.WorkGroup, partnerOnboardDir, tagName string) (workplan.WorkGroup, bool) {
+	tag := tags.TagSet{Full: tagName}
+	tag.Resolve()
+
+	runtimeGroup := workplan.WorkGroup{
+		GroupName:   group.GroupName,
+		PRID:        naming.GeneratePRID(),
+		Repository:  group.Repository,
+		TagPatterns: group.TagPatterns,
+		Targets:     group.Targets,
+		License:     group.License,
+		Reviewers:   group.Reviewers,
 	}
 
-	var items []*workplan.WorkItem
-	for _, actionableTag := range actionableTags {
-		strippedTag := semver.ToTag(actionableTag.Name)
-		tagSet := tags.NewSet(actionableTag.Name, "", strippedTag, actionableTag.NextRevision)
+	components := buildComponentsForTag(group, &runtimeGroup, partnerOnboardDir, tag)
+	if len(components) == 0 {
+		return workplan.WorkGroup{}, false
+	}
+	runtimeGroup.Components = components
 
-		expanded := &workplan.WorkItem{
-			Naming:    item.Naming,
-			Component: item.Component,
-			Tag:       tagSet,
+	for _, component := range components {
+		component.Naming.Construct(component.Tag, component.Revision, runtimeGroup.GroupName, runtimeGroup.PRID)
+	}
+	return runtimeGroup, true
+}
+
+// buildComponentsForTag emits one runtime *WorkComponent per skeleton declared under
+// the onboard group, all sharing the supplied tag and the runtime
+// WorkGroup back-pointer. Per-component baseNaming is derived from
+// partnerOnboardDir + "/" + skeleton.Name; the next revision is looked up
+// in pathcache via semver.FindLatestRevision (per-component history).
+func buildComponentsForTag(group *workplan.WorkGroup, runtimeGroup *workplan.WorkGroup, partnerOnboardDir string, tag tags.TagSet) []*workplan.WorkComponent {
+	components := make([]*workplan.WorkComponent, 0, len(group.Components))
+	for _, skeleton := range group.Components {
+		baseNaming := naming.Naming{
+			OnboardDir: partnerOnboardDir + "/" + skeleton.Name,
 		}
-		items = append(items, expanded)
-		log.Printf("Queued: %s @ %s\n", expanded.Naming.SpecImageName, expanded.Tag.Stripped)
+		baseNaming.DeriveAtomic()
+
+		latestRevision, found := semver.FindLatestRevision(baseNaming, tag.Version)
+		nextRevision := 1
+		if found {
+			nextRevision = latestRevision + 1
+		}
+
+		component := &workplan.WorkComponent{
+			Name:          skeleton.Name,
+			DockerfileDir: skeleton.DockerfileDir,
+			MakefileDir:   skeleton.MakefileDir,
+			Group:         runtimeGroup,
+			Naming:        baseNaming,
+			Tag:           tag,
+			Revision:      nextRevision,
+		}
+		components = append(components, component)
+		log.Printf("Queued: %s @ %s\n", baseNaming.SpecImageName, tag.Stripped)
 	}
-	return items
+	return components
 }

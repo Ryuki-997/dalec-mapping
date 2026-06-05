@@ -5,9 +5,9 @@ import "dalec-mapping/domain/workplan"
 // extractBuildExtensions builds the `x-build-extensions:` map.
 // It declares the image name, repository, build targets, and per-target platform
 // overrides (e.g. windows/amd64 for the windowscross target).
-func extractBuildExtensions(item *workplan.WorkItem) map[string]interface{} {
-	subject := item.Naming
-	buildTargets := onboardBuildTargets(item)
+func extractBuildExtensions(component *workplan.WorkComponent) map[string]interface{} {
+	subject := component.Naming
+	buildTargets := onboardBuildTargets(component)
 
 	ext := map[string]interface{}{
 		"build-targets": buildTargets,

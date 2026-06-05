@@ -199,8 +199,8 @@ func stripGoModDownloadPrefix(cmd string) string {
 // `<name>` matches a known artifact binary path from computeArtifactPaths().
 // Intermediate helper binaries (compressors, sub-modules) are never artifact
 // paths and are skipped.
-func injectArtifactBinSuffix(item *workplan.WorkItem, text string) string {
-	artifactPaths := computeArtifactPaths(item)
+func injectArtifactBinSuffix(component *workplan.WorkComponent, text string) string {
+	artifactPaths := computeArtifactPaths(component)
 	return binOutRe.ReplaceAllStringFunc(text, func(match string) string {
 		sub := binOutRe.FindStringSubmatch(match)
 		if sub == nil {

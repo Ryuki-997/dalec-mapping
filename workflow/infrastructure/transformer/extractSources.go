@@ -65,11 +65,11 @@ type goModDownloadInfo struct {
 
 // extractSourcesSection assembles all source entries for the Dalec spec.
 // Pre-computed goModDownloads are emitted as separate prefetched sources.
-func extractSourcesSection(item *workplan.WorkItem, goModDownloads []goModDownloadInfo) map[string]interface{} {
+func extractSourcesSection(component *workplan.WorkComponent, goModDownloads []goModDownloadInfo) map[string]interface{} {
 	sources := make(map[string]interface{})
 
-	buildPrimarySource(item, sources)
-	buildSubmoduleSources(item, sources, goModDownloads)
+	buildPrimarySource(component, sources)
+	buildSubmoduleSources(component, sources, goModDownloads)
 
 	return sources
 }
@@ -108,10 +108,10 @@ func adoGoModAuth(repoInfo domainRepo.RepoInfo) map[string]interface{} {
 // When a ComponentPath is set on the spec, it is used as the primary subpath
 // and gomod discovery is scoped within it. Otherwise falls back to heuristics
 // from MakefileDir.
-func buildPrimarySource(item *workplan.WorkItem, sources map[string]interface{}) {
-	repoInfo := item.BuildFiles.RepoInfo
+func buildPrimarySource(component *workplan.WorkComponent, sources map[string]interface{}) {
+	repoInfo := component.BuildFiles.RepoInfo
 
-	subpaths := collectGoModSubpaths(item, item.BuildFiles.Spec)
+	subpaths := collectGoModSubpaths(component, component.BuildFiles.Spec)
 
 	rootGoModSubpath := "."
 	if repoInfo.ComponentPath != "" {
@@ -153,8 +153,8 @@ func buildPrimarySource(item *workplan.WorkItem, sources map[string]interface{})
 
 // buildSubmoduleSources adds a separate git+gomod entry for each pre-computed
 // go mod download dependency (e.g. dropgz).
-func buildSubmoduleSources(item *workplan.WorkItem, sources map[string]interface{}, goModDownloads []goModDownloadInfo) {
-	repoInfo := item.BuildFiles.RepoInfo
+func buildSubmoduleSources(component *workplan.WorkComponent, sources map[string]interface{}, goModDownloads []goModDownloadInfo) {
+	repoInfo := component.BuildFiles.RepoInfo
 
 	for _, info := range goModDownloads {
 		// Format commit as <subPath>/<versionVar> to match Go module tag convention
@@ -192,8 +192,8 @@ func buildSubmoduleSources(item *workplan.WorkItem, sources map[string]interface
 // literal `cd <subdir> &&` in binary build commands and pipeline steps.
 // When a ComponentPath is set, only subpaths that fall within
 // the component directory (DFS) are included.
-func collectGoModSubpaths(item *workplan.WorkItem, spec contents.DockerSpec) []string {
-	repoInfo := item.BuildFiles.RepoInfo
+func collectGoModSubpaths(component *workplan.WorkComponent, spec contents.DockerSpec) []string {
+	repoInfo := component.BuildFiles.RepoInfo
 
 	seen := map[string]bool{}
 	var subpaths []string
@@ -233,15 +233,15 @@ func collectGoModSubpaths(item *workplan.WorkItem, spec contents.DockerSpec) []s
 // submodule references. Detects both `go mod download <module>@<version>`
 // (legacy) and `cd /go/pkg/mod/<module>@<version>` patterns and returns
 // parsed info for each.
-func detectGoModDownloads(item *workplan.WorkItem) []goModDownloadInfo {
-	if len(item.BuildFiles.Spec.PipelineSteps) == 0 && len(item.BuildFiles.Spec.Binaries) == 0 {
+func detectGoModDownloads(component *workplan.WorkComponent) []goModDownloadInfo {
+	if len(component.BuildFiles.Spec.PipelineSteps) == 0 && len(component.BuildFiles.Spec.Binaries) == 0 {
 		return nil
 	}
-	repoInfo := item.BuildFiles.RepoInfo
+	repoInfo := component.BuildFiles.RepoInfo
 
 	var stepsToScan []string
-	stepsToScan = append(stepsToScan, item.BuildFiles.Spec.PipelineSteps...)
-	for _, bin := range item.BuildFiles.Spec.Binaries {
+	stepsToScan = append(stepsToScan, component.BuildFiles.Spec.PipelineSteps...)
+	for _, bin := range component.BuildFiles.Spec.Binaries {
 		if bin.BuildCommand != "" {
 			stepsToScan = append(stepsToScan, bin.BuildCommand)
 		}

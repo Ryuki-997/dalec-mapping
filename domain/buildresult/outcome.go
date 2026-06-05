@@ -1,6 +1,6 @@
 package buildresult
 
-// Outcome classifies what Phase 2 did for a given WorkItem.
+// Outcome classifies what Phase 2 did for a given WorkComponent.
 type Outcome int
 
 const (

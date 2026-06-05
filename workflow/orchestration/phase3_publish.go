@@ -1,14 +1,14 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // Phase 3 — Publish
 //
-//   Input:  []workplan.WorkItemGroup (produced by Phase 1, decorated by
-//           Phase 2 — every item's Result is now populated).
+//   Input:  []workplan.WorkGroup (produced by Phase 1, decorated by
+//           Phase 2 — every component's Result is now populated).
 //   Output: []PublishOutcome
 //
 //   Iterates the groups in order. specrepo.CreatePR filters publishable
-//   items per group and opens one PR; groups with no publishable items are
+//   components per group and opens one PR; groups with no publishable components are
 //   skipped; per-group errors are logged but do not stop later groups. PRID +
-//   BranchName + PRTitle are already baked into every item's Naming during
+//   BranchName + PRTitle are already baked into every component's Naming during
 //   Phase 1.
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -30,11 +30,11 @@ type PublishOutcome struct {
 	Err       error
 }
 
-// Publish walks every WorkItemGroup and opens one PR per group that has at
-// least one publishable item. Phase 3 is read-only over the groups; it does
-// not mutate WorkItems. Filtering of publishable items happens inside
+// Publish walks every WorkGroup and opens one PR per group that has at
+// least one publishable component. Phase 3 is read-only over the groups; it does
+// not mutate WorkItems. Filtering of publishable components happens inside
 // specrepo.CreatePR.
-func Publish(groups []workplan.WorkItemGroup) []PublishOutcome {
+func Publish(groups []workplan.WorkGroup) []PublishOutcome {
 	log.Println("═══ Phase 3: Publish ═══")
 	log.Println("─── Create pull requests ───")
 
@@ -52,8 +52,8 @@ func Publish(groups []workplan.WorkItemGroup) []PublishOutcome {
 
 // publishGroup invokes specrepo.CreatePR for one group. Returns (outcome, true)
 // when the group produced a PR (created or reused) or hit a hard error, and
-// (zero, false) when the group had no publishable items and was skipped.
-func publishGroup(group workplan.WorkItemGroup) (PublishOutcome, bool) {
+// (zero, false) when the group had no publishable components and was skipped.
+func publishGroup(group workplan.WorkGroup) (PublishOutcome, bool) {
 	url, created, specPaths, err := specrepo.CreatePR(group)
 	if err != nil {
 		log.Printf("❌ PR creation failed for %s: %v", group.GroupName, err)

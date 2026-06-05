@@ -42,13 +42,13 @@ import (
 // extractBuildSection assembles the top-level `build:` map for a Dalec spec.
 // Returns the build map and the set of ${VAR} names referenced inside it,
 // so the caller can forward them as top-level args.
-func extractBuildSection(item *workplan.WorkItem, goModDownloads []goModDownloadInfo) (map[string]interface{}, map[string]bool) {
+func extractBuildSection(component *workplan.WorkComponent, goModDownloads []goModDownloadInfo) (map[string]interface{}, map[string]bool) {
 	build := make(map[string]interface{})
 
-	env := buildEnv(item)
+	env := buildEnv(component)
 	build["env"] = env
 
-	steps, scanText := buildSteps(item, goModDownloads)
+	steps, scanText := buildSteps(component, goModDownloads)
 	build["steps"] = steps
 
 	referencedVars := make(map[string]bool)
@@ -66,7 +66,7 @@ func extractBuildSection(item *workplan.WorkItem, goModDownloads []goModDownload
 		if dalecHandledEnvs[varName] {
 			continue
 		}
-		if _, exists := item.BuildFiles.Makefile.Variables[varName]; exists {
+		if _, exists := component.BuildFiles.Makefile.Variables[varName]; exists {
 			env[varName] = fmt.Sprintf("${%s}", varName)
 		}
 	}
@@ -80,7 +80,7 @@ func extractBuildSection(item *workplan.WorkItem, goModDownloads []goModDownload
 // Standard Go build vars are always included. ADO repos additionally
 // get GONOSUMCHECK and GONOSUMDB to bypass the checksum database for
 // private modules.
-func buildEnv(item *workplan.WorkItem) map[string]interface{} {
+func buildEnv(component *workplan.WorkComponent) map[string]interface{} {
 	env := map[string]interface{}{
 		"GOPROXY":      "${GOPROXY}",
 		"GOEXPERIMENT": "systemcrypto",
@@ -90,7 +90,7 @@ func buildEnv(item *workplan.WorkItem) map[string]interface{} {
 		"GOARCH":       "${TARGETARCH}",
 	}
 
-	repoInfo := item.BuildFiles.RepoInfo
+	repoInfo := component.BuildFiles.RepoInfo
 	if ado.IsADORepo(repoInfo.GitURL) && repoInfo.Generator == domainRepo.GoModGenerator {
 		domain := extractADODomain(repoInfo.GitURL)
 		env["GONOSUMCHECK"] = domain + "/*"
@@ -114,30 +114,30 @@ type buildLine struct {
 // Also returns the combined command text for var scanning.
 // The first step after the preamble is always `cd <baseDir>` where baseDir is
 // repo (or repo/componentPath when a component is set).
-func buildSteps(item *workplan.WorkItem, goModDownloads []goModDownloadInfo) ([]map[string]interface{}, string) {
-	repoInfo := item.BuildFiles.RepoInfo
+func buildSteps(component *workplan.WorkComponent, goModDownloads []goModDownloadInfo) ([]map[string]interface{}, string) {
+	repoInfo := component.BuildFiles.RepoInfo
 
 	baseDir := repoInfo.Repo
 	if repoInfo.ComponentPath != "" {
 		baseDir = repoInfo.Repo + "/" + repoInfo.ComponentPath
 	}
 
-	rawCmds := rawBuildCommands(item, goModDownloads)
+	rawCmds := rawBuildCommands(component, goModDownloads)
 
 	if len(rawCmds) == 0 {
 		// Use Makefile go build target when available (e.g. "./cmd/client") instead
 		// of "." which fails when the go.mod directory has no Go files at root.
 		buildTarget := "."
-		if len(item.BuildFiles.Makefile.GoBuildTargets) > 0 {
-			buildTarget = item.BuildFiles.Makefile.GoBuildTargets[0]
+		if len(component.BuildFiles.Makefile.GoBuildTargets) > 0 {
+			buildTarget = component.BuildFiles.Makefile.GoBuildTargets[0]
 		}
-		return fallbackBuildStep(item, baseDir, buildTarget)
+		return fallbackBuildStep(component, baseDir, buildTarget)
 	}
 
 	allBuildLines := parseBuildLines(rawCmds, baseDir, goModDownloads)
 
 	if len(allBuildLines) == 0 {
-		return fallbackBuildStep(item, baseDir, ".")
+		return fallbackBuildStep(component, baseDir, ".")
 	}
 
 	// Split into normal binaries and deferred sub-module builds.
@@ -164,21 +164,21 @@ func buildSteps(item *workplan.WorkItem, goModDownloads []goModDownloadInfo) ([]
 		parts = append(parts, bl.command)
 	}
 
-	submodCopies := submoduleStageCopies(item.BuildFiles.Dockerfile.Stages)
-	parts = emitPipelineSteps(item, parts, baseDir, goModDownloads, submodCopies)
+	submodCopies := submoduleStageCopies(component.BuildFiles.Dockerfile.Stages)
+	parts = emitPipelineSteps(component, parts, baseDir, goModDownloads, submodCopies)
 	parts = emitDeferredBuilds(parts, deferredLines, submodCopies)
 
 	// Final pass: inject ${BIN_SUFFIX} on only the LAST `-o /go/bin/<name>`
 	// across the entire assembled command block.
 	stepCmd := strings.Join(parts, "\n")
 	stepCmd = strings.ReplaceAll(stepCmd, "'", "")
-	stepCmd = injectArtifactBinSuffix(item, stepCmd)
+	stepCmd = injectArtifactBinSuffix(component, stepCmd)
 	return []map[string]interface{}{{"command": stepCmd}}, stepCmd
 }
 
 // fallbackBuildStep builds a synthetic go-build command when no parsed binaries exist.
-func fallbackBuildStep(item *workplan.WorkItem, cdTarget, buildTarget string) ([]map[string]interface{}, string) {
-	binaryName := resolveFallbackBinaryName(item)
+func fallbackBuildStep(component *workplan.WorkComponent, cdTarget, buildTarget string) ([]map[string]interface{}, string) {
+	binaryName := resolveFallbackBinaryName(component)
 	fallback := fmt.Sprintf("%s\ncd %s\ngo build -o /go/bin/%s${BIN_SUFFIX} %s", binSuffixPreamble, cdTarget, binaryName, buildTarget)
 	return []map[string]interface{}{{"command": fallback}}, fallback
 }
@@ -186,23 +186,23 @@ func fallbackBuildStep(item *workplan.WorkItem, cdTarget, buildTarget string) ([
 // resolveFallbackBinaryName returns the binary name for a synthetic fallback build.
 // Uses the first parsed binary name when available, then Makefile binaries,
 // then the component name (if set), otherwise the repo name.
-func resolveFallbackBinaryName(item *workplan.WorkItem) string {
-	binaryName := item.BuildFiles.RepoInfo.Repo
-	if item.Component.Name != "" {
-		binaryName = item.Component.Name
+func resolveFallbackBinaryName(component *workplan.WorkComponent) string {
+	binaryName := component.BuildFiles.RepoInfo.Repo
+	if component.Name != "" {
+		binaryName = component.Name
 	}
-	if len(item.BuildFiles.Spec.Binaries) > 0 && item.BuildFiles.Spec.Binaries[0].Name != "" {
-		binaryName = item.BuildFiles.Spec.Binaries[0].Name
-	} else if len(item.BuildFiles.Makefile.GoBuildCommands) > 0 && item.BuildFiles.Makefile.GoBuildCommands[0].Name != "" {
-		binaryName = item.BuildFiles.Makefile.GoBuildCommands[0].Name
+	if len(component.BuildFiles.Spec.Binaries) > 0 && component.BuildFiles.Spec.Binaries[0].Name != "" {
+		binaryName = component.BuildFiles.Spec.Binaries[0].Name
+	} else if len(component.BuildFiles.Makefile.GoBuildCommands) > 0 && component.BuildFiles.Makefile.GoBuildCommands[0].Name != "" {
+		binaryName = component.BuildFiles.Makefile.GoBuildCommands[0].Name
 	}
 	return binaryName
 }
 
 // makefileBuildCommands returns cleaned go build commands extracted from the Makefile.
 // Called when no Dockerfile Spec is available (Makefile-only projects).
-func makefileBuildCommands(item *workplan.WorkItem) []string {
-	makefileBinaries := item.BuildFiles.Makefile.GoBuildCommands
+func makefileBuildCommands(component *workplan.WorkComponent) []string {
+	makefileBinaries := component.BuildFiles.Makefile.GoBuildCommands
 	if len(makefileBinaries) == 0 {
 		return nil
 	}
@@ -270,19 +270,19 @@ func parseBuildLines(rawCmds []string, baseDir string, goModDownloads []goModDow
 // emitPipelineSteps appends processed pipeline steps (from intermediate and
 // wrapper Dockerfile stages) to the command parts. Handles directory navigation,
 // copy injection, env stripping, and go-mod path rewriting.
-func emitPipelineSteps(item *workplan.WorkItem, parts []string, baseDir string, goModDownloads []goModDownloadInfo, submodCopies map[string][]string) []string {
-	if len(item.BuildFiles.Spec.PipelineSteps) == 0 {
+func emitPipelineSteps(component *workplan.WorkComponent, parts []string, baseDir string, goModDownloads []goModDownloadInfo, submodCopies map[string][]string) []string {
+	if len(component.BuildFiles.Spec.PipelineSteps) == 0 {
 		return parts
 	}
 
-	if mkdirs := stageWorkdirs(item.BuildFiles.Dockerfile.Stages, item.BuildFiles.Spec.PipelineSteps, baseDir); len(mkdirs) > 0 {
+	if mkdirs := stageWorkdirs(component.BuildFiles.Dockerfile.Stages, component.BuildFiles.Spec.PipelineSteps, baseDir); len(mkdirs) > 0 {
 		parts = append(parts, "mkdir -p "+strings.Join(mkdirs, " "))
 	}
 
-	workdirCopies := intermediateStageCopies(item.BuildFiles.Dockerfile.Stages, baseDir)
-	workdirCopies = filterAlreadyCopied(workdirCopies, item.BuildFiles.Spec.PipelineSteps)
+	workdirCopies := intermediateStageCopies(component.BuildFiles.Dockerfile.Stages, baseDir)
+	workdirCopies = filterAlreadyCopied(workdirCopies, component.BuildFiles.Spec.PipelineSteps)
 
-	for _, step := range item.BuildFiles.Spec.PipelineSteps {
+	for _, step := range component.BuildFiles.Spec.PipelineSteps {
 		step = strings.TrimSpace(step)
 		if step == "" {
 			continue
@@ -375,17 +375,17 @@ func emitDeferredBuilds(parts []string, deferredLines []buildLine, submodCopies 
 // from the primary linux entrypoint when it differs from the parsed binary name (e.g.
 // "dropgz" when binaries[0].Name is "azure-ipam"). BIN_SUFFIX is injected so the same
 // step works for both Linux (BIN_SUFFIX="") and windowscross (BIN_SUFFIX=".exe").
-func rawBuildCommands(item *workplan.WorkItem, goModDownloads []goModDownloadInfo) []string {
-	if len(item.BuildFiles.Spec.Binaries) == 0 {
-		return makefileBuildCommands(item)
+func rawBuildCommands(component *workplan.WorkComponent, goModDownloads []goModDownloadInfo) []string {
+	if len(component.BuildFiles.Spec.Binaries) == 0 {
+		return makefileBuildCommands(component)
 	}
 
-	epBase := canonicalBase(item.BuildFiles.Spec.Symlink)
+	epBase := canonicalBase(component.BuildFiles.Spec.Symlink)
 
 	var cmds []string
 
-	for i := range item.BuildFiles.Spec.Binaries {
-		aux := &item.BuildFiles.Spec.Binaries[i]
+	for i := range component.BuildFiles.Spec.Binaries {
+		aux := &component.BuildFiles.Spec.Binaries[i]
 		if aux.Name == "" {
 			continue
 		}
@@ -402,7 +402,7 @@ func rawBuildCommands(item *workplan.WorkItem, goModDownloads []goModDownloadInf
 			cmd = fmt.Sprintf("go build -ldflags \"%s\" -o %s", aux.LdFlags, out)
 		}
 
-		if cmd != "" && epBase != "" && epBase != aux.Name && len(item.BuildFiles.Spec.Binaries) == 1 && !isSubmoduleName(epBase, goModDownloads) {
+		if cmd != "" && epBase != "" && epBase != aux.Name && len(component.BuildFiles.Spec.Binaries) == 1 && !isSubmoduleName(epBase, goModDownloads) {
 			cmd = strings.ReplaceAll(cmd,
 				"/go/bin/"+aux.Name+"${BIN_SUFFIX}",
 				"/go/bin/"+epBase+"${BIN_SUFFIX}",
