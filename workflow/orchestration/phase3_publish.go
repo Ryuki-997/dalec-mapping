@@ -32,7 +32,7 @@ type PublishOutcome struct {
 
 // Publish walks every WorkGroup and opens one PR per group that has at
 // least one publishable component. Phase 3 is read-only over the groups; it does
-// not mutate WorkItems. Filtering of publishable components happens inside
+// not mutate WorkComponents. Filtering of publishable components happens inside
 // specrepo.CreatePR.
 func Publish(groups []workplan.WorkGroup) []PublishOutcome {
 	log.Println("═══ Phase 3: Publish ═══")

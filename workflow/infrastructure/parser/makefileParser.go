@@ -161,7 +161,7 @@ func extractBuildCommands(recipes []targetRecipe, info *contents.MakefileInfo) {
 		normalizedSegment := convertMakefileVarsToShell(goBuildSegment)
 		resolvedSegment := resolveMakefileVars(normalizedSegment, info.Variables)
 		resolvedSegment = convertMakefileVarsToShell(resolvedSegment)
-		binary := ParseGoBuildCommand(resolvedSegment)
+		binary := parseGoBuildCommand(resolvedSegment)
 		if binary.Name != "" && binary.OutputPath != "" {
 			originalOutputPath := binary.OutputPath
 			binary.OutputPath = normalizeBinaryOutputPath(binary.OutputPath, binary.Name)

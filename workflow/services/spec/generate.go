@@ -34,7 +34,7 @@ func GenerateSpec(component *workplan.WorkComponent) ([]byte, []string, error) {
 		return nil, nil, fmt.Errorf("parsing build files: %w", err)
 	}
 
-	repoInfo, err := buildRepoInfo(component, component.Group.Repository)
+	repoInfo, err := buildRepoInfo(component, component.ParentGroup.Repository)
 	if err != nil {
 		return nil, nil, fmt.Errorf("fetching repository info: %w", err)
 	}
@@ -59,7 +59,7 @@ func buildRepoInfo(component *workplan.WorkComponent, repoURL string) (repositor
 		return repository.RepoInfo{}, err
 	}
 
-	component.Group.License = resolveLicense(component.Group.License, fetchedLicense)
+	component.ParentGroup.License = resolveLicense(component.ParentGroup.License, fetchedLicense)
 
 	tagSet := component.Tag
 	commitSHA, err := tagcache.Lookup(repoURL, tagSet.Full)
@@ -140,5 +140,5 @@ func buildSpec(component *workplan.WorkComponent) ([]byte, []string, error) {
 		return nil, nil, fmt.Errorf("encoding output YAML: %w", err)
 	}
 
-	return specBytes, component.Group.Targets, nil
+	return specBytes, component.ParentGroup.Targets, nil
 }

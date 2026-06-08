@@ -2,7 +2,7 @@
 // PR — Create Pull Request
 //
 //   Creates a feature branch from OnboardBranch, commits specfiles,
-//   Dockerfiles, and Makefiles for one or more publishable WorkItems,
+//   Dockerfiles, and Makefiles for one or more publishable WorkComponents,
 //   then opens a single PR merging the feature branch into OnboardBranch.
 //
 //   Functions are ordered by call sequence:
@@ -180,11 +180,11 @@ func collectSiblingFiles(component *workplan.WorkComponent) []fileEntry {
 	}
 
 	buildFiles := component.BuildFiles
-	majorMinor := component.Tag.MajorMinor
+	versionRevision := component.Naming.VersionRevision
 
 	var files []fileEntry
 	if len(buildFiles.Dockerfile.Source) > 0 {
-		path := pathcache.BuildDockerfilePath(component.Naming, majorMinor)
+		path := pathcache.BuildDockerfilePath(component.Naming, versionRevision)
 		if pathcache.Has(path) {
 			log.Printf("⚠️  Skipping BuildFiles snapshot — already exists: %s", path)
 		} else {
@@ -192,7 +192,7 @@ func collectSiblingFiles(component *workplan.WorkComponent) []fileEntry {
 		}
 	}
 	if len(buildFiles.Makefile.Source) > 0 {
-		path := pathcache.BuildMakefilePath(component.Naming, majorMinor)
+		path := pathcache.BuildMakefilePath(component.Naming, versionRevision)
 		if pathcache.Has(path) {
 			log.Printf("⚠️  Skipping BuildFiles snapshot — already exists: %s", path)
 		} else {
@@ -316,7 +316,7 @@ func buildPRDescription(publishable []*workplan.WorkComponent, specImageNames []
 	title = n.PRTitle
 	if len(publishable) == 1 {
 		body = fmt.Sprintf("Auto-generated Dalec spec for **%s** @ `%s`.\n\nRepository: %s\n\nRequires 1 reviewer approval before merge.",
-			n.DisplayName, n.VersionRevision, publishable[0].Group.Repository)
+			n.DisplayName, n.VersionRevision, publishable[0].ParentGroup.Repository)
 		return title, body
 	}
 	body = fmt.Sprintf("Auto-generated Dalec specs for group **%s** @ `%s`.\n\nComponents: %s\n\nRequires 1 reviewer approval before merge.",

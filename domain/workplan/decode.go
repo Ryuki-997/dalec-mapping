@@ -25,7 +25,7 @@ const componentsKey = "components"
 // populated; Tag/PRID and per-component Naming/Tag/Revision/Group remain
 // zero-valued for the Phase 1 fan-out (partnerrepo.ResolveTagCache) to
 // fill — one runtime WorkGroup per resolved tag, with fully-populated
-// per-component WorkItems.
+// per-component WorkComponents.
 //
 // Two onboard shapes are accepted, disambiguated by the presence of a
 // "components:" mapping under the group key:

@@ -66,7 +66,7 @@ func extractMetadata(component *workplan.WorkComponent, spec map[string]interfac
 	spec["name"] = strings.ToLower(subject.SpecImageName)
 	spec["packager"] = "Azure Container Upstream"
 	spec["vendor"] = "Microsoft Corporation"
-	spec["license"] = component.Group.License
+	spec["license"] = component.ParentGroup.License
 	spec["website"] = repoInfo.GitURL
 	spec["description"] = repoInfo.Description
 	spec["version"] = "${VERSION}"

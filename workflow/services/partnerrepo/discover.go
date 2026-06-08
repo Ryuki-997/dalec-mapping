@@ -2,7 +2,7 @@
 // Discover —
 //
 //   Fetches the source Dockerfile and Makefile from the partner repository for
-//   the workitem's current tag and stores them on component.BuildFiles. Template
+//   the component's current tag and stores them on component.BuildFiles. Template
 //   diffing for BUMP-VERSION is now done against the spec repo's BuildFiles
 //   snapshots (see semver.FindTemplateVersion + specapi.SpecRepoFetchFile),
 //   so the partner repo is only consulted for the in-progress tag.
@@ -31,7 +31,7 @@ import (
 
 // DiscoverBuildFiles fetches the Dockerfile and Makefile from the source repo
 // at component.Tag.Full and stores them on component.BuildFiles. The owning WorkGroup
-// (component.Group) carries the upstream repository URL; the Dockerfile/Makefile
+// (component.ParentGroup) carries the upstream repository URL; the Dockerfile/Makefile
 // sub-paths live on the component itself.
 func DiscoverBuildFiles(component *workplan.WorkComponent) error {
 	dockerfileContent, makefileContent, err := FetchBuildFilesAtTag(component, component.Tag.Full)
@@ -51,7 +51,7 @@ func DiscoverBuildFiles(component *workplan.WorkComponent) error {
 // orchestration layer to fetch the template version's files for comparison.
 func FetchBuildFilesAtTag(component *workplan.WorkComponent, tag string) ([]byte, []byte, error) {
 	componentNaming := component.Naming
-	repoURL := component.Group.Repository
+	repoURL := component.ParentGroup.Repository
 
 	log.Println()
 	log.Printf("── Fetch build files: %s @ %s ──\n", componentNaming.SpecImageName, tag)

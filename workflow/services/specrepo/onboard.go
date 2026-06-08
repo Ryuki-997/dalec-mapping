@@ -99,7 +99,7 @@ func buildGroups(specRepoEntries []interface{}, inputPath string) []workplan.Wor
 // expandGroups dispatches each decoded WorkGroup to partnerrepo.ResolveTagCache
 // for per-tag fan-out. The decoded group carries group-level metadata and
 // the static Components slice; ResolveTagCache emits one runtime WorkGroup
-// per matched tag with PRID, copied metadata, and per-component WorkItems
+// per matched tag with PRID, copied metadata, and per-component WorkComponents
 // whose Naming is fully constructed.
 func expandGroups(onboardGroups []workplan.WorkGroup, partnerOnboardDir string) []workplan.WorkGroup {
 	var runtimeGroups []workplan.WorkGroup

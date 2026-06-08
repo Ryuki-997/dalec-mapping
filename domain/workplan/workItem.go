@@ -12,10 +12,10 @@ import (
 // applied to every component declared under the same group key in
 // onboard.yml. Phase 1 fans each decoded onboard group across its matched
 // tags, emitting one runtime WorkGroup per tag (each with its own PRID and
-// its own list of per-component WorkItems). All shared group-level metadata
+// its own list of per-component WorkComponents). All shared group-level metadata
 // (Repository, TagPatterns, Targets, License, Reviewers) lives here exactly
-// once; per-component helpers read it via component.Group.<field> rather than
-// duplicating it onto every component.
+// once; per-component helpers read it via component.ParentGroup.<field> rather
+// than duplicating it onto every component.
 //
 // The resolved tag itself does NOT live here — it is per-component (component.Tag),
 // consistent with the fact that a tag is a property of the component being
@@ -26,7 +26,7 @@ import (
 // Components is the authoritative iteration target for Phase 2 and Phase 3 —
 // one *WorkComponent per component, all sharing this group's tag. On the
 // transient decoded shape returned by workplan.Decode, Components holds
-// skeleton WorkItems (only Name/DockerfileDir/MakefileDir populated, no
+// skeleton WorkComponents (only Name/DockerfileDir/MakefileDir populated, no
 // Tag/Naming/Group); Phase 1 fan-out clones them into per-tag runtime
 // WorkGroups with fully-populated components.
 type WorkGroup struct {
@@ -62,10 +62,10 @@ type WorkGroup struct {
 //     produced for this component. Phase 3 and observers read Result and treat
 //     every other field as immutable.
 //
-// Group is the back-pointer to the enclosing runtime WorkGroup. Downstream
-// helpers read shared metadata via component.Group.Repository,
-// component.Group.Targets, component.Group.License rather than duplicating those
-// values onto every component.
+// ParentGroup is the back-pointer to the enclosing runtime WorkGroup.
+// Downstream helpers read shared metadata via component.ParentGroup.Repository,
+// component.ParentGroup.Targets, component.ParentGroup.License rather than
+// duplicating those values onto every component.
 //
 // NOTE: The onboard.yml may contain an optional "mar" section with
 // publishing metadata (contactEmail, logoUrl, displayName, description,
@@ -83,7 +83,7 @@ type WorkComponent struct {
 
 	// Back-pointer to the runtime WorkGroup. Zero on decoded skeletons; set
 	// by Phase 1 fan-out.
-	Group *WorkGroup `yaml:"-"`
+	ParentGroup *WorkGroup `yaml:"-"`
 
 	// Per-component runtime data (populated by Phase 1 fan-out).
 	Naming     naming.Naming  `yaml:"-"`

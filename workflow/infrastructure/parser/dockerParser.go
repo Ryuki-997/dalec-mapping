@@ -636,12 +636,6 @@ func extractPackagesFromRuns(runs []string) []string {
 	return packages
 }
 
-// splitShellCommands splits a shell line on && and ; delimiters.
-// splitShellCommands delegates to the shared utility.
-func splitShellCommands(shellLine string) []string {
-	return SplitShellCommands(shellLine)
-}
-
 // ─── Chunk 3 · FINAL LINUX BASE ────────────────────────────────────────────
 
 // DetectFinalLinuxBase identifies the last non-Windows, non-Go, non-intermediate
@@ -757,10 +751,6 @@ func isStageSelfReference(ref string, stages []contents.Stage, currentIdx int) b
 //                                findIntermediateStages()
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Aliases for shared regex patterns from parser/
-var goBuildRe = GoBuildRe
-var lineContinuationRe = LineContinuationRe
-
 // ─── Chunk 5 · MAIN ─────────────────────────────────────────────────────────
 
 // ExtractStaticBuildValues derives a DockerSpec from the parsed Dockerfile.
@@ -836,11 +826,6 @@ func extractGoBinaries(builder contents.Stage, globalArgs map[string]string) []c
 	}
 
 	return binaries
-}
-
-// parseGoBuildCommand delegates to the shared utility.
-func parseGoBuildCommand(cmd string) contents.SpecBinary {
-	return ParseGoBuildCommand(cmd)
 }
 
 // ─── Chunk 7 · PIPELINE STEPS ────────────────────────────────────────────────

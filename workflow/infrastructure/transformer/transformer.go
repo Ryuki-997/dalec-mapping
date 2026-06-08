@@ -8,8 +8,8 @@ import (
 
 // onboardBuildTargets returns the validated build targets as typed BuildTarget values.
 func onboardBuildTargets(component *workplan.WorkComponent) []contents.BuildTarget {
-	targets := make([]contents.BuildTarget, len(component.Group.Targets))
-	for i, t := range component.Group.Targets {
+	targets := make([]contents.BuildTarget, len(component.ParentGroup.Targets))
+	for i, t := range component.ParentGroup.Targets {
 		targets[i] = contents.BuildTarget(t)
 	}
 	return targets
@@ -19,7 +19,7 @@ func onboardBuildTargets(component *workplan.WorkComponent) []contents.BuildTarg
 // Reads all inputs from component (populated incrementally by earlier Phase 2
 // sub-steps); group-level config (Targets, License — onboard.yml inputs
 // that are constant across every WorkComponent in the group) is read via
-// component.Group.
+// component.ParentGroup.
 func TransformToDalec(component *workplan.WorkComponent) parser.DalecSpec {
 	spec := make(parser.DalecSpec)
 

@@ -15,38 +15,38 @@ import (
 // the Makefile parser to extract structured binary info from `go build` commands.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// GoBuildRe matches `go build` commands in shell/recipe lines.
-var GoBuildRe = regexp.MustCompile(`go\s+build\b`)
+// goBuildRe matches `go build` commands in shell/recipe lines.
+var goBuildRe = regexp.MustCompile(`go\s+build\b`)
 
-// GoBuildOutputFlagRe captures the -o <path> argument from a go build command.
-var GoBuildOutputFlagRe = regexp.MustCompile(`-o\s+(\S+)`)
+// goBuildOutputFlagRe captures the -o <path> argument from a go build command.
+var goBuildOutputFlagRe = regexp.MustCompile(`-o\s+(\S+)`)
 
-// GoLdflagsRe captures the -ldflags "..." argument from a go build command.
-var GoLdflagsRe = regexp.MustCompile(`-ldflags\s+["']([^"']+)["']`)
+// goLdflagsRe captures the -ldflags "..." argument from a go build command.
+var goLdflagsRe = regexp.MustCompile(`-ldflags\s+["']([^"']+)["']`)
 
-// GoLdflagsVarRe captures -ldflags ${VAR} (unquoted variable reference).
-var GoLdflagsVarRe = regexp.MustCompile(`-ldflags\s+(\$\{?\w+\}?)`)
+// goLdflagsVarRe captures -ldflags ${VAR} (unquoted variable reference).
+var goLdflagsVarRe = regexp.MustCompile(`-ldflags\s+(\$\{?\w+\}?)`)
 
-// LineContinuationRe matches shell line continuations.
-var LineContinuationRe = regexp.MustCompile(`\\\s*\n\s*`)
+// lineContinuationRe matches shell line continuations.
+var lineContinuationRe = regexp.MustCompile(`\\\s*\n\s*`)
 
-// ParseGoBuildCommand parses a single `go build ...` command into a SpecBinary.
-func ParseGoBuildCommand(cmd string) contents.SpecBinary {
+// parseGoBuildCommand parses a single `go build ...` command into a SpecBinary.
+func parseGoBuildCommand(cmd string) contents.SpecBinary {
 	binary := contents.SpecBinary{
-		BuildCommand: CleanStaticBuildCommand(cmd),
+		BuildCommand: cleanStaticBuildCommand(cmd),
 	}
 
 	// Extract -o <path>
-	if match := GoBuildOutputFlagRe.FindStringSubmatch(cmd); match != nil {
+	if match := goBuildOutputFlagRe.FindStringSubmatch(cmd); match != nil {
 		outputPath := match[1]
 		binary.OutputPath = outputPath
 		binary.Name = path.Base(strings.TrimSuffix(outputPath, "${BIN_SUFFIX}"))
 	}
 
 	// Extract -ldflags "..."
-	if match := GoLdflagsRe.FindStringSubmatch(cmd); match != nil {
+	if match := goLdflagsRe.FindStringSubmatch(cmd); match != nil {
 		binary.LdFlags = match[1]
-	} else if match := GoLdflagsVarRe.FindStringSubmatch(cmd); match != nil {
+	} else if match := goLdflagsVarRe.FindStringSubmatch(cmd); match != nil {
 		binary.LdFlags = match[1]
 	}
 
@@ -69,8 +69,8 @@ func ParseGoBuildCommand(cmd string) contents.SpecBinary {
 	return binary
 }
 
-// CleanStaticBuildCommand strips env assignments and unnecessary prefixes.
-func CleanStaticBuildCommand(cmd string) string {
+// cleanStaticBuildCommand strips env assignments and unnecessary prefixes.
+func cleanStaticBuildCommand(cmd string) string {
 	// Remove GOOS/GOARCH/CGO_ENABLED env prefixes — handled by Dalec.
 	envPrefixes := []string{"GOOS=linux", "GOOS=windows", "GOARCH=amd64", "GOARCH=arm64", "CGO_ENABLED=0", "CGO_ENABLED=1"}
 	for _, prefix := range envPrefixes {
@@ -82,8 +82,8 @@ func CleanStaticBuildCommand(cmd string) string {
 	return cmd
 }
 
-// SplitShellCommands splits a shell line on && and ; delimiters.
-func SplitShellCommands(shellLine string) []string {
+// splitShellCommands splits a shell line on && and ; delimiters.
+func splitShellCommands(shellLine string) []string {
 	// Replace ; with && so we can split on one delimiter.
 	shellLine = strings.ReplaceAll(shellLine, ";", "&&")
 	parts := strings.Split(shellLine, "&&")

@@ -29,19 +29,18 @@ func Lookup(repoURL, fullTag string) (string, error) {
 // LookupCommit returns the cached commit SHA for the given tag without
 // requiring the caller to know which partner repo published it. Walks every
 // cached repo and returns the first match. Used by Phase 2 helpers (e.g.
-// spec.BumpVersion / spec.DetectRevisionBump) which operate on a *WorkComponent
-// in isolation and therefore have no direct reference to the owning
-// WorkGroup.
+// spec.BumpVersion, spec.BumpRevision, orchestration.resolveAction) which
+// operate on a *WorkComponent in isolation and therefore have no direct
+// reference to the owning WorkGroup.
 //
 // Collisions across repos are a partner configuration problem (two repos
 // publishing the same tag literal in the same run); the first hit wins.
 func LookupCommit(fullTag string) (string, error) {
-	for repoURL, repoTags := range Cache {
+	for _, repoTags := range Cache {
 		commitSHA, ok := repoTags[fullTag]
 		if !ok {
 			continue
 		}
-		_ = repoURL
 		return commitSHA, nil
 	}
 	return "", fmt.Errorf("tag %s not found in any cached repo", fullTag)

@@ -3,9 +3,11 @@ package orchestration
 import (
 	"bytes"
 	"log"
+	"regexp"
 
 	"dalec-mapping/domain/buildresult"
 	"dalec-mapping/domain/pathcache"
+	"dalec-mapping/domain/tagcache"
 	"dalec-mapping/domain/workplan"
 	"dalec-mapping/workflow/foundations/logging"
 	"dalec-mapping/workflow/infrastructure/semver"
@@ -47,12 +49,12 @@ func Generate(groups []workplan.WorkGroup) {
 // GenerateOne runs Phase 2 for a single *workplan.WorkComponent and writes the
 // outcome to component.Result. Exposed for testing and for callers that want
 // per-component control. Group-level inputs (partner repo URL, onboard targets,
-// license) are reached via component.Group.
+// license) are reached via component.ParentGroup.
 func GenerateOne(component *workplan.WorkComponent) {
 	logging.PrintComponentBanner(component)
 
-	action, templateMinor := resolveAction(component)
-	component.Result = dispatchAction(action, templateMinor, component)
+	action, templateKey := resolveAction(component)
+	component.Result = dispatchAction(action, templateKey, component)
 }
 
 // ─── Decision step ──────────────────────────────────────────────────────────
@@ -67,32 +69,77 @@ const (
 )
 
 // resolveAction is the single decision point for what happens to a (component, tag) pair.
-// Order of checks:
-//  1. Same version already exists with matching commit → skip
-//  2. Same version exists with different commit       → bump revision
-//  3. Different version + template's BuildFiles match the new tag's source → bump version
-//  4. Otherwise                                       → generate
 //
-// component.Revision is the NEXT revision to create (NextRevision = latest+1 when a
-// prior revision exists, else 1). Therefore, when Revision > 1 the same-version
-// case applies: a spec exists at Revision-1 and we must decide skip vs. bump-revision.
+// First, look up an existing spec for this exact (component, version) in the
+// spec repo's pathcache. If one exists, compare its commit hash against the
+// current tag's commit:
+//   - same commit       → SKIP          (revision = existing)
+//   - different commit  → BUMP REVISION (revision = existing + 1)
+//
+// If no existing spec for this version exists, the tag is new. Discover the
+// partner repo's Dockerfile/Makefile, then check whether a same-major
+// (version, revision) snapshot matches the new tag's files:
+//   - no snapshot found → GENERATE     (revision = 1)
+//   - snapshot matches  → BUMP VERSION (revision = 1)
+//   - snapshot differs  → GENERATE     (revision = 1)
+//
+// On return, component.Revision is finalized for whichever branch was taken,
+// and Naming.Construct has been called exactly once so every Generated field
+// (SpecFileName, SpecFilePath, BranchName, PRTitle) is ready for Phase 3.
 //
 // When the returned action is actionBumpVersion, the second return value is
-// the chosen template "<major>.<minor>" prefix (e.g. "1.6"). For every other
-// action it is the empty string.
+// the chosen template "<version>-<revision>" key (e.g. "1.8.1-1"). For every
+// other action it is the empty string.
 func resolveAction(component *workplan.WorkComponent) (pipelineAction, string) {
-	if component.Revision > 1 {
-		needsRevisionBump, err := spec.DetectRevisionBump(component)
-		if err != nil {
-			log.Fatalf("❌ DetectRevisionBump failed: %v", err)
-		}
-		if needsRevisionBump {
-			return actionBumpRevision, ""
-		}
-		log.Printf("Skipping %s @ %s — spec already up to date\n", component.Naming.SpecImageName, component.Tag.Stripped)
+	action, templateKey := decideAction(component)
+	component.Naming.Construct(component.Tag, component.Revision, component.ParentGroup.GroupName, component.ParentGroup.PRID)
+	return action, templateKey
+}
+
+// decideAction routes to the existing-spec or new-spec branch and sets
+// component.Revision before returning. Naming.Construct is intentionally NOT
+// called here — resolveAction wraps this call and constructs Naming once,
+// regardless of branch.
+func decideAction(component *workplan.WorkComponent) (pipelineAction, string) {
+	existingPath, _, existingRevision, found := semver.FindLatestSpec(component.Naming, regexp.QuoteMeta(component.Tag.Version))
+	if found {
+		return decideForExistingSpec(component, existingPath, existingRevision)
+	}
+	return decideForNewSpec(component)
+}
+
+// decideForExistingSpec compares the commit recorded in the existing spec
+// against the current tag's commit. Equal commits skip (revision pinned to the
+// existing revision); different commits bump (revision = existing + 1).
+func decideForExistingSpec(component *workplan.WorkComponent, existingPath string, existingRevision int) (pipelineAction, string) {
+	existingCommit, err := specapi.SpecRepoFetchCommit(existingPath)
+	if err != nil {
+		log.Fatalf("❌ failed to read existing spec commit: %v", err)
+	}
+	currentCommit, err := tagcache.LookupCommit(component.Tag.Full)
+	if err != nil {
+		log.Fatalf("❌ failed to resolve commit for tag %s: %v", component.Tag.Full, err)
+	}
+
+	if existingCommit == currentCommit {
+		component.Revision = existingRevision
+		log.Printf("Skipping %s @ %s — spec already up to date (R%d)\n",
+			component.Naming.SpecImageName, component.Tag.Stripped, existingRevision)
 		return actionSkip, ""
 	}
 
+	component.Revision = existingRevision + 1
+	log.Printf("Revision bump for %s @ %s: commit %s → %s (R%d → R%d)\n",
+		component.Naming.SpecImageName, component.Tag.Stripped,
+		existingCommit, currentCommit, existingRevision, component.Revision)
+	return actionBumpRevision, ""
+}
+
+// decideForNewSpec discovers the partner repo's build files for the new tag,
+// then diffs them against the highest same-major snapshot to choose between
+// BUMP VERSION (snapshot matches) and GENERATE (no snapshot, or differs).
+// New-spec branches always use revision 1.
+func decideForNewSpec(component *workplan.WorkComponent) (pipelineAction, string) {
 	log.Printf("─── [%s @ %s] Discover build files ───", component.Naming.SpecImageName, component.Tag.Stripped)
 	log.Println("Purpose: Fetching partner-repo Dockerfile/Makefile for this tag")
 
@@ -100,23 +147,25 @@ func resolveAction(component *workplan.WorkComponent) (pipelineAction, string) {
 		log.Fatalf("❌ DiscoverBuildFiles failed: %v", err)
 	}
 
-	templateMinor, found := semver.FindTemplateVersion(component)
+	component.Revision = 1
+
+	templateKey, found := semver.FindTemplateVersion(component)
 	if !found {
 		log.Printf("Result: no BuildFiles snapshot found -> action=GENERATE")
 		log.Println()
 		return actionGenerate, ""
 	}
 
-	templateDF := fetchSnapshot(pathcache.BuildDockerfilePath(component.Naming, templateMinor))
-	templateMF := fetchSnapshot(pathcache.BuildMakefilePath(component.Naming, templateMinor))
+	templateDF := fetchSnapshot(pathcache.BuildDockerfilePath(component.Naming, templateKey))
+	templateMF := fetchSnapshot(pathcache.BuildMakefilePath(component.Naming, templateKey))
 
 	if buildFilesMatch(component, templateDF, templateMF) {
-		log.Printf("Result: template minor=%s, BuildFiles match -> action=BUMP VERSION", templateMinor)
+		log.Printf("Result: template=%s, BuildFiles match -> action=BUMP VERSION", templateKey)
 		log.Println()
-		return actionBumpVersion, templateMinor
+		return actionBumpVersion, templateKey
 	}
 
-	log.Printf("Result: template minor=%s, BuildFiles differ -> action=GENERATE", templateMinor)
+	log.Printf("Result: template=%s, BuildFiles differ -> action=GENERATE", templateKey)
 	log.Println()
 	return actionGenerate, ""
 }
@@ -166,25 +215,25 @@ func buildFilesMatch(component *workplan.WorkComponent, templateDF, templateMF [
 
 // ─── Action dispatch ────────────────────────────────────────────────────────
 
-func dispatchAction(action pipelineAction, templateMinor string, component *workplan.WorkComponent) buildresult.BuildResult {
+func dispatchAction(action pipelineAction, templateKey string, component *workplan.WorkComponent) buildresult.BuildResult {
 	switch action {
 	case actionSkip:
 		return buildresult.BuildResult{Outcome: buildresult.OutcomeSkipped}
 	case actionBumpRevision:
 		return runBumpRevision(component)
 	case actionBumpVersion:
-		return runBumpVersion(component, templateMinor)
+		return runBumpVersion(component, templateKey)
 	case actionGenerate:
 		return runGenerate(component)
 	}
 	return buildresult.BuildResult{Outcome: buildresult.OutcomeUnknown}
 }
 
-func runBumpVersion(component *workplan.WorkComponent, templateMinor string) buildresult.BuildResult {
+func runBumpVersion(component *workplan.WorkComponent, templateKey string) buildresult.BuildResult {
 	log.Printf("─── [%s @ %s] Bump version ───", component.Naming.SpecImageName, component.Tag.Stripped)
 	log.Println("Purpose: Copying template spec with updated commit hash (no content change)")
 
-	specBytes, err := spec.BumpVersion(component, templateMinor)
+	specBytes, err := spec.BumpVersion(component, templateKey)
 	if err != nil {
 		log.Fatalf("❌ Version bump failed: %v", err)
 	}

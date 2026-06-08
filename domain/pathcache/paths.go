@@ -24,27 +24,27 @@ func OnboardAPIPath(suffixFmt string, args ...any) string {
 }
 
 // BuildDockerfilePath returns the snapshot path for a component's Dockerfile
-// under <OnboardDir>/buildfiles/<majorMinor>/. A single snapshot directory
-// is shared by every patch on the same minor, so callers pass the already-
-// computed "<major>.<minor>" string (TagSet.MajorMinor, or the template
-// minor resolved by semver.FindTemplateVersion).
-// Returns "" when majorMinor is empty.
-func BuildDockerfilePath(n naming.Naming, majorMinor string) string {
-	if majorMinor == "" {
+// under <OnboardDir>/buildfiles/<versionRevision>.df. One snapshot is kept
+// per (version, revision) of an existing spec, so callers pass the already-
+// computed "<version>-<revision>" string (Naming.VersionRevision for a fresh
+// commit, or the template key resolved by semver.FindTemplateVersion).
+// Returns "" when versionRevision is empty.
+func BuildDockerfilePath(n naming.Naming, versionRevision string) string {
+	if versionRevision == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s/buildfiles/%s/%s.df", n.OnboardDir, majorMinor, n.SpecImageName)
+	return fmt.Sprintf("%s/buildfiles/%s.df", n.OnboardDir, versionRevision)
 }
 
 // BuildMakefilePath returns the snapshot path for a component's Makefile
-// under <OnboardDir>/buildfiles/<majorMinor>/. A single snapshot directory
-// is shared by every patch on the same minor, so callers pass the already-
-// computed "<major>.<minor>" string (TagSet.MajorMinor, or the template
-// minor resolved by semver.FindTemplateVersion).
-// Returns "" when majorMinor is empty.
-func BuildMakefilePath(n naming.Naming, majorMinor string) string {
-	if majorMinor == "" {
+// under <OnboardDir>/buildfiles/<versionRevision>.mk. One snapshot is kept
+// per (version, revision) of an existing spec, so callers pass the already-
+// computed "<version>-<revision>" string (Naming.VersionRevision for a fresh
+// commit, or the template key resolved by semver.FindTemplateVersion).
+// Returns "" when versionRevision is empty.
+func BuildMakefilePath(n naming.Naming, versionRevision string) string {
+	if versionRevision == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s/buildfiles/%s/%s.mk", n.OnboardDir, majorMinor, n.SpecImageName)
+	return fmt.Sprintf("%s/buildfiles/%s.mk", n.OnboardDir, versionRevision)
 }

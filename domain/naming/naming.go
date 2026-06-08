@@ -2,7 +2,6 @@ package naming
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	"dalec-mapping/domain/tags"
@@ -75,6 +74,10 @@ func (n *Naming) DeriveAtomic() {
 // in Phase 1 and shared by every component in that group, so BranchName/PRTitle
 // collapse onto one pull request.
 //
+// Called once per component from Phase 2's resolveAction, after the action
+// branch is decided and the component's Revision is finalized. Phase 1
+// leaves every Generated field empty; Phase 3 reads them but never mutates.
+//
 // Spec file paths and version labels use the numeric semver (no "v" prefix)
 // to match the remote spec repo's storage convention.
 func (n *Naming) Construct(tag tags.TagSet, revision int, groupName, prID string) {
@@ -85,34 +88,6 @@ func (n *Naming) Construct(tag tags.TagSet, revision int, groupName, prID string
 	n.SpecFilePath = fmt.Sprintf("%s/%s", n.OnboardDir, n.SpecFileName)
 	n.BranchName = fmt.Sprintf("dalec/%s/%s/%s", n.FolderPath, n.VersionRevision, prID)
 	n.PRTitle = fmt.Sprintf("[Dalec][%s] %s @ %s", prID, n.DisplayName, n.VersionRevision)
-}
-
-// SpecFilePathAt returns the spec file path for an arbitrary (version, revision)
-// pair using this Naming's OnboardDir and SpecImageName. Callers must pass
-// the numeric form already stripped of any leading "v" — TagSet.Version is
-// the canonical source. Useful for callers that need to address a different
-// revision than the one currently bound to the Naming (e.g. the prior
-// revision during a bump).
-func (n Naming) SpecFilePathAt(version string, revision int) string {
-	return fmt.Sprintf("%s/%s-%s-%d-specfile.yml", n.OnboardDir, n.SpecImageName, version, revision)
-}
-
-// SpecFilePathRegex compiles a regex anchored to this component's OnboardDir
-// and SpecImageName that matches spec file paths of the shape:
-//
-//	<OnboardDir>/<SpecImageName>-<versionPattern>-<revisionPattern>-specfile.yml
-//
-// versionPattern and revisionPattern are raw regex fragments — typically
-// capture groups like `(\d+\.\d+\.\d+)` or fixed strings (callers are
-// responsible for quoting concrete values via regexp.QuoteMeta).
-func (n Naming) SpecFilePathRegex(versionPattern, revisionPattern string) *regexp.Regexp {
-	return regexp.MustCompile(fmt.Sprintf(
-		`^%s/%s-%s-%s-specfile\.yml$`,
-		regexp.QuoteMeta(n.OnboardDir),
-		regexp.QuoteMeta(n.SpecImageName),
-		versionPattern,
-		revisionPattern,
-	))
 }
 
 // deriveFolderPath computes the branch folder path from OnboardDir by stripping

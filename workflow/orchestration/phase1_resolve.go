@@ -20,7 +20,6 @@
 package orchestration
 
 import (
-	"fmt"
 	"log"
 
 	"dalec-mapping/domain/workplan"
@@ -48,7 +47,9 @@ func Resolve(inputPath string) []workplan.WorkGroup {
 }
 
 // logTagCache prints the "Tag cache (N tags across M components)" summary
-// by walking the flat group.Components list produced by Phase 1.
+// by walking the flat group.Components list produced by Phase 1. Revision is
+// not yet decided at the end of Phase 1 (Phase 2's resolveAction sets it),
+// so only the stripped tag is shown here.
 func logTagCache(groups []workplan.WorkGroup) {
 	tagsByComponent := make(map[string][]string)
 	totalItems := 0
@@ -56,7 +57,7 @@ func logTagCache(groups []workplan.WorkGroup) {
 		for _, component := range group.Components {
 			tagsByComponent[component.Naming.SpecImageName] = append(
 				tagsByComponent[component.Naming.SpecImageName],
-				fmt.Sprintf("%s (R%d)", component.Tag.Stripped, component.Revision),
+				component.Tag.Stripped,
 			)
 			totalItems++
 		}
