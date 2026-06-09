@@ -2,6 +2,7 @@ package pathcache
 
 import (
 	"fmt"
+	"strings"
 
 	"dalec-mapping/config"
 	"dalec-mapping/domain/naming"
@@ -24,27 +25,49 @@ func OnboardAPIPath(suffixFmt string, args ...any) string {
 }
 
 // BuildDockerfilePath returns the snapshot path for a component's Dockerfile
-// under <OnboardDir>/buildfiles/<versionRevision>.df. One snapshot is kept
-// per (version, revision) of an existing spec, so callers pass the already-
-// computed "<version>-<revision>" string (Naming.VersionRevision for a fresh
-// commit, or the template key resolved by semver.FindTemplateVersion).
-// Returns "" when versionRevision is empty.
+// under <OnboardDir>/buildfiles/<majorMinor>/<versionRevision>.df. One
+// snapshot is kept per (version, revision) of an existing spec, bucketed by
+// the version's major.minor directory. Callers pass the already-computed
+// "<version>-<revision>" string (Naming.VersionRevision for a fresh commit,
+// or the template key resolved by semver.FindTemplateVersion); the
+// "<major>.<minor>" parent directory is derived from versionRevision.
+// Returns "" when versionRevision is empty or malformed.
 func BuildDockerfilePath(n naming.Naming, versionRevision string) string {
-	if versionRevision == "" {
+	majorMinor, ok := majorMinorFromVersionRevision(versionRevision)
+	if !ok {
 		return ""
 	}
-	return fmt.Sprintf("%s/buildfiles/%s.df", n.OnboardDir, versionRevision)
+	return fmt.Sprintf("%s/buildfiles/%s/%s.df", n.OnboardDir, majorMinor, versionRevision)
 }
 
 // BuildMakefilePath returns the snapshot path for a component's Makefile
-// under <OnboardDir>/buildfiles/<versionRevision>.mk. One snapshot is kept
-// per (version, revision) of an existing spec, so callers pass the already-
-// computed "<version>-<revision>" string (Naming.VersionRevision for a fresh
-// commit, or the template key resolved by semver.FindTemplateVersion).
-// Returns "" when versionRevision is empty.
+// under <OnboardDir>/buildfiles/<majorMinor>/<versionRevision>.mk. See
+// BuildDockerfilePath for the directory derivation rules.
+// Returns "" when versionRevision is empty or malformed.
 func BuildMakefilePath(n naming.Naming, versionRevision string) string {
-	if versionRevision == "" {
+	majorMinor, ok := majorMinorFromVersionRevision(versionRevision)
+	if !ok {
 		return ""
 	}
-	return fmt.Sprintf("%s/buildfiles/%s.mk", n.OnboardDir, versionRevision)
+	return fmt.Sprintf("%s/buildfiles/%s/%s.mk", n.OnboardDir, majorMinor, versionRevision)
+}
+
+// majorMinorFromVersionRevision extracts the "<major>.<minor>" prefix from a
+// "<version>-<revision>" key like "1.8.1-1" → "1.8". Returns ("", false) when
+// the input is empty, has no '-' separator, or whose version segment has fewer
+// than two dot-separated parts.
+func majorMinorFromVersionRevision(versionRevision string) (string, bool) {
+	if versionRevision == "" {
+		return "", false
+	}
+	dashIndex := strings.IndexByte(versionRevision, '-')
+	if dashIndex <= 0 {
+		return "", false
+	}
+	version := versionRevision[:dashIndex]
+	parts := strings.SplitN(version, ".", 3)
+	if len(parts) < 2 {
+		return "", false
+	}
+	return parts[0] + "." + parts[1], true
 }

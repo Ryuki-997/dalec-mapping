@@ -69,13 +69,11 @@ func ResolveTagCache(group *workplan.WorkGroup, partnerOnboardDir string) []work
 }
 
 // logGroupOnboardData logs a single per-group line describing the inputs
-// resolved from the onboard.yml entry. Component-level identity is logged
-// later per component during fan-out.
+// resolved from the onboard.yml entry. Include/exclude patterns are intentionally
+// omitted — excluded tags are already reported inline via `Excluded tag "x"`.
 func logGroupOnboardData(group *workplan.WorkGroup) {
-	log.Printf("Onboard Data: %s repo=%s include=%v exclude=%v components=%d\n",
-		group.GroupName, group.Repository,
-		group.TagPatterns.Include, group.TagPatterns.Exclude,
-		len(group.Components))
+	log.Printf("  Onboard: %s (repo=%s, %d component(s))",
+		group.GroupName, group.Repository, len(group.Components))
 }
 
 // fetchComponentTags returns the tag→commit map for a repository URL.
@@ -86,15 +84,15 @@ func fetchComponentTags(repoURL string) map[string]string {
 		return repoTags
 	}
 
-	log.Printf("Fetching tags for %s...\n", repoURL)
+	log.Printf("  Fetching tags for %s...", repoURL)
 	repoTags, err := semver.FetchRepoTags(repoURL)
 	if err != nil {
-		log.Printf("⚠️  Failed to fetch tags for %s: %v\n", repoURL, err)
+		log.Printf("  ⚠️  Failed to fetch tags for %s: %v", repoURL, err)
 		tagcache.Cache[repoURL] = make(map[string]string)
 		return nil
 	}
 
-	log.Printf("✅ Fetched %d tags for %s\n", len(repoTags), repoURL)
+	log.Printf("  ✅ Fetched %d tags for %s", len(repoTags), repoURL)
 	tagcache.Cache[repoURL] = repoTags
 	return repoTags
 }
@@ -149,7 +147,8 @@ func buildRuntimeGroup(group *workplan.WorkGroup, partnerOnboardDir, tagName str
 // under the onboard group, all sharing the supplied tag and the runtime
 // WorkGroup back-pointer. Per-component baseNaming is derived from
 // partnerOnboardDir + "/" + skeleton.Name; Revision is left at zero (Phase 2's
-// resolveAction sets it once the action branch is decided).
+// resolveAction sets it once the action branch is decided). Components whose
+// derived OnboardDir lacks a "specs/" anchor are skipped with a warning.
 func buildComponentsForTag(group *workplan.WorkGroup, runtimeGroup *workplan.WorkGroup, partnerOnboardDir string, tag tags.TagSet) []*workplan.WorkComponent {
 	components := make([]*workplan.WorkComponent, 0, len(group.Components))
 	for _, skeleton := range group.Components {
@@ -157,6 +156,10 @@ func buildComponentsForTag(group *workplan.WorkGroup, runtimeGroup *workplan.Wor
 			OnboardDir: partnerOnboardDir + "/" + skeleton.Name,
 		}
 		baseNaming.DeriveAtomic()
+		if baseNaming.SpecImageName == "" {
+			log.Printf("⚠️  Skipping %s: no \"specs/\" anchor in onboard path %q", skeleton.Name, baseNaming.OnboardDir)
+			continue
+		}
 
 		component := &workplan.WorkComponent{
 			Name:          skeleton.Name,
@@ -167,7 +170,6 @@ func buildComponentsForTag(group *workplan.WorkGroup, runtimeGroup *workplan.Wor
 			Tag:           tag,
 		}
 		components = append(components, component)
-		log.Printf("Queued: %s @ %s\n", baseNaming.SpecImageName, tag.Stripped)
 	}
 	return components
 }

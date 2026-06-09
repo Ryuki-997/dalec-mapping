@@ -30,9 +30,13 @@ type Naming struct {
 	// e.g. "containernetworking" / "azure-cns" for OnboardDir
 	// "specs/containernetworking/azure-cns".
 
-	// SpecRepository is the partner folder name beneath "specs/"
-	// (e.g. "containernetworking"). For single-component partner folders
-	// this equals the SpecImageName.
+	// SpecRepository is the partner path under the first "specs/" segment
+	// in OnboardDir with the leaf component segment stripped (e.g.
+	// "containernetworking" for OnboardDir
+	// "specs/containernetworking/azure-cns", or "aks/fleet" for
+	// "specs/aks/fleet/fleet-networking"). For single-segment partner
+	// folders this equals the SpecImageName. Empty when OnboardDir lacks
+	// a "specs/" anchor — callers should treat that as a skip signal.
 	SpecRepository string
 
 	// SpecImageName is the component's leaf folder name
@@ -50,16 +54,28 @@ type Naming struct {
 	PRTitle         string // e.g. "[Dalec][20260505-72c644] aks-node-controller @ 0.0.1-1"
 }
 
-// DeriveAtomic fills the atomic section in-place from OnboardDir.
-// SpecImageName is the last path segment; SpecRepository is the partner
-// folder name immediately under "specs/". Safe to call repeatedly.
+// DeriveAtomic fills the atomic section in-place from OnboardDir, anchored
+// on the first "specs/" segment. SpecImageName is the last path segment
+// after that anchor; SpecRepository is the remainder (everything between
+// the anchor and the leaf, joined with "/"). For OnboardDirs with a single
+// segment after the anchor, SpecRepository equals SpecImageName. When the
+// anchor is missing, both fields are left empty so the caller can skip the
+// component. Safe to call repeatedly.
 func (n *Naming) DeriveAtomic() {
-	trimmed := strings.TrimPrefix(n.OnboardDir, "specs/")
-	segments := strings.Split(trimmed, "/")
+	const anchor = "specs/"
+	anchorIdx := strings.Index(n.OnboardDir, anchor)
+	if anchorIdx < 0 {
+		n.SpecRepository = ""
+		n.SpecImageName = ""
+		return
+	}
+
+	relative := n.OnboardDir[anchorIdx+len(anchor):]
+	segments := strings.Split(relative, "/")
 	specImageName := segments[len(segments)-1]
 	specRepository := specImageName
 	if len(segments) >= 2 {
-		specRepository = segments[len(segments)-2]
+		specRepository = strings.Join(segments[:len(segments)-1], "/")
 	}
 
 	n.SpecRepository = specRepository

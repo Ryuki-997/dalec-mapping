@@ -15,7 +15,9 @@ import (
 // the Makefile parser to extract structured binary info from `go build` commands.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// goBuildRe matches `go build` commands in shell/recipe lines.
+// goBuildRe is a presence detector for `go build` in any shell or Dockerfile
+// RUN line; it has no capture groups. For the Makefile-recipe variant that
+// captures the build target argument, see makefileGoBuildRe in makefileParser.go.
 var goBuildRe = regexp.MustCompile(`go\s+build\b`)
 
 // goBuildOutputFlagRe captures the -o <path> argument from a go build command.

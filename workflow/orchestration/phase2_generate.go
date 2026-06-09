@@ -123,15 +123,15 @@ func decideForExistingSpec(component *workplan.WorkComponent, existingPath strin
 
 	if existingCommit == currentCommit {
 		component.Revision = existingRevision
-		log.Printf("Skipping %s @ %s — spec already up to date (R%d)\n",
+		log.Printf("  %s @ %s -> SKIP (spec already up to date at R%d)",
 			component.Naming.SpecImageName, component.Tag.Stripped, existingRevision)
 		return actionSkip, ""
 	}
 
 	component.Revision = existingRevision + 1
-	log.Printf("Revision bump for %s @ %s: commit %s → %s (R%d → R%d)\n",
+	log.Printf("  %s @ %s -> BUMP REVISION (commit %s -> %s, R%d -> R%d)",
 		component.Naming.SpecImageName, component.Tag.Stripped,
-		existingCommit, currentCommit, existingRevision, component.Revision)
+		shortSHA(existingCommit), shortSHA(currentCommit), existingRevision, component.Revision)
 	return actionBumpRevision, ""
 }
 
@@ -140,9 +140,6 @@ func decideForExistingSpec(component *workplan.WorkComponent, existingPath strin
 // BUMP VERSION (snapshot matches) and GENERATE (no snapshot, or differs).
 // New-spec branches always use revision 1.
 func decideForNewSpec(component *workplan.WorkComponent) (pipelineAction, string) {
-	log.Printf("─── [%s @ %s] Discover build files ───", component.Naming.SpecImageName, component.Tag.Stripped)
-	log.Println("Purpose: Fetching partner-repo Dockerfile/Makefile for this tag")
-
 	if err := partnerrepo.DiscoverBuildFiles(component); err != nil {
 		log.Fatalf("❌ DiscoverBuildFiles failed: %v", err)
 	}
@@ -151,23 +148,33 @@ func decideForNewSpec(component *workplan.WorkComponent) (pipelineAction, string
 
 	templateKey, found := semver.FindTemplateVersion(component)
 	if !found {
-		log.Printf("Result: no BuildFiles snapshot found -> action=GENERATE")
-		log.Println()
+		log.Printf("  %s @ %s -> GENERATE (no template snapshot)",
+			component.Naming.SpecImageName, component.Tag.Stripped)
 		return actionGenerate, ""
 	}
 
 	templateDF := fetchSnapshot(pathcache.BuildDockerfilePath(component.Naming, templateKey))
 	templateMF := fetchSnapshot(pathcache.BuildMakefilePath(component.Naming, templateKey))
 
-	if buildFilesMatch(component, templateDF, templateMF) {
-		log.Printf("Result: template=%s, BuildFiles match -> action=BUMP VERSION", templateKey)
-		log.Println()
+	matches, reason := buildFilesMatch(templateDF, templateMF, component.BuildFiles.Dockerfile.Source, component.BuildFiles.Makefile.Source)
+	if matches {
+		log.Printf("  %s @ %s -> BUMP VERSION (template %s matches)",
+			component.Naming.SpecImageName, component.Tag.Stripped, templateKey)
 		return actionBumpVersion, templateKey
 	}
 
-	log.Printf("Result: template=%s, BuildFiles differ -> action=GENERATE", templateKey)
-	log.Println()
+	log.Printf("  %s @ %s -> GENERATE (template %s differs: %s)",
+		component.Naming.SpecImageName, component.Tag.Stripped, templateKey, reason)
 	return actionGenerate, ""
+}
+
+// shortSHA returns the first 7 chars of a commit SHA, or the original when
+// shorter. Used purely for log line brevity.
+func shortSHA(sha string) string {
+	if len(sha) <= 7 {
+		return sha
+	}
+	return sha[:7]
 }
 
 // fetchSnapshot reads a BuildFiles snapshot from the spec repo when pathcache
@@ -184,95 +191,65 @@ func fetchSnapshot(path string) []byte {
 	return content
 }
 
-// buildFilesMatch returns true when the freshly-fetched partner Dockerfile and
-// Makefile (on component.BuildFiles.*.Source) byte-equal the template tag's files
-// after trimming trailing newlines.
-func buildFilesMatch(component *workplan.WorkComponent, templateDF, templateMF []byte) bool {
-	freshDF := component.BuildFiles.Dockerfile.Source
-	freshMF := component.BuildFiles.Makefile.Source
-
+// buildFilesMatch reports whether the freshly-fetched partner Dockerfile and
+// Makefile byte-equal the template tag's files after trimming trailing
+// newlines. On mismatch the second return value names which file(s) differ
+// so the caller can include it in the consolidated decision line.
+func buildFilesMatch(templateDF, templateMF, freshDF, freshMF []byte) (bool, string) {
 	if len(templateDF) == 0 && len(templateMF) == 0 {
-		log.Printf("⚠️  Template tag has no Dockerfile/Makefile — forcing GENERATE")
-		return false
+		return false, "template has no Dockerfile/Makefile"
 	}
 
-	if len(templateDF) > 0 {
-		if len(freshDF) == 0 || !bytes.Equal(bytes.TrimRight(freshDF, "\n"), bytes.TrimRight(templateDF, "\n")) {
-			log.Printf("Dockerfile changed for %s\n", component.Naming.SpecImageName)
-			return false
-		}
-	}
-	if len(templateMF) > 0 {
-		if len(freshMF) == 0 || !bytes.Equal(bytes.TrimRight(freshMF, "\n"), bytes.TrimRight(templateMF, "\n")) {
-			log.Printf("Makefile changed for %s\n", component.Naming.SpecImageName)
-			return false
-		}
-	}
+	dockerfileDiffers := len(templateDF) > 0 &&
+		(len(freshDF) == 0 || !bytes.Equal(bytes.TrimRight(freshDF, "\n"), bytes.TrimRight(templateDF, "\n")))
+	makefileDiffers := len(templateMF) > 0 &&
+		(len(freshMF) == 0 || !bytes.Equal(bytes.TrimRight(freshMF, "\n"), bytes.TrimRight(templateMF, "\n")))
 
-	log.Printf("✅ Build files unchanged for %s\n", component.Naming.SpecImageName)
-	return true
+	switch {
+	case dockerfileDiffers && makefileDiffers:
+		return false, "Dockerfile+Makefile"
+	case dockerfileDiffers:
+		return false, "Dockerfile"
+	case makefileDiffers:
+		return false, "Makefile"
+	}
+	return true, ""
 }
 
 // ─── Action dispatch ────────────────────────────────────────────────────────
 
+// dispatchAction executes the chosen pipeline action and returns the resulting
+// BuildResult. The decision banner was already emitted by resolveAction; this
+// step only runs the work and confirms readiness.
 func dispatchAction(action pipelineAction, templateKey string, component *workplan.WorkComponent) buildresult.BuildResult {
 	switch action {
 	case actionSkip:
 		return buildresult.BuildResult{Outcome: buildresult.OutcomeSkipped}
+
 	case actionBumpRevision:
-		return runBumpRevision(component)
+		specBytes, err := spec.BumpRevision(component)
+		if err != nil {
+			log.Fatalf("❌ Revision bump failed: %v", err)
+		}
+		log.Printf("  ✅ Spec ready: %s @ %s-%d", component.Naming.SpecImageName, component.Tag.Version, component.Revision)
+		return buildresult.BuildResult{Outcome: buildresult.OutcomeBumpRevision, SpecContent: specBytes}
+
 	case actionBumpVersion:
-		return runBumpVersion(component, templateKey)
+		specBytes, err := spec.BumpVersion(component, templateKey)
+		if err != nil {
+			log.Fatalf("❌ Version bump failed: %v", err)
+		}
+		log.Printf("  ✅ Spec ready: %s @ %s-%d", component.Naming.SpecImageName, component.Tag.Version, component.Revision)
+		return buildresult.BuildResult{Outcome: buildresult.OutcomeBumpVersion, SpecContent: specBytes}
+
 	case actionGenerate:
-		return runGenerate(component)
+		specBytes, _, err := spec.GenerateSpec(component)
+		if err != nil {
+			log.Printf("  ⚠️  Skipping %s @ %s: %v", component.Naming.SpecImageName, component.Tag.Full, err)
+			return buildresult.BuildResult{Outcome: buildresult.OutcomeFailed}
+		}
+		log.Printf("  ✅ Spec ready: %s @ %s-%d", component.Naming.SpecImageName, component.Tag.Version, component.Revision)
+		return buildresult.BuildResult{Outcome: buildresult.OutcomeGenerated, SpecContent: specBytes}
 	}
 	return buildresult.BuildResult{Outcome: buildresult.OutcomeUnknown}
-}
-
-func runBumpVersion(component *workplan.WorkComponent, templateKey string) buildresult.BuildResult {
-	log.Printf("─── [%s @ %s] Bump version ───", component.Naming.SpecImageName, component.Tag.Stripped)
-	log.Println("Purpose: Copying template spec with updated commit hash (no content change)")
-
-	specBytes, err := spec.BumpVersion(component, templateKey)
-	if err != nil {
-		log.Fatalf("❌ Version bump failed: %v", err)
-	}
-
-	return newSpecResult(component, buildresult.OutcomeBumpVersion, specBytes)
-}
-
-func runBumpRevision(component *workplan.WorkComponent) buildresult.BuildResult {
-	log.Printf("─── [%s @ %s] Bump revision ───", component.Naming.SpecImageName, component.Tag.Stripped)
-	log.Println("Purpose: Same version tag re-pushed with new commit — incrementing revision")
-
-	specBytes, err := spec.BumpRevision(component)
-	if err != nil {
-		log.Fatalf("❌ Revision bump failed: %v", err)
-	}
-
-	return newSpecResult(component, buildresult.OutcomeBumpRevision, specBytes)
-}
-
-func runGenerate(component *workplan.WorkComponent) buildresult.BuildResult {
-	log.Printf("─── [%s @ %s] Generate spec ───", component.Naming.SpecImageName, component.Tag.Stripped)
-	log.Println("Purpose: Parsing Dockerfile/Makefile and generating full dalec spec from scratch")
-
-	specBytes, _, err := spec.GenerateSpec(component)
-	if err != nil {
-		log.Printf("⚠️  Skipping %s @ %s: %v", component.Naming.SpecImageName, component.Tag.Full, err)
-		return buildresult.BuildResult{Outcome: buildresult.OutcomeFailed}
-	}
-
-	return newSpecResult(component, buildresult.OutcomeGenerated, specBytes)
-}
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-// newSpecResult packages encoded spec bytes into a buildresult.BuildResult.
-func newSpecResult(component *workplan.WorkComponent, outcome buildresult.Outcome, specContent []byte) buildresult.BuildResult {
-	log.Printf("✅ Spec ready: %s @ %s-%d", component.Naming.SpecImageName, component.Tag.Version, component.Revision)
-	return buildresult.BuildResult{
-		Outcome:     outcome,
-		SpecContent: specContent,
-	}
 }

@@ -42,21 +42,34 @@ import (
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // --- Regex: variable references ---
+//
+// These five patterns intentionally overlap. They are NOT duplicates — each
+// targets a specific scan-or-replace job and the regex semantics differ:
+//
+//   bareVarRe         REPLACE   $VAR              uppercase only (dalec args)
+//   varRefRe          SCAN      ${VAR} or $(VAR)  any case, captures name
+//   parenVarRe        REPLACE   $(VAR)            paren-form only, any case
+//   validVarRefRe     SCAN      ${anything}       allows ${VAR:-default}
+//   innerQuotedVarRe  REPLACE   "$VAR" / "${VAR}" strips surrounding quotes
 
 // bareVarRe matches bare $VAR references with uppercase names (dalec args),
 // skipping lowercase shell variables like $f in for-loops.
 var bareVarRe = regexp.MustCompile(`\$([A-Z_][A-Z0-9_]*)`)
 
-// varRefRe matches ${VAR} or $(VAR) references for scanning referenced args.
+// varRefRe scans for ${VAR} or $(VAR) references in a single pass; capture
+// group 1 is the variable name. Used to discover which args a command references.
 var varRefRe = regexp.MustCompile(`\$[{(]([A-Za-z_][A-Za-z0-9_]*)[})]`)
 
-// parenVarRe matches $(VAR) Makefile-style variable references for conversion to ${VAR}.
+// parenVarRe matches $(VAR) Makefile-style references only (not ${VAR}) so
+// they can be rewritten to ${VAR} without disturbing already-correct refs.
 var parenVarRe = regexp.MustCompile(`\$\(([A-Za-z_][A-Za-z0-9_]*)\)`)
 
-// validVarRefRe matches all ${...} variable references (for brace-stripping protection).
+// validVarRefRe matches any ${...} reference (including ${VAR:-default}) and
+// is used to protect braced refs from brace-stripping passes.
 var validVarRefRe = regexp.MustCompile(`\$\{[^}]+\}`)
 
-// innerQuotedVarRe matches double-quoted $VAR or ${VAR} references.
+// innerQuotedVarRe matches a double-quoted $VAR or ${VAR} reference so the
+// surrounding quotes can be removed while keeping the reference intact.
 var innerQuotedVarRe = regexp.MustCompile(`"(\$\{?\w+\}?)"`) //nolint:gocritic
 
 // --- Regex: command structure ---

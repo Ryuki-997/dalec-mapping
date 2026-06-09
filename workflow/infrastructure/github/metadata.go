@@ -4,7 +4,6 @@ package github
 
 import (
 	"fmt"
-	"log"
 	"strings"
 
 	"dalec-mapping/domain/repository"
@@ -92,8 +91,6 @@ func fetchSourceGenerator(info *repository.RepoInfo) error {
 	}
 
 	if info.ComponentPath != "" {
-		log.Printf("Searching for source generator under component path '%s'...\n", info.ComponentPath)
-
 		if gen, ok := scanItems(info.ComponentPath); ok {
 			info.Generator = gen
 			return nil

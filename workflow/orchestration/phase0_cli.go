@@ -10,18 +10,26 @@ package orchestration
 
 import (
 	"flag"
-	"log"
 	"os"
 
 	"dalec-mapping/config"
+	"dalec-mapping/workflow/foundations/logging"
 	"dalec-mapping/workflow/services/specrepo"
 
 	"github.com/joho/godotenv"
 )
 
+// CLIFlags captures the resolved command-line flag values.
+type CLIFlags struct {
+	InputPath string
+	PatchMode bool
+	NoPublish bool
+}
+
 // ParseFlags registers and parses CLI flags, returning the resolved values.
-// It also writes the force-PR flag into specrepo.ForcePR for the publish phase.
-func ParseFlags() (inputPath string, patchMode bool, noPublish bool) {
+// It also writes the force-PR flag into specrepo.ForcePR for the publish phase
+// and overrides config.OnboardBranch when -branch is supplied.
+func ParseFlags() CLIFlags {
 	inputPathFlag := flag.String("path", "", "Input path to search for onboarding files (e.g. containernetworking and containernetworking/azure-cns both work). Omit to fetch all under specs/")
 	patchModeFlag := flag.Bool("patch", false, "Run patching workflow: fetch MCR images and scan for vulnerabilities")
 	force := flag.Bool("force", false, "Force create a PR regardless of whether one already exists")
@@ -32,20 +40,28 @@ func ParseFlags() (inputPath string, patchMode bool, noPublish bool) {
 	if *branch != "" {
 		config.OnboardBranch = *branch
 	}
-	return *inputPathFlag, *patchModeFlag, *noPublishFlag
+	return CLIFlags{
+		InputPath: *inputPathFlag,
+		PatchMode: *patchModeFlag,
+		NoPublish: *noPublishFlag,
+	}
 }
 
-// LoadEnv loads environment variables from a .env file and validates required
-// tokens are present.
-func LoadEnv() {
+// LoadEnv loads environment variables from a .env file and gathers the init
+// facts (working dir, env-file presence, GH_TOKEN presence, target branch,
+// publish mode) into a logging.InitInfo for the init banner. Silent — the
+// caller emits the banner once via logging.PrintInitBanner.
+func LoadEnv(flags CLIFlags) logging.InitInfo {
 	workingDir, _ := os.Getwd()
-	log.Printf("Working directory: %s", workingDir)
+	envLoaded := godotenv.Load() == nil
+	ghTokenPresent := os.Getenv("GH_TOKEN") != ""
 
-	if err := godotenv.Load(); err != nil {
-		log.Printf("No .env file found: %v", err)
-	}
-
-	if token := os.Getenv("GH_TOKEN"); token == "" {
-		log.Printf("⚠️  GH_TOKEN is not set — GitHub API calls will be unauthenticated")
+	return logging.InitInfo{
+		WorkingDir:     workingDir,
+		OnboardPath:    flags.InputPath,
+		SpecBranch:     config.OnboardBranch,
+		PublishEnabled: !flags.NoPublish,
+		GHTokenPresent: ghTokenPresent,
+		EnvLoaded:      envLoaded,
 	}
 }

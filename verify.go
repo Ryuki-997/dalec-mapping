@@ -12,6 +12,25 @@ import (
 	"dalec-mapping/domain/workplan"
 )
 
+// testStatus is the three-state outcome of a single golden-diff check.
+type testStatus int
+
+const (
+	testPass testStatus = iota
+	testFail
+	testSkip
+)
+
+// testResult is a single record accumulated by observeResults and rendered
+// at finalization by printTestResults.
+type testResult struct {
+	Component string
+	Tag       string
+	Action    string
+	Status    testStatus
+	Reason    string // empty for pass
+}
+
 // normalizeIndent round-trips spec content through a yaml encoder with 2-space
 // indentation to ensure consistent formatting regardless of the source code path.
 func normalizeIndent(content []byte) []byte {
@@ -62,10 +81,11 @@ func writeGenerated(component *workplan.WorkComponent) {
 }
 
 // diffWithGolden compares the generated spec content against the golden file
-// at ./correct/{component}/{SpecFileName}.
-// Logs PASS if identical, FAIL if not, SKIP if no golden exists. The pipeline
-// emits structured log lines that test.sh parses for pass/fail accounting.
-func diffWithGolden(component *workplan.WorkComponent) {
+// at ./correct/{component}/{SpecFileName} and returns the recorded outcome.
+// Emits structured `✅ PASS` / `❌ FAIL` / `⚠️  SKIP diff` lines that test.sh
+// greps for per-test accounting; the returned testResult is what main rolls
+// up into the aggregated `Test Results:` summary at finalization.
+func diffWithGolden(component *workplan.WorkComponent) testResult {
 	naming := component.Naming
 	tag := component.Tag.Stripped
 	action := component.Result.Outcome.String()
@@ -76,14 +96,15 @@ func diffWithGolden(component *workplan.WorkComponent) {
 	goldenContent, err := os.ReadFile(goldenPath)
 	if err != nil {
 		log.Printf("⚠️  SKIP diff for %s @ %s [%s] — no golden file", naming.SpecImageName, tag, action)
-		return
+		return testResult{Component: naming.SpecImageName, Tag: tag, Action: action, Status: testSkip, Reason: "no golden file"}
 	}
 	goldenContent = normalizeIndent(goldenContent)
 
 	if string(specContent) == string(goldenContent) {
 		log.Printf("✅ PASS  %s @ %s [%s]", naming.SpecImageName, tag, action)
-		return
+		return testResult{Component: naming.SpecImageName, Tag: tag, Action: action, Status: testPass}
 	}
 
 	log.Printf("❌ FAIL  %s @ %s [%s] — golden mismatch", naming.SpecImageName, tag, action)
+	return testResult{Component: naming.SpecImageName, Tag: tag, Action: action, Status: testFail, Reason: "golden mismatch"}
 }

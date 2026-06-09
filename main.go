@@ -24,38 +24,49 @@ import (
 // ═══════════════════════════════════════════════════════════════════════════════
 
 func main() {
-	inputPath, patchMode, noPublish := orchestration.ParseFlags()
-	orchestration.LoadEnv()
+	flags := orchestration.ParseFlags()
+	initInfo := orchestration.LoadEnv(flags)
+	logging.PrintInitBanner(initInfo)
 
-	if patchMode {
+	if flags.PatchMode {
 		runPatchWorkflow()
 		return
 	}
 
 	// ── Phase 1: Resolve onboard files and tag patterns into grouped work components ──
-	groups := orchestration.Resolve(inputPath)
+	groups := orchestration.Resolve(flags.InputPath)
 
 	// ── Phase 2: Generate spec per component (writes component.Result; no PR/grouping logic) ──
 	orchestration.Generate(groups)
 
-	// ── Observers: local cache, golden diff, action log ──
-	observeResults(groups)
-
-	if noPublish {
-		log.Println("⚠️  -no-publish set: skipping Phase 3 (PR publishing)")
-		return
-	}
+	// ── Observers: local cache, golden diff, action log accumulation ──
+	actionLog, testResults := observeResults(groups)
 
 	// ── Phase 3: Walk groups and publish one PR per group with publishable components ──
-	outcomes := orchestration.Publish(groups)
+	var outcomes []orchestration.PublishOutcome
+	if !flags.NoPublish {
+		outcomes = orchestration.Publish(groups)
+	}
+
+	// ── Finalization ──
+	logging.PrintFinalizationBanner()
+	logging.PrintActionLog(actionLog)
+	printTestResults(testResults)
+	if flags.NoPublish {
+		log.Println("  PR Summary: skipped (-no-publish)")
+		return
+	}
 	orchestration.PrintPublishSummary(outcomes)
 }
 
 // observeResults runs side effects that happen once per WorkComponent but are
 // not part of publishing: write the local generated copy, diff against the
-// golden file, and accumulate the action log.
-func observeResults(groups []workplan.WorkGroup) {
+// golden file, and accumulate both the action log and the per-test results.
+// Per-test ✅ PASS / ❌ FAIL / ⚠️ SKIP lines are still emitted inline because
+// test.sh greps them for pass/fail accounting.
+func observeResults(groups []workplan.WorkGroup) ([]logging.ActionEntry, []testResult) {
 	var actionLog []logging.ActionEntry
+	var results []testResult
 	for _, group := range groups {
 		for _, component := range group.Components {
 			actionLog = append(actionLog, logging.ActionEntry{
@@ -67,16 +78,52 @@ func observeResults(groups []workplan.WorkGroup) {
 			switch component.Result.Outcome {
 			case buildresult.OutcomeSkipped:
 				log.Printf("✅ PASS  %s @ %s [SKIPPED]", component.Naming.SpecImageName, component.Tag.Stripped)
+				results = append(results, testResult{
+					Component: component.Naming.SpecImageName,
+					Tag:       component.Tag.Stripped,
+					Action:    "SKIPPED",
+					Status:    testPass,
+				})
 				continue
 			case buildresult.OutcomeFailed:
 				continue
 			}
 
 			writeGenerated(component)
-			diffWithGolden(component)
+			results = append(results, diffWithGolden(component))
 		}
 	}
-	logging.PrintActionLog(actionLog)
+	return actionLog, results
+}
+
+// printTestResults renders the aggregated test summary under the Finalization
+// banner. Skipped count is omitted when zero; failures are listed inline.
+func printTestResults(results []testResult) {
+	if len(results) == 0 {
+		return
+	}
+	var passed, failed, skipped int
+	for _, result := range results {
+		switch result.Status {
+		case testPass:
+			passed++
+		case testFail:
+			failed++
+		case testSkip:
+			skipped++
+		}
+	}
+	if skipped == 0 {
+		log.Printf("  Test Results: %d passed, %d failed", passed, failed)
+	} else {
+		log.Printf("  Test Results: %d passed, %d failed, %d skipped", passed, failed, skipped)
+	}
+	for _, result := range results {
+		if result.Status != testFail {
+			continue
+		}
+		log.Printf("    ❌ %s @ %s [%s] — %s", result.Component, result.Tag, result.Action, result.Reason)
+	}
 }
 
 // ─── Patching workflow (separate from the spec pipeline) ────────────────────

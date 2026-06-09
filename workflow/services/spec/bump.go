@@ -41,15 +41,12 @@ func BumpRevision(component *workplan.WorkComponent) ([]byte, error) {
 	componentNaming := component.Naming
 	tagSet := component.Tag
 
-	log.Printf("Revision bump for %s\n", componentNaming.SpecFileName)
-
 	priorRevision := component.Revision - 1
 	if priorRevision < 1 {
 		priorRevision = 1
 	}
 	priorPath := fmt.Sprintf("%s/%s-%s-%d-specfile.yml",
 		componentNaming.OnboardDir, componentNaming.SpecImageName, tagSet.Version, priorRevision)
-	log.Printf("   Template (same version, R%d): %s\n", priorRevision, priorPath)
 
 	specNode, err := specapi.SpecRepoFetchSpec(priorPath)
 	if err != nil {
@@ -60,19 +57,15 @@ func BumpRevision(component *workplan.WorkComponent) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve commit for tag %s: %w", tagSet.Full, err)
 	}
-	log.Printf("   Commit SHA (from cache): %s\n", newCommit)
 
 	if err := updateCommitOnly(specNode, newCommit); err != nil {
 		return nil, err
 	}
 
-	specBytes, err := encodeSpec(specNode)
-	if err != nil {
-		return nil, err
-	}
+	log.Printf("  Revision bump: %s (R%d -> R%d, sha=%s)",
+		componentNaming.SpecFileName, priorRevision, component.Revision, shortSHA(newCommit))
 
-	log.Printf("✅ Revision bump complete\n")
-	return specBytes, nil
+	return encodeSpec(specNode)
 }
 
 // updateCommitOnly updates only args.COMMIT in the parsed YAML node.
@@ -88,7 +81,6 @@ func updateCommitOnly(specNode *yaml.Node, newCommit string) error {
 		return fmt.Errorf("spec file missing args.COMMIT")
 	}
 
-	log.Printf("   COMMIT: %s → %s\n", commitNode.Value, newCommit)
 	commitNode.Value = newCommit
 	return nil
 }
@@ -111,9 +103,6 @@ func BumpVersion(component *workplan.WorkComponent, templateKey string) ([]byte,
 	templatePath := fmt.Sprintf("%s/%s-%s-specfile.yml",
 		componentNaming.OnboardDir, componentNaming.SpecImageName, templateKey)
 
-	log.Printf("Version bump for %s (template=%s -> %s)\n",
-		componentNaming.SpecFileName, templateKey, templatePath)
-
 	specNode, err := specapi.SpecRepoFetchSpec(templatePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch template spec: %w", err)
@@ -123,19 +112,15 @@ func BumpVersion(component *workplan.WorkComponent, templateKey string) ([]byte,
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve commit for tag %s: %w", tagSet.Full, err)
 	}
-	log.Printf("   Commit SHA (from cache): %s\n", newCommit)
 
 	if err := updateSpecArgs(specNode, tagSet.Version, newCommit); err != nil {
 		return nil, err
 	}
 
-	specBytes, err := encodeSpec(specNode)
-	if err != nil {
-		return nil, err
-	}
+	log.Printf("  Version bump: %s (template=%s -> %s, sha=%s)",
+		componentNaming.SpecFileName, templateKey, tagSet.Version, shortSHA(newCommit))
 
-	log.Printf("✅ Version bump complete\n")
-	return specBytes, nil
+	return encodeSpec(specNode)
 }
 
 // updateSpecArgs updates args.COMMIT and args.VERSION in the parsed YAML node.
@@ -151,12 +136,10 @@ func updateSpecArgs(specNode *yaml.Node, version, newCommit string) error {
 	if commitNode == nil {
 		return fmt.Errorf("spec file missing args.COMMIT")
 	}
-	log.Printf("   COMMIT: %s → %s\n", commitNode.Value, newCommit)
 	commitNode.Value = newCommit
 
 	versionNode := specapi.FindMapValue(argsNode, "VERSION")
 	if versionNode != nil {
-		log.Printf("   VERSION: %s → %s\n", versionNode.Value, version)
 		versionNode.Value = version
 	}
 
@@ -175,4 +158,13 @@ func encodeSpec(specNode *yaml.Node) ([]byte, error) {
 	}
 	encoder.Close()
 	return buf.Bytes(), nil
+}
+
+// shortSHA returns the first 7 chars of a commit SHA, or the original when
+// shorter. Used purely for log line brevity.
+func shortSHA(sha string) string {
+	if len(sha) <= 7 {
+		return sha
+	}
+	return sha[:7]
 }

@@ -27,6 +27,7 @@ import (
 	"dalec-mapping/domain/workplan"
 	"dalec-mapping/workflow/infrastructure/ado"
 	"dalec-mapping/workflow/infrastructure/github"
+	"dalec-mapping/workflow/infrastructure/reposrc"
 )
 
 // DiscoverBuildFiles fetches the Dockerfile and Makefile from the source repo
@@ -41,8 +42,6 @@ func DiscoverBuildFiles(component *workplan.WorkComponent) error {
 
 	component.BuildFiles.Dockerfile.Source = dockerfileContent
 	component.BuildFiles.Makefile.Source = makefileContent
-
-	log.Printf("✅ Discover complete for %s\n", component.Naming.SpecFileName)
 	return nil
 }
 
@@ -50,12 +49,7 @@ func DiscoverBuildFiles(component *workplan.WorkComponent) error {
 // repo at the supplied tag without mutating the work component. Used by the
 // orchestration layer to fetch the template version's files for comparison.
 func FetchBuildFilesAtTag(component *workplan.WorkComponent, tag string) ([]byte, []byte, error) {
-	componentNaming := component.Naming
 	repoURL := component.ParentGroup.Repository
-
-	log.Println()
-	log.Printf("── Fetch build files: %s @ %s ──\n", componentNaming.SpecImageName, tag)
-	log.Printf("Repository: %s\n", repoURL)
 
 	dockerfilePath := ""
 	if component.DockerfileDir != "" {
@@ -66,7 +60,7 @@ func FetchBuildFilesAtTag(component *workplan.WorkComponent, tag string) ([]byte
 		makefilePath = resolveFilePath(component.MakefileDir, "Makefile")
 	}
 
-	componentPath := extractComponentPath(repoURL)
+	_, componentPath := reposrc.SplitComponent(repoURL)
 	if componentPath != "" {
 		if dockerfilePath != "" {
 			dockerfilePath = path.Join(componentPath, dockerfilePath)
@@ -76,10 +70,19 @@ func FetchBuildFilesAtTag(component *workplan.WorkComponent, tag string) ([]byte
 		}
 	}
 
-	log.Printf("  Dockerfile path: %s\n", dockerfilePath)
-	log.Printf("  Makefile path:   %s\n", makefilePath)
+	log.Printf("  Fetched Dockerfile=%s Makefile=%s from %s @ %s",
+		displayPath(dockerfilePath), displayPath(makefilePath), repoURL, tag)
 
 	return fetchBuildFiles(repoURL, dockerfilePath, makefilePath, tag)
+}
+
+// displayPath renders an empty path as "<none>" for the consolidated discover
+// log line.
+func displayPath(p string) string {
+	if p == "" {
+		return "<none>"
+	}
+	return p
 }
 
 // resolveFilePath resolves a partner-provided path to a full file path.
@@ -186,14 +189,3 @@ func fetchBuildFilesFromGitHub(repoURL, dockerfilePath, makefilePath, tag string
 
 // diffSiblings was removed: comparison now lives in the orchestration layer
 // using SpecRepoFetchBuildFilesForVersion to fetch the per-version snapshot.
-
-// extractComponentPath returns the component subdirectory from a repository URL.
-// Returns "" when the URL has no component suffix (i.e. the project lives at root).
-func extractComponentPath(repoURL string) string {
-	if ado.IsADORepo(repoURL) {
-		_, componentPath := ado.SplitADOComponent(repoURL)
-		return componentPath
-	}
-	_, componentPath := github.SplitGitHubComponent(repoURL)
-	return componentPath
-}

@@ -21,8 +21,8 @@ import (
 	"dalec-mapping/domain/tagcache"
 	"dalec-mapping/domain/workplan"
 	"dalec-mapping/workflow/infrastructure/ado"
-	"dalec-mapping/workflow/infrastructure/github"
 	"dalec-mapping/workflow/infrastructure/parser"
+	"dalec-mapping/workflow/infrastructure/reposrc"
 	"dalec-mapping/workflow/infrastructure/transformer"
 )
 
@@ -40,13 +40,12 @@ func GenerateSpec(component *workplan.WorkComponent) ([]byte, []string, error) {
 	}
 	component.BuildFiles.RepoInfo = repoInfo
 
-	specBytes, resolvedTargets, err := buildSpec(component)
+	specBytes, _, err := buildSpec(component)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	log.Printf("Output: targets=%v\n", resolvedTargets)
-	return specBytes, resolvedTargets, nil
+	return specBytes, nil, nil
 }
 
 // buildRepoInfo gathers every piece of upstream repository metadata for the
@@ -54,10 +53,11 @@ func GenerateSpec(component *workplan.WorkComponent) ([]byte, []string, error) {
 // assigns the result to component.BuildFiles.RepoInfo exactly once; no field is
 // mutated afterwards.
 func buildRepoInfo(component *workplan.WorkComponent, repoURL string) (repository.RepoInfo, error) {
-	base, fetchedLicense, err := fetchBaseRepoInfo(repoURL)
+	info, fetchedLicense, err := reposrc.FetchRepoInfo(repoURL)
 	if err != nil {
 		return repository.RepoInfo{}, err
 	}
+	base := *info
 
 	component.ParentGroup.License = resolveLicense(component.ParentGroup.License, fetchedLicense)
 
@@ -87,24 +87,6 @@ func resolveLicense(configured, fetched string) string {
 		return fetched
 	}
 	return "proprietary"
-}
-
-// fetchBaseRepoInfo dispatches to the GitHub or ADO fetcher and returns the
-// remote-side fields as a value (dereferenced from the upstream pointer) plus
-// the fetched license ("" when none).
-func fetchBaseRepoInfo(repoURL string) (repository.RepoInfo, string, error) {
-	if ado.IsADORepo(repoURL) {
-		info, fetchedLicense, err := ado.FetchADORepoInfo(repoURL)
-		if err != nil {
-			return repository.RepoInfo{}, "", err
-		}
-		return *info, fetchedLicense, nil
-	}
-	info, fetchedLicense, err := github.FetchRepoInfo(repoURL)
-	if err != nil {
-		return repository.RepoInfo{}, "", err
-	}
-	return *info, fetchedLicense, nil
 }
 
 // detectGoVersion returns the Go toolchain version pinned in the Dockerfile

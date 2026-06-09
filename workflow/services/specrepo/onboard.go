@@ -43,8 +43,6 @@ import (
 // fans across its matched tags into one runtime WorkGroup per tag (with its
 // own PRID and a fully-constructed Naming on each per-component WorkComponent).
 func FetchComponents(inputPath string) ([]workplan.WorkGroup, error) {
-	log.Printf("Full onboard search path: %s\n", inputPath)
-
 	tagcache.Init()
 	pathcache.Init()
 
@@ -54,12 +52,6 @@ func FetchComponents(inputPath string) ([]workplan.WorkGroup, error) {
 	}
 
 	groups := buildGroups(specRepoEntries, inputPath)
-
-	totalItems := 0
-	for _, group := range groups {
-		totalItems += len(group.Components)
-	}
-	log.Printf("Output: %d work components across %d group(s), %d existing paths indexed\n", totalItems, len(groups), len(pathcache.Cache))
 	return groups, nil
 }
 
@@ -74,8 +66,7 @@ func buildGroups(specRepoEntries []interface{}, inputPath string) []workplan.Wor
 		if !ok {
 			continue
 		}
-		log.Println()
-		log.Printf("Processing onboard file: %s\n", onboardPath)
+		log.Printf("  Processing onboard file: %s", onboardPath)
 
 		partnerOnboardDir, err := splitOnboardPath(onboardPath)
 		if err != nil {
@@ -84,13 +75,11 @@ func buildGroups(specRepoEntries []interface{}, inputPath string) []workplan.Wor
 
 		onboardGroups, err := specapi.SpecRepoFetchOnboard(onboardPath)
 		if err != nil {
-			log.Printf("⚠️  %v\n", err)
+			log.Printf("⚠️  %v", err)
 			continue
 		}
 
 		groups = append(groups, expandGroups(onboardGroups, partnerOnboardDir)...)
-
-		log.Println()
 	}
 
 	return groups

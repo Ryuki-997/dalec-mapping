@@ -130,12 +130,16 @@ func isGreater(candidateParts []int, candidateRevision int, bestParts []int, bes
 }
 
 // buildFilesRegex matches BuildFiles snapshot paths of the form
-// "<OnboardDir>/buildfiles/<version>-<revision>.(df|mk)" and captures the
-// concrete version and revision. One snapshot is kept per (version, revision)
-// pair, sitting next to the corresponding specfile under the same OnboardDir.
+// "<OnboardDir>/buildfiles/<X>.<Y>/<version>-<revision>.(df|mk)" and captures
+// the concrete version and revision. One snapshot is kept per (version,
+// revision) pair, bucketed under the version's "<major>.<minor>" directory
+// alongside its specfile. The directory's major and minor are not captured
+// directly — they are redundant with the version capture, so the regex
+// matches them as <X>.<Y> wildcards and lets the caller derive ordering from
+// the parsed version parts.
 func buildFilesRegex(n naming.Naming) *regexp.Regexp {
 	return regexp.MustCompile(fmt.Sprintf(
-		`^%s/buildfiles/(\d+(?:\.\d+)+)-(\d+)\.(?:df|mk)$`,
+		`^%s/buildfiles/\d+\.\d+/(\d+(?:\.\d+)+)-(\d+)\.(?:df|mk)$`,
 		regexp.QuoteMeta(n.OnboardDir),
 	))
 }
@@ -217,7 +221,7 @@ func ResolveTagPatterns(tagsByName map[string]string, includePatterns, excludePa
 	var result []string
 	for _, tag := range includedTags {
 		if excludeSet[tag] {
-			log.Printf("Excluded tag %q\n", tag)
+			log.Printf("  Excluded tag %q", tag)
 			continue
 		}
 		result = append(result, tag)

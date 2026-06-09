@@ -44,11 +44,16 @@ done
 # ── Step 2: Run actual pipeline (always submits PRs) ──
 overall_exit=0
 
-go_args=()
-echo "  PR submission: ENABLED"
+# Branch on aks-dalec-build-defs that holds the spec/snapshot fixtures.
+# Overrides the default in config.OnboardBranch.
+ONBOARD_BRANCH="ksehgal/fix-publish-poc"
+
+go_args=("-branch=${ONBOARD_BRANCH}")
+echo "  Onboard branch: ${ONBOARD_BRANCH}"
+echo "  PR submission:  ENABLED"
 if [[ "$force_flag" == true ]]; then
     go_args+=("-force")
-    echo "  Force PR:      ENABLED"
+    echo "  Force PR:       ENABLED"
 fi
 echo ""
 
@@ -73,10 +78,11 @@ run_and_stream() {
 }
 
 # run_and_stream "Run ContainerNetworking: -path=specs/containernetworking" -path=specs/containernetworking
-run_and_stream "Run AKS-Secure-TLS-Bootstrap: -path=specs/aks-secure-tls-bootstrap" -path=specs/aks-secure-tls-bootstrap
+# run_and_stream "Run AKS-Secure-TLS-Bootstrap: -path=specs/aks-secure-tls-bootstrap" -path=specs/aks-secure-tls-bootstrap
 # run_and_stream "Run AKS-Node-Controller: -path=specs/aks-node-controller" -path=specs/aks-node-controller
 # run_and_stream "Run Azure Policy: -path=specs/azure-policy" -path=specs/azure-policy
-# run_and_stream "Run Azure Fleet: -path=specs/aks/fleet" -path=specs/aks/fleet
+run_and_stream "Run Azure Fleet: -path=specs/aks/fleet" -path=specs/aks/fleet
+# run_and_stream "Run Guard: -path=specs/guard" -path=specs/guard
 
 ## Project Dalec Components
 

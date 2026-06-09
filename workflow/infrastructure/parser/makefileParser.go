@@ -11,6 +11,8 @@ import (
 
 // makefileGoBuildRe matches `go build ... <target>` in Makefile recipe lines.
 // Captures the last argument (package target) which is a path like cmd/client/main.go or ./cmd/client.
+// For the detection-only `go build` variant used by the Dockerfile parser, see
+// goBuildRe in gobuild.go.
 var makefileGoBuildRe = regexp.MustCompile(`go\s+build\s+.+?\s+((?:\./)?[a-zA-Z][^\s]*)\s*$`)
 
 // makefileVarRe matches Makefile variable references: $(VAR) or ${VAR}.

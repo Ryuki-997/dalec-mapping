@@ -36,7 +36,6 @@ type PublishOutcome struct {
 // specrepo.CreatePR.
 func Publish(groups []workplan.WorkGroup) []PublishOutcome {
 	log.Println("═══ Phase 3: Publish ═══")
-	log.Println("─── Create pull requests ───")
 
 	outcomes := make([]PublishOutcome, 0, len(groups))
 	for _, group := range groups {
@@ -56,13 +55,13 @@ func Publish(groups []workplan.WorkGroup) []PublishOutcome {
 func publishGroup(group workplan.WorkGroup) (PublishOutcome, bool) {
 	url, created, specPaths, err := specrepo.CreatePR(group)
 	if err != nil {
-		log.Printf("❌ PR creation failed for %s: %v", group.GroupName, err)
+		log.Printf("  ❌ PR creation failed for %s: %v", group.GroupName, err)
 		return PublishOutcome{GroupName: group.GroupName, Err: err}, true
 	}
 	if url == "" {
 		return PublishOutcome{}, false
 	}
-	log.Printf("Group: %s, Components: %d", group.GroupName, len(specPaths))
+	log.Printf("  Group: %s (%d components)", group.GroupName, len(specPaths))
 	return PublishOutcome{
 		GroupName: group.GroupName,
 		URL:       url,
@@ -71,7 +70,9 @@ func publishGroup(group workplan.WorkGroup) (PublishOutcome, bool) {
 	}, true
 }
 
-// PrintPublishSummary prints the standard PR creation summary block.
+// PrintPublishSummary renders the PR creation roll-up as a sub-section under
+// the Finalization banner. No banner box; entries are indented to nest under
+// the `PR Summary:` header.
 func PrintPublishSummary(outcomes []PublishOutcome) {
 	createdCount := 0
 	skippedCount := 0
@@ -86,7 +87,7 @@ func PrintPublishSummary(outcomes []PublishOutcome) {
 		skippedCount++
 	}
 
-	log.Printf("PR Summary (%d created, %d skipped — already open):", createdCount, skippedCount)
+	log.Printf("  PR Summary: %d created, %d already-open", createdCount, skippedCount)
 	prIndex := 0
 	for _, outcome := range outcomes {
 		if outcome.Err != nil {
@@ -97,10 +98,9 @@ func PrintPublishSummary(outcomes []PublishOutcome) {
 		if !outcome.Created {
 			label = "existing"
 		}
-		log.Printf("  PR #%d [%s]: %s", prIndex, label, outcome.URL)
+		log.Printf("    PR #%d [%s]: %s", prIndex, label, outcome.URL)
 		for _, file := range outcome.SpecPaths {
-			log.Printf("    - %s", file)
+			log.Printf("      - %s", file)
 		}
 	}
-	log.Println()
 }

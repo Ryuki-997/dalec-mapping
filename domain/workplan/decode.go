@@ -92,10 +92,12 @@ func decodeGroup(groupName string, valNode *yaml.Node) (WorkGroup, error) {
 		return WorkGroup{}, fmt.Errorf("group %q: expected mapping, got %v", groupName, valNode.Kind)
 	}
 
-	group, err := decodeGroupMetadata(groupName, valNode)
-	if err != nil {
-		return WorkGroup{}, err
+	// Decode group-level fields (Repository, TagPatterns, Targets, License, Reviewers).
+	var group WorkGroup
+	if err := valNode.Decode(&group); err != nil {
+		return WorkGroup{}, fmt.Errorf("group %q: failed to decode metadata: %w", groupName, err)
 	}
+	group.GroupName = groupName
 
 	group.Targets = validateTargets(groupName, group.Targets)
 	if len(group.Targets) == 0 {
@@ -112,23 +114,15 @@ func decodeGroup(groupName string, valNode *yaml.Node) (WorkGroup, error) {
 		return group, nil
 	}
 
-	standalone, err := decodeStandaloneComponent(groupName, valNode)
-	if err != nil {
-		return WorkGroup{}, err
+	// Standalone layout: decode valNode as a single inline component whose Name
+	// equals the group's name. Group-level keys decoded above are silently
+	// ignored here because WorkComponent does not declare those fields.
+	var standalone WorkComponent
+	if err := valNode.Decode(&standalone); err != nil {
+		return WorkGroup{}, fmt.Errorf("group %q: failed to decode standalone component: %w", groupName, err)
 	}
-	group.Components = []*WorkComponent{standalone}
-	return group, nil
-}
-
-// decodeGroupMetadata fills the group-level fields (Repository, TagPatterns,
-// Targets, License, Reviewers) from valNode. The decoded value is later
-// populated with Components by decodeGroup; Tag/PRID remain zero.
-func decodeGroupMetadata(groupName string, valNode *yaml.Node) (WorkGroup, error) {
-	var group WorkGroup
-	if err := valNode.Decode(&group); err != nil {
-		return WorkGroup{}, fmt.Errorf("group %q: failed to decode metadata: %w", groupName, err)
-	}
-	group.GroupName = groupName
+	standalone.Name = groupName
+	group.Components = []*WorkComponent{&standalone}
 	return group, nil
 }
 
@@ -172,19 +166,6 @@ func decodeGroupedComponents(groupName string, componentsNode *yaml.Node) ([]*Wo
 		components = append(components, &copyOfSkeleton)
 	}
 	return components, nil
-}
-
-// decodeStandaloneComponent decodes valNode as a single inline component whose
-// Name equals the group's name. Group-level keys (repository, tags,
-// targets, license, reviewers) decoded by decodeGroupMetadata are silently
-// ignored here because WorkComponent does not declare those fields.
-func decodeStandaloneComponent(groupName string, valNode *yaml.Node) (*WorkComponent, error) {
-	var component WorkComponent
-	if err := valNode.Decode(&component); err != nil {
-		return nil, fmt.Errorf("group %q: failed to decode standalone component: %w", groupName, err)
-	}
-	component.Name = groupName
-	return &component, nil
 }
 
 // validateTargets keeps only known build targets from the onboard list.

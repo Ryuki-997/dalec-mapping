@@ -21,6 +21,7 @@ package orchestration
 
 import (
 	"log"
+	"strings"
 
 	"dalec-mapping/domain/workplan"
 	"dalec-mapping/workflow/services/specrepo"
@@ -29,8 +30,6 @@ import (
 // Resolve runs Phase 1 of the pipeline.
 func Resolve(inputPath string) []workplan.WorkGroup {
 	log.Println("═══ Phase 1: Resolve ═══")
-	log.Println("─── Fetch onboard files and resolve tag cache ───")
-	log.Printf("Input path: %s", inputPath)
 
 	groups, err := specrepo.FetchComponents(inputPath)
 	if err != nil {
@@ -46,10 +45,10 @@ func Resolve(inputPath string) []workplan.WorkGroup {
 	return groups
 }
 
-// logTagCache prints the "Tag cache (N tags across M components)" summary
-// by walking the flat group.Components list produced by Phase 1. Revision is
-// not yet decided at the end of Phase 1 (Phase 2's resolveAction sets it),
-// so only the stripped tag is shown here.
+// logTagCache prints a `Tag cache:` header followed by one indented line per
+// component listing every actionable tag, comma-separated. Revision is not
+// yet decided at the end of Phase 1 (Phase 2's resolveAction sets it), so
+// only the stripped tag is shown here.
 func logTagCache(groups []workplan.WorkGroup) {
 	tagsByComponent := make(map[string][]string)
 	totalItems := 0
@@ -63,12 +62,8 @@ func logTagCache(groups []workplan.WorkGroup) {
 		}
 	}
 
-	log.Printf("Tag cache (%d tags across %d components):", totalItems, len(tagsByComponent))
+	log.Printf("  Tag cache (%d tags across %d components):", totalItems, len(tagsByComponent))
 	for component, tagList := range tagsByComponent {
-		log.Printf("  %s:", component)
-		for _, tag := range tagList {
-			log.Printf("    %s", tag)
-		}
+		log.Printf("    %s: %s", component, strings.Join(tagList, ", "))
 	}
-	log.Println()
 }

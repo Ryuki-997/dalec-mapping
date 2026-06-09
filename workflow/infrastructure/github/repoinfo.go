@@ -47,7 +47,7 @@ func fetchRepositorySegments(repo string) (owner, name, branch string) {
 	if len(parts) == 2 {
 		repoData, err := FetchJSON(RepoAPIPath(parts[0], parts[1], ""))
 		if err != nil {
-			log.Printf("Error: failed to fetch repo info for %s: %v\n", repo, err)
+			log.Printf("❌ failed to fetch repo info for %s: %v", repo, err)
 			os.Exit(1)
 		}
 
@@ -61,7 +61,7 @@ func fetchRepositorySegments(repo string) (owner, name, branch string) {
 		return parts[0], parts[1], parts[3]
 	}
 
-	log.Printf("Warning: unrecognized repository format: %s\n", repo)
+	log.Printf("⚠️  unrecognized repository format: %s", repo)
 	os.Exit(1)
 	return "", "", ""
 }

@@ -54,14 +54,14 @@ TAG_CHECK_DEFAULT_VERSIONS=("v0.18.5" "v0.18.6" "v0.18.7")
 # Expected versions for inclusion-exclusion-tags sections.
 # After include/exclude filtering, each component should resolve to exactly one tag.
 INCL_EXCL_BOOTSTRAP_COMPONENTS=("aks-secure-tls-bootstrap-client")
-INCL_EXCL_BOOTSTRAP_VERSIONS=("v1.0.3")
+INCL_EXCL_BOOTSTRAP_VERSIONS=("v1.0.3" "v1.1.4")
 INCL_EXCL_SPECIAL_COMPONENTS=(
     "hub-net-controller-manager"
     "member-net-controller-manager"
     "mcs-controller-manager"
     "net-crd-installer"
 )
-INCL_EXCL_SPECIAL_VERSIONS=("v0.3.34" )
+INCL_EXCL_SPECIAL_VERSIONS=("v0.3.34" "v0.3.35")
 INCL_EXCL_DEFAULT_VERSIONS=("v0.18.6" "v0.18.7")
 
 # Ctrl+C aborts the entire test run, not just the current section.
